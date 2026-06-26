@@ -9,6 +9,7 @@
 	"Icon": "imgs/plugin/marketplace",
 	"URL": "https://github.com/johnknox/streamdeck-safari-jump",
 	"SDKVersion": 2,
+	"CodePath": "bin/plugin.js",
 	"Nodejs": {
 		"Version": "20",
 		"Debug": "enabled"
