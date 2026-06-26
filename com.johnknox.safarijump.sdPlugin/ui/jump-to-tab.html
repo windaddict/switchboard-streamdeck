@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Jump to Tab</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<!--
+			Each field below binds to its own settings key via `setting=`. The SDK
+			merges per-key, so there is no shared array and no manual setSettings
+			race — this is the deliberate fix for the clobbering bug in similar
+			plugins. Fields are shown/hidden based on the selected service.
+		-->
+		<sdpi-item label="Service">
+			<sdpi-select setting="service" id="service" default="gmail">
+				<option value="gmail">Gmail</option>
+				<option value="calendar">Google Calendar</option>
+				<option value="custom">Custom website</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<!-- Google services: pick the account index (the N in /u/N/). -->
+		<sdpi-item label="Account index" id="row-account">
+			<sdpi-textfield setting="accountIndex" default="0" placeholder="0 = first signed-in account"></sdpi-textfield>
+		</sdpi-item>
+
+		<!-- Custom website fields. -->
+		<sdpi-item label="URL to open" id="row-url">
+			<sdpi-textfield setting="url" placeholder="https://example.com/app"></sdpi-textfield>
+		</sdpi-item>
+		<sdpi-item label="Match pattern" id="row-pattern">
+			<sdpi-textfield setting="urlPattern" placeholder="(optional) e.g. example.com/app"></sdpi-textfield>
+		</sdpi-item>
+
+		<!-- Optional title fallback, applies to all services. -->
+		<sdpi-item label="Title contains" id="row-title">
+			<sdpi-textfield setting="titlePattern" placeholder="(optional) use || for alternates"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="Private window">
+			<sdpi-checkbox setting="private" label="Open in a new private window"></sdpi-checkbox>
+		</sdpi-item>
+
+		<div style="margin-top: 16px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Private targets always open a fresh private window — Safari hides private
+			tabs from automation, so existing private tabs cannot be matched.
+		</div>
+
+		<script>
+			// Show only the rows relevant to the selected service. Pure UI; does not
+			// touch persistence (the sdpi components own that).
+			const serviceEl = document.getElementById("service");
+			const rows = {
+				account: document.getElementById("row-account"),
+				url: document.getElementById("row-url"),
+				pattern: document.getElementById("row-pattern"),
+			};
+
+			function applyVisibility(service) {
+				const isGoogle = service === "gmail" || service === "calendar";
+				const isCustom = service === "custom";
+				rows.account.style.display = isGoogle ? "" : "none";
+				rows.url.style.display = isCustom ? "" : "none";
+				rows.pattern.style.display = isCustom ? "" : "none";
+			}
+
+			// sdpi-select exposes its value; react to changes and to first paint.
+			serviceEl.addEventListener("valuechange", (e) => applyVisibility(e.detail?.value ?? serviceEl.value));
+			serviceEl.addEventListener("change", () => applyVisibility(serviceEl.value));
+			document.addEventListener("DOMContentLoaded", () => applyVisibility(serviceEl.value || "gmail"));
+		</script>
+	</body>
+</html>

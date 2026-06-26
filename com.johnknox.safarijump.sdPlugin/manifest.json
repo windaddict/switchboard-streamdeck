@@ -1,0 +1,42 @@
+{
+	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+	"Name": "Safari Jump",
+	"Version": "1.0.0.0",
+	"Author": "John Knox",
+	"Description": "Jump to (or open) a Safari tab. Built-in presets for multi-account Gmail and Google Calendar, custom websites, and private-window targets.",
+	"Category": "Safari Jump",
+	"CategoryIcon": "imgs/plugin/category-icon",
+	"Icon": "imgs/plugin/marketplace",
+	"URL": "https://github.com/johnknox/streamdeck-safari-jump",
+	"SDKVersion": 2,
+	"Nodejs": {
+		"Version": "20",
+		"Debug": "enabled"
+	},
+	"Software": {
+		"MinimumVersion": "6.5"
+	},
+	"OS": [
+		{
+			"Platform": "mac",
+			"MinimumVersion": "12"
+		}
+	],
+	"UUID": "com.johnknox.safarijump",
+	"Actions": [
+		{
+			"Name": "Jump to Tab",
+			"UUID": "com.johnknox.safarijump.jump",
+			"Icon": "imgs/actions/jump/icon",
+			"Tooltip": "Jump to an open Safari tab, or open it if missing.",
+			"PropertyInspectorPath": "ui/jump-to-tab.html",
+			"Controllers": ["Keypad"],
+			"States": [
+				{
+					"Image": "imgs/actions/jump/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		}
+	]
+}

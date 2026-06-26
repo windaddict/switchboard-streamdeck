@@ -1,0 +1,108 @@
+import { describe, it, expect } from "vitest";
+import {
+	resolveTarget,
+	normalizeIndex,
+	derivePattern,
+	type TargetSettings,
+} from "../src/safari/targets.js";
+
+describe("normalizeIndex", () => {
+	it('coerces the string "3" to 3', () => {
+		expect(normalizeIndex("3")).toBe(3);
+	});
+	it("passes through the number 3", () => {
+		expect(normalizeIndex(3)).toBe(3);
+	});
+	it("defaults undefined to 0", () => {
+		expect(normalizeIndex(undefined)).toBe(0);
+	});
+	it("clamps negatives to 0", () => {
+		expect(normalizeIndex(-1)).toBe(0);
+	});
+	it('treats non-numeric "abc" as 0', () => {
+		expect(normalizeIndex("abc")).toBe(0);
+	});
+	it("floors 2.9 to 2", () => {
+		expect(normalizeIndex(2.9)).toBe(2);
+	});
+});
+
+describe("derivePattern", () => {
+	it("strips trailing slashes from host + path", () => {
+		expect(derivePattern("https://example.com/app/")).toBe("example.com/app");
+	});
+	it("returns host + path with no trailing slash already", () => {
+		expect(derivePattern("https://example.com/app")).toBe("example.com/app");
+	});
+	it("returns trimmed input for an invalid URL", () => {
+		expect(derivePattern("  not a url  ")).toBe("not a url");
+	});
+});
+
+describe("resolveTarget — gmail", () => {
+	it("resolves account 0", () => {
+		const r = resolveTarget({ service: "gmail", accountIndex: 0 });
+		expect(r.url).toBe("https://mail.google.com/mail/u/0/");
+		expect(r.urlPattern).toBe("mail.google.com/mail/u/0");
+		expect(r.private).toBe(false);
+	});
+	it("resolves account 2 (number)", () => {
+		const r = resolveTarget({ service: "gmail", accountIndex: 2 });
+		expect(r.url).toBe("https://mail.google.com/mail/u/2/");
+		expect(r.urlPattern).toBe("mail.google.com/mail/u/2");
+	});
+	it('resolves account "2" (string) the same as 2 — multi-account', () => {
+		const r = resolveTarget({ service: "gmail", accountIndex: "2" });
+		expect(r.url).toBe("https://mail.google.com/mail/u/2/");
+		expect(r.urlPattern).toBe("mail.google.com/mail/u/2");
+	});
+});
+
+describe("resolveTarget — calendar", () => {
+	it("resolves account 1 with the /r suffix", () => {
+		const r = resolveTarget({ service: "calendar", accountIndex: 1 });
+		expect(r.url).toBe("https://calendar.google.com/calendar/u/1/r");
+		expect(r.urlPattern).toBe("calendar.google.com/calendar/u/1");
+	});
+});
+
+describe("resolveTarget — custom", () => {
+	it("passes the url through and derives the pattern", () => {
+		const r = resolveTarget({ service: "custom", url: "https://example.com/app" });
+		expect(r.url).toBe("https://example.com/app");
+		expect(r.urlPattern).toBe("example.com/app");
+	});
+	it("uses an explicit urlPattern override instead of the derived one", () => {
+		const r = resolveTarget({
+			service: "custom",
+			url: "https://example.com/app",
+			urlPattern: "my-custom-pattern",
+		});
+		expect(r.urlPattern).toBe("my-custom-pattern");
+	});
+});
+
+describe("resolveTarget — shared behavior", () => {
+	it("propagates private:true to ResolvedTarget.private", () => {
+		const r = resolveTarget({ service: "gmail", accountIndex: 0, private: true });
+		expect(r.private).toBe(true);
+	});
+	it("trims a titlePattern", () => {
+		const r = resolveTarget({ service: "gmail", titlePattern: "  Inbox  " });
+		expect(r.titlePattern).toBe("Inbox");
+	});
+	it("turns an empty/whitespace titlePattern into undefined", () => {
+		const r = resolveTarget({ service: "gmail", titlePattern: "   " });
+		expect(r.titlePattern).toBeUndefined();
+	});
+	it("leaves titlePattern undefined when absent", () => {
+		const r = resolveTarget({ service: "gmail" });
+		expect(r.titlePattern).toBeUndefined();
+	});
+	it("defaults service-less settings to custom passthrough", () => {
+		const settings: TargetSettings = { url: "https://foo.test/x/" };
+		const r = resolveTarget(settings);
+		expect(r.url).toBe("https://foo.test/x/");
+		expect(r.urlPattern).toBe("foo.test/x");
+	});
+});
