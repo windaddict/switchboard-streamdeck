@@ -54,7 +54,12 @@ export function resolveTarget(settings: TargetSettings): ResolvedTarget {
 	const idx = normalizeIndex(settings.accountIndex);
 	const titlePattern = settings.titlePattern?.trim() || undefined;
 
-	switch (settings.service) {
+	// The PI's `service` dropdown only persists once actively changed, so a
+	// button left on the default Gmail option saves no `service` at all. Infer
+	// it: a bare URL implies a custom target, otherwise default to Gmail.
+	const service: Service = settings.service ?? (settings.url?.trim() ? "custom" : "gmail");
+
+	switch (service) {
 		case "gmail":
 			return {
 				url: `https://mail.google.com/mail/u/${idx}/`,

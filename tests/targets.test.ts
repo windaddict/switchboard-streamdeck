@@ -99,10 +99,19 @@ describe("resolveTarget — shared behavior", () => {
 		const r = resolveTarget({ service: "gmail" });
 		expect(r.titlePattern).toBeUndefined();
 	});
-	it("defaults service-less settings to custom passthrough", () => {
+	it("defaults service-less settings WITH a url to custom passthrough", () => {
 		const settings: TargetSettings = { url: "https://foo.test/x/" };
 		const r = resolveTarget(settings);
 		expect(r.url).toBe("https://foo.test/x/");
 		expect(r.urlPattern).toBe("foo.test/x");
+	});
+	it("infers Gmail when service is absent and there is no url (PI default not persisted)", () => {
+		const r = resolveTarget({ accountIndex: "2" });
+		expect(r.url).toBe("https://mail.google.com/mail/u/2/");
+		expect(r.urlPattern).toBe("mail.google.com/mail/u/2");
+	});
+	it("infers Gmail account 0 from completely empty settings", () => {
+		const r = resolveTarget({});
+		expect(r.url).toBe("https://mail.google.com/mail/u/0/");
 	});
 });
