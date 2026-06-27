@@ -17,7 +17,7 @@ type AppWindowsSettings = Record<string, never>;
  * "Move focus to next window" shortcut. The touchscreen shows the front app and
  * its current window title, refreshed after each step.
  */
-@action({ UUID: "com.johnknox.safarijump.appwindows" })
+@action({ UUID: "com.movingavg.switchboard.appwindows" })
 export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 	override async onWillAppear(ev: WillAppearEvent<AppWindowsSettings>): Promise<void> {
 		if (ev.action.isDial()) {

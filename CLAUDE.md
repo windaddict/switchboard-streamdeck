@@ -2,7 +2,7 @@
 
 A macOS Stream Deck plugin (public name **Switchboard**, by Moving Average Labs).
 Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID stays
-`com.johnknox.safarijump`** — do NOT change it; installed buttons reference it,
+`com.movingavg.switchboard`** — do NOT change it; installed buttons reference it,
 and renaming orphans the user's configured keys. The display name/category are
 "Switchboard"; that's cosmetic and safe to change.
 
@@ -19,7 +19,7 @@ src/
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
 tests/*.test.ts             # vitest; one file per pure module
-com.johnknox.safarijump.sdPlugin/
+com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js
   ui/*.html                 # property inspectors (sdpi-components from CDN)
   layouts/*.json            # custom encoder (touchscreen) layouts
@@ -40,7 +40,7 @@ npm run typecheck     # tsc --noEmit
 npm test              # vitest (pure modules)
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # swiftc helper/scroll.swift -> bin/macos/scroll (rarely needed)
-npx @elgato/cli restart com.johnknox.safarijump   # reload the plugin live
+npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
 ```
 
 **Reload semantics (important):**
@@ -93,7 +93,7 @@ npx @elgato/cli restart com.johnknox.safarijump   # reload the plugin live
 ## Adding a new action
 
 1. Write the pure logic + tests in `src/mac/<feature>.ts` + `tests/<feature>.test.ts`.
-2. Write the action shell in `src/actions/<feature>.ts` (`@action({ UUID: "com.johnknox.safarijump.<x>" })`).
+2. Write the action shell in `src/actions/<feature>.ts` (`@action({ UUID: "com.movingavg.switchboard.<x>" })`).
 3. Register it in `src/plugin.ts`.
 4. Add the action object to `manifest.json` (Keypad or Encoder; custom `layout` if needed).
 5. Add icons under `imgs/actions/<x>/` (and a PI under `ui/` if it has settings).
@@ -102,7 +102,7 @@ npx @elgato/cli restart com.johnknox.safarijump   # reload the plugin live
 
 ## Release-prep checklist (deferred rename — decided 2026-06-27)
 
-The visible name is "Switchboard" but the **UUID stays `com.johnknox.safarijump`**
+The visible name is "Switchboard" but the **UUID stays `com.movingavg.switchboard`**
 for now, because changing it orphans the user's configured buttons. Do the full
 rename as ONE deliberate step right before publishing the repo. It is a
 change. **`scripts/rename.sh` automates all of this AND migrates the already-

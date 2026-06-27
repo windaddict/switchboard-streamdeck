@@ -1,5 +1,5 @@
 {
-	"name": "streamdeck-safari-jump",
+	"name": "switchboard",
 	"version": "1.0.0",
 	"description": "Stream Deck plugin: jump to (or open) a Safari tab, with multi-account Gmail/Calendar presets, custom sites, and private-window targets.",
 	"type": "module",
@@ -7,8 +7,8 @@
 	"scripts": {
 		"build": "rollup -c",
 		"postbuild": "npm run validate",
-		"build:helper": "swiftc -O -o com.johnknox.safarijump.sdPlugin/bin/macos/scroll helper/scroll.swift",
-		"validate": "streamdeck validate com.johnknox.safarijump.sdPlugin",
+		"build:helper": "swiftc -O -o com.movingavg.switchboard.sdPlugin/bin/macos/scroll helper/scroll.swift",
+		"validate": "streamdeck validate com.movingavg.switchboard.sdPlugin",
 		"watch": "rollup -c -w",
 		"test": "vitest run",
 		"test:watch": "vitest",

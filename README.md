@@ -53,12 +53,12 @@ Requires macOS 12+ and the Stream Deck app 6.5+.
 
 ```bash
 # Option A — symlink the .sdPlugin folder into the Stream Deck plugins dir
-ln -s "$(pwd)/com.johnknox.safarijump.sdPlugin" \
+ln -s "$(pwd)/com.movingavg.switchboard.sdPlugin" \
   ~/Library/Application\ Support/com.elgato.StreamDeck/Plugins/
 
 # Option B — use the Elgato CLI
 npx @elgato/cli link
-npx @elgato/cli restart com.johnknox.safarijump
+npx @elgato/cli restart com.movingavg.switchboard
 ```
 
 Then restart the Stream Deck app.
@@ -92,9 +92,9 @@ Elgato Stream Deck SDK v2 · TypeScript / Node · ~182 passing tests · `streamd
 
 ```bash
 npm install
-npm run build      # bundles to com.johnknox.safarijump.sdPlugin/bin/plugin.js
+npm run build      # bundles to com.movingavg.switchboard.sdPlugin/bin/plugin.js
 npm test           # vitest
 npm run typecheck
 ```
 
-> The plugin UUID is still `com.johnknox.safarijump` (kept so existing buttons survive); the public name is **Switchboard**.
+> The plugin UUID is still `com.movingavg.switchboard` (kept so existing buttons survive); the public name is **Switchboard**.

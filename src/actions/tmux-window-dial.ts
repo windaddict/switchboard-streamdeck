@@ -29,7 +29,7 @@ type TmuxWindowDialSettings = {
  * touchscreen shows a session-tinted background with position dots plus the
  * current session and window name, refreshed after every change.
  */
-@action({ UUID: "com.johnknox.safarijump.tmuxwindial" })
+@action({ UUID: "com.movingavg.switchboard.tmuxwindial" })
 export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 	override async onWillAppear(ev: WillAppearEvent<TmuxWindowDialSettings>): Promise<void> {
 		if (ev.action.isDial()) {

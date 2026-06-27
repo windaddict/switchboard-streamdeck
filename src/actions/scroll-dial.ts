@@ -25,7 +25,7 @@ import { runScroll } from "../mac/scroll-runner.js";
  * are applied here (speed → slow, press → jump-to-top) so behaviour does not
  * depend on the property inspector persisting its dropdown defaults.
  */
-@action({ UUID: "com.johnknox.safarijump.scroll" })
+@action({ UUID: "com.movingavg.switchboard.scroll" })
 export class ScrollWindow extends SingletonAction<ScrollSettings> {
 	override async onWillAppear(ev: WillAppearEvent<ScrollSettings>): Promise<void> {
 		if (ev.action.isDial()) {

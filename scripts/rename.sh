@@ -58,17 +58,15 @@ run "mkdir -p \"$BACKUP_DIR\""
 run "cp -R \"$PROFILES_DIR\" \"$BACKUP_DIR/ProfilesV3\""
 run "cp -R \"$REPO/$OLD_ID.sdPlugin\" \"$BACKUP_DIR/$OLD_ID.sdPlugin\""
 
-# --- 2. rewrite the UUID in the repo source ---------------------------------
-say "2. Rewriting UUID in repo files"
-for f in \
-	"$REPO/$OLD_ID.sdPlugin/manifest.json" \
-	"$REPO/rollup.config.mjs" \
-	"$REPO/package.json" \
-	"$REPO/tests/scroll-runner.test.ts" \
-	"$REPO/README.md" \
-	"$REPO/CLAUDE.md"; do
-	[ -f "$f" ] && run "sed -i '' \"s/$OLD_ID/$NEW_ID/g\" \"$f\""
-done
+# --- 2. rewrite the UUID EVERYWHERE in the repo ------------------------------
+# Crucially this includes the @action decorators in src/actions/*.ts — if the
+# manifest and the compiled code disagree on a UUID, the SDK rejects the plugin
+# and Stream Deck disables it. Replace across all tracked files (not just a
+# hand-picked list), excluding node_modules and .git.
+say "2. Rewriting UUID across the repo (manifest, src decorators, configs, tests, docs)"
+while IFS= read -r f; do
+	run "sed -i '' \"s/$OLD_ID/$NEW_ID/g\" \"$f\""
+done < <(grep -rl "$OLD_ID" "$REPO" --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null)
 # cosmetic: npm package name
 run "sed -i '' 's/\"streamdeck-safari-jump\"/\"switchboard\"/' \"$REPO/package.json\""
 

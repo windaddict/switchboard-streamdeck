@@ -24,7 +24,7 @@ type TmuxPaneSettings = {
  * copy-mode so the cursor returns to the live prompt when the pane is scrolled
  * up. Operates on tmux's current pane (no per-button config needed).
  */
-@action({ UUID: "com.johnknox.safarijump.tmuxpane" })
+@action({ UUID: "com.movingavg.switchboard.tmuxpane" })
 export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 	override async onDialRotate(ev: DialRotateEvent<TmuxPaneSettings>): Promise<void> {
 		const direction = paneDirection(ev.payload.ticks);

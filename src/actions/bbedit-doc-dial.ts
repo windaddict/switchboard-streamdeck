@@ -28,7 +28,7 @@ type BBEditDocSettings = {
  * in the order chosen in the property inspector. The touchscreen shows the
  * active document name.
  */
-@action({ UUID: "com.johnknox.safarijump.bbeditdoc" })
+@action({ UUID: "com.movingavg.switchboard.bbeditdoc" })
 export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	override async onWillAppear(ev: WillAppearEvent<BBEditDocSettings>): Promise<void> {
 		if (ev.action.isDial()) {

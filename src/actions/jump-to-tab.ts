@@ -8,7 +8,7 @@ import { resolveTarget, type TargetSettings } from "../safari/targets.js";
  * Jump to (or open) a Safari tab. Settings are per-key, so there is no shared
  * target list to clobber — each button owns its own target.
  */
-@action({ UUID: "com.johnknox.safarijump.jump" })
+@action({ UUID: "com.movingavg.switchboard.jump" })
 export class JumpToTab extends SingletonAction<TargetSettings> {
 	override async onKeyDown(ev: KeyDownEvent<TargetSettings>): Promise<void> {
 		const target = resolveTarget(ev.payload.settings ?? {});

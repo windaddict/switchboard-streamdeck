@@ -41,7 +41,7 @@ const POLL_MS = 10_000;
  * the key shows a ✓ when a matching file exists or a ✗ when none does, polled
  * live so it reflects new files without a press.
  */
-@action({ UUID: "com.johnknox.safarijump.openfile" })
+@action({ UUID: "com.movingavg.switchboard.openfile" })
 export class OpenFile extends SingletonAction<OpenFileSettings> {
 	private readonly visible = new Map<string, KeyAction<OpenFileSettings>>();
 	private timer?: ReturnType<typeof setInterval>;

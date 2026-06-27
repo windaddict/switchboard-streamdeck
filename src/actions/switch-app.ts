@@ -8,7 +8,7 @@ import { type AppSettings, buildAppScript, resolveApp } from "../mac/apps.js";
  * pattern. `activate` both launches (if needed) and switches; with a title
  * pattern, System Events raises the first matching window.
  */
-@action({ UUID: "com.johnknox.safarijump.switchapp" })
+@action({ UUID: "com.movingavg.switchboard.switchapp" })
 export class SwitchApp extends SingletonAction<AppSettings> {
 	override async onKeyDown(ev: KeyDownEvent<AppSettings>): Promise<void> {
 		const app = resolveApp(ev.payload.settings ?? {});

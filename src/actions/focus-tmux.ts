@@ -36,7 +36,7 @@ type FocusTmuxSettings = {
  * live from `tmux list-windows`; the target is re-resolved at press time so it
  * survives tmux layout changes.
  */
-@action({ UUID: "com.johnknox.safarijump.tmux" })
+@action({ UUID: "com.movingavg.switchboard.tmux" })
 export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	override async onKeyDown(ev: KeyDownEvent<FocusTmuxSettings>): Promise<void> {
 		const target = (ev.payload.settings.target ?? "").trim();

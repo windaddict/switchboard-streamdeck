@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { scrollHelperPath, runScroll, type ExecFileLike } from "../src/mac/scroll-runner.js";
 
-const BASE = "file:///Users/x/Plugins/com.johnknox.safarijump.sdPlugin/bin/plugin.js";
-const EXPECTED_BIN = "/Users/x/Plugins/com.johnknox.safarijump.sdPlugin/bin/macos/scroll";
+const BASE = "file:///Users/x/Plugins/com.movingavg.switchboard.sdPlugin/bin/plugin.js";
+const EXPECTED_BIN = "/Users/x/Plugins/com.movingavg.switchboard.sdPlugin/bin/macos/scroll";
 
 describe("scrollHelperPath", () => {
 	it("resolves the helper next to the bundle under macos/scroll", () => {
