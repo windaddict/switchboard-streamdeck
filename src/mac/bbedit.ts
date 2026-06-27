@@ -1,8 +1,10 @@
 /**
  * Pure logic for the BBEdit document dial: move back and forth between the
- * documents open in BBEdit's front text window. BBEdit exposes `documents` and
- * a read-only `active document` per text window; the `select` command makes a
- * document active. Scripts take no user input, so there is nothing to escape.
+ * documents open in BBEdit's front text window. We cycle `text documents` (not
+ * `documents`) so non-editor entries — project/folder items that show
+ * "(no editor)" — are skipped. BBEdit exposes a read-only `active document` per
+ * text window; the `select` command makes a document active. Scripts take no
+ * user input, so there is nothing to escape.
  */
 
 import type { RotationDirection } from "./rotation.js";
@@ -22,7 +24,7 @@ export function bbeditCycleDocScript(direction: Exclude<RotationDirection, "none
 	return `tell application "BBEdit"
 	if (count of text windows) is 0 then return ""
 	set w to text window 1
-	set docs to documents of w
+	set docs to text documents of w
 	set n to count of docs
 	if n is 0 then return ""
 	set adoc to active document of w

@@ -9,6 +9,10 @@ describe("BBEDIT_CURRENT_DOC_SCRIPT", () => {
 });
 
 describe("bbeditCycleDocScript", () => {
+	it("cycles text documents only (skips non-editor project/folder items)", () => {
+		expect(bbeditCycleDocScript("next")).toContain("set docs to text documents of w");
+		expect(bbeditCycleDocScript("next")).not.toContain("set docs to documents of w");
+	});
 	it("next steps forward (+1) and selects the new document", () => {
 		const s = bbeditCycleDocScript("next");
 		expect(s).toContain("set t to idx + (1)");
