@@ -5,3 +5,5 @@ dist/
 com.johnknox.safarijump.sdPlugin/bin/plugin.js
 com.johnknox.safarijump.sdPlugin/bin/plugin.js.map
 com.johnknox.safarijump.sdPlugin/logs/
+
+coverage/
