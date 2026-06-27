@@ -1,10 +1,12 @@
 # Switchboard — Stream Deck plugin (developer guide)
 
 A macOS Stream Deck plugin (public name **Switchboard**, by Moving Average Labs).
-Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID stays
-`com.movingavg.switchboard`** — do NOT change it; installed buttons reference it,
-and renaming orphans the user's configured keys. The display name/category are
-"Switchboard"; that's cosmetic and safe to change.
+Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
+`com.movingavg.switchboard`** (renamed from the legacy `com.johnknox.safarijump`).
+Don't change it casually — installed buttons reference it, so a change orphans
+configured keys unless migrated. `scripts/rename.sh` performs such a migration
+(it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
+that script before ever renaming again. Ten actions today.
 
 ## Layout
 
@@ -100,32 +102,30 @@ npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
 6. `npm run typecheck && npm test && npm run build`, then `npx @elgato/cli restart …`.
    **Quit + relaunch Stream Deck** so the new action shows in the list.
 
-## Release-prep checklist (deferred rename — decided 2026-06-27)
+## Rename — COMPLETED (legacy `com.johnknox.safarijump` → `com.movingavg.switchboard`)
 
-The visible name is "Switchboard" but the **UUID stays `com.movingavg.switchboard`**
-for now, because changing it orphans the user's configured buttons. Do the full
-rename as ONE deliberate step right before publishing the repo. It is a
-change. **`scripts/rename.sh` automates all of this AND migrates the already-
-configured buttons** (it rewrites the action UUIDs in the Stream Deck profile
-store, so settings are preserved — no re-configuring). Quit Stream Deck, then:
-`scripts/rename.sh --dry-run` to preview, `scripts/rename.sh --yes` to apply.
+The full rename is **done** (UUID + all action UUIDs, the `.sdPlugin` folder,
+`rollup.config.mjs`, `package.json` name, the repo directory, and the Stream Deck
+symlink). `scripts/rename.sh` performed it and **migrated the configured buttons**
+by rewriting the action UUIDs in the Stream Deck profile store (settings preserved
+— no re-configuring). The script remains as the tool to re-run if the id ever
+changes again: quit Stream Deck, then `scripts/rename.sh --dry-run` to preview,
+`scripts/rename.sh --yes` to apply.
 
-The script covers steps 1–8 below; they're kept here as the manual reference.
-Target id `com.movingavg.switchboard`:
-
-1. `manifest.json` — `UUID` and every action `UUID` (`.jump`, `.scroll`, … 9 of them).
-2. The `.sdPlugin` folder name → `com.movingavg.switchboard.sdPlugin`.
-3. `rollup.config.mjs` — the `sdPlugin` constant (output path).
-4. `package.json` — `name` → `switchboard`; `build:helper` + `validate` script paths.
-5. `tests/scroll-runner.test.ts` — `BASE` / `EXPECTED_BIN` path literals.
-6. `README.md` (install commands + UUID note) and this `CLAUDE.md`'s self-references.
-7. Repo directory `streamdeck-safari-jump` → `switchboard`.
-8. Re-create the Stream Deck Plugins **symlink** to the new folder; quit + relaunch SD.
-9. (Optional polish) add a `coverage` npm script, top off the ~6 defensive
-   branches, and add a thin action-level test layer with a mocked SDK.
+What a UUID rename touches (the script covers all of these — reference list):
+1. `manifest.json` — plugin `UUID` + every action `UUID` (10 actions).
+2. **`src/actions/*.ts` `@action({ UUID })` decorators** — easy to forget; a
+   manifest/code UUID mismatch makes the SDK reject the plugin and Stream Deck
+   *disables* it (recover with a full SD quit+relaunch). The script now sed-replaces
+   across the whole repo (`grep -rl`) precisely to avoid this.
+3. The `.sdPlugin` folder name, `rollup.config.mjs` const, `package.json` name +
+   `build:helper`/`validate` paths, `tests/scroll-runner.test.ts` path literals,
+   README/CLAUDE self-references, the repo directory, and the SD Plugins symlink.
 
 `import.meta.url` resolves the scroll helper relative to the bundle, so no code
-change is needed there once the folder is renamed.
+change is needed there once the folder is renamed. After renaming the live folder,
+Stream Deck caches the old plugin path — **fully quit + relaunch SD** so it
+re-resolves the symlink (a CLI `restart` re-uses the stale path).
 
 ## Context
 
