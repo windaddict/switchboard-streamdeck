@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>BBEdit Documents</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Traverse by">
+			<sdpi-select setting="order" default="window">
+				<option value="window">Open order (window)</option>
+				<option value="alpha">Alphabetical (A→Z)</option>
+				<option value="recent">Recently changed first</option>
+				<option value="oldest">Least recently changed first</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Rotate to move between the text documents in BBEdit's front window.
+			"Open order" follows BBEdit's natural document order; the date options
+			sort by each file's last-modified time. Non-editor project/folder items
+			are skipped.
+		</div>
+	</body>
+</html>

@@ -151,6 +151,7 @@
 			"UUID": "com.johnknox.safarijump.bbeditdoc",
 			"Icon": "imgs/actions/bbeditdoc/icon",
 			"Tooltip": "Dial: move between the open documents in BBEdit's front window.",
+			"PropertyInspectorPath": "ui/bbedit-doc.html",
 			"Controllers": ["Encoder"],
 			"Encoder": {
 				"layout": "$B1",

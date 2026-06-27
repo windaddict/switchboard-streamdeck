@@ -7,14 +7,26 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
-import { BBEDIT_CURRENT_DOC_SCRIPT, bbeditCycleDocScript } from "../mac/bbedit.js";
+import {
+	BBEDIT_CURRENT_DOC_SCRIPT,
+	BBEDIT_LIST_SCRIPT,
+	type BBEditOrder,
+	bbeditSelectScript,
+	nextDocId,
+	orderedDocs,
+	parseBBEditDocs,
+} from "../mac/bbedit.js";
 import { rotationDirection } from "../mac/rotation.js";
 
-type BBEditDocSettings = Record<string, never>;
+type BBEditDocSettings = {
+	/** How the dial traverses documents. Defaults to "window" (natural order). */
+	order?: BBEditOrder;
+};
 
 /**
- * Dial action: move back and forth between the documents open in BBEdit's front
- * text window. The touchscreen shows the active document name.
+ * Dial action: move between the text documents open in BBEdit's front window,
+ * in the order chosen in the property inspector. The touchscreen shows the
+ * active document name.
  */
 @action({ UUID: "com.johnknox.safarijump.bbeditdoc" })
 export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
@@ -32,25 +44,28 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		const direction = rotationDirection(ev.payload.ticks);
 		if (direction === "none") return;
 
-		const result = await runAppleScript(bbeditCycleDocScript(direction));
-		if (!result.ok) {
-			streamDeck.logger.error(
-				`BBEdit cycle failed (${result.code}): ${result.stderr || "no stderr"}`,
-			);
-			if (result.code === "permission-denied") {
-				streamDeck.logger.error(
-					"Grant: System Settings > Privacy & Security > Automation > Stream Deck > enable BBEdit.",
-				);
-			}
-			await this.render(ev.action, this.hint(result.code));
+		const list = await runAppleScript(BBEDIT_LIST_SCRIPT);
+		if (!list.ok) {
+			this.logFailure("list", list.code, list.stderr);
+			await this.render(ev.action, this.hint(list.code));
 			return;
 		}
-		await this.render(ev.action, result.stdout);
-	}
 
-	/** Short touchscreen hint when a call fails, so the dial isn't silently dead. */
-	private hint(code: string): string {
-		return code === "permission-denied" ? "grant access" : "no BBEdit?";
+		const { docs, activeId } = parseBBEditDocs(list.stdout);
+		const ordered = orderedDocs(docs, ev.payload.settings.order ?? "window");
+		const targetId = nextDocId(ordered, activeId, direction);
+		if (targetId === null) {
+			await this.render(ev.action, "no docs");
+			return;
+		}
+
+		const selected = await runAppleScript(bbeditSelectScript(targetId));
+		if (!selected.ok) {
+			this.logFailure("select", selected.code, selected.stderr);
+			await this.render(ev.action, this.hint(selected.code));
+			return;
+		}
+		await this.render(ev.action, selected.stdout);
 	}
 
 	private async render(dial: DialAction<BBEditDocSettings>, docName: string): Promise<void> {
@@ -59,5 +74,18 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}
+	}
+
+	private logFailure(stage: string, code: string, stderr: string): void {
+		streamDeck.logger.error(`BBEdit ${stage} failed (${code}): ${stderr || "no stderr"}`);
+		if (code === "permission-denied") {
+			streamDeck.logger.error(
+				"Grant: System Settings > Privacy & Security > Automation > Stream Deck > enable BBEdit.",
+			);
+		}
+	}
+
+	private hint(code: string): string {
+		return code === "permission-denied" ? "grant access" : "no BBEdit?";
 	}
 }
