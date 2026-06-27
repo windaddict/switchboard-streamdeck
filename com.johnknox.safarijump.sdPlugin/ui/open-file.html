@@ -7,7 +7,14 @@
 	</head>
 	<body>
 		<sdpi-item label="Directory">
-			<sdpi-textfield setting="directory" placeholder="/Users/you/Downloads"></sdpi-textfield>
+			<sdpi-textfield setting="directory" id="directoryField" placeholder="/Users/you/Downloads"></sdpi-textfield>
+			<div style="margin-top: 4px;">
+				<button type="button" id="pickDirectory">Choose…</button>
+				<!-- webkitdirectory => native macOS folder dialog. We read the
+				     absolute path of a file inside the chosen folder and strip
+				     the relative portion to recover the folder path. -->
+				<input type="file" id="pickDirectoryInput" webkitdirectory style="display: none;" />
+			</div>
 		</sdpi-item>
 
 		<sdpi-item label="Pattern">
@@ -35,7 +42,13 @@
 		</sdpi-item>
 
 		<sdpi-item label="App" id="row-app">
-			<sdpi-textfield setting="app" placeholder="App name or /path/To/App.app"></sdpi-textfield>
+			<sdpi-textfield setting="app" id="appField" placeholder="App name or /path/To/App.app"></sdpi-textfield>
+			<div style="margin-top: 4px;">
+				<button type="button" id="pickApp">Choose…</button>
+				<!-- Native file dialog filtered to .app bundles. In the Stream
+				     Deck webview the chosen File exposes its absolute path. -->
+				<input type="file" id="pickAppInput" accept=".app,application/*" style="display: none;" />
+			</div>
 		</sdpi-item>
 
 		<sdpi-item label="Status icon">
@@ -57,6 +70,93 @@
 			openWithEl.addEventListener("valuechange", (e) => applyVisibility(e.detail?.value ?? openWithEl.value));
 			openWithEl.addEventListener("change", () => applyVisibility(openWithEl.value));
 			document.addEventListener("DOMContentLoaded", () => applyVisibility(openWithEl.value || "default"));
+
+			// --- Native open-dialog pickers -------------------------------
+			// The Stream Deck property-inspector webview exposes the chosen
+			// File's absolute filesystem path on `file.path` (the same
+			// behavior sdpi-file relies on to store an absolute path). We use
+			// raw <input type="file"> elements so we can keep the existing
+			// sdpi-textfield for manual entry and just fill it in.
+
+			const sd = window.SDPIComponents?.streamDeckClient;
+
+			// Persist a single setting key, preserving all other settings, and
+			// reflect the value into the visible sdpi-textfield.
+			async function writeSetting(key, value, fieldEl) {
+				if (!sd) return;
+				let current = {};
+				try {
+					const res = await sd.getSettings();
+					current = (res && res.settings) ? res.settings : (res || {});
+				} catch (_) {
+					/* fall through with empty current */
+				}
+				await sd.setSettings({ ...current, [key]: value });
+				// Reflect into the visible field so the user sees the result.
+				if (fieldEl) {
+					try {
+						fieldEl.value = value;
+					} catch (_) {}
+					fieldEl.dispatchEvent(new Event("input", { bubbles: true }));
+					fieldEl.dispatchEvent(new Event("change", { bubbles: true }));
+				}
+			}
+
+			// Recover the chosen folder's absolute path from a webkitdirectory
+			// pick. files[0].path is the absolute path of a file *inside* the
+			// chosen folder; webkitRelativePath is that same file relative to
+			// the chosen folder root, e.g. "MyFolder/sub/file.txt". The chosen
+			// folder = abs with the relative tail removed, but keeping the
+			// first relative segment (the folder's own name).
+			//   abs = "/Users/me/Docs/MyFolder/sub/file.txt"
+			//   rel = "MyFolder/sub/file.txt"          (first seg = "MyFolder")
+			//   strip "sub/file.txt" => "/Users/me/Docs/MyFolder"
+			function deriveFolderPath(file) {
+				const abs = file.path || "";
+				const rel = file.webkitRelativePath || "";
+				if (abs && rel && abs.endsWith("/" + rel)) {
+					const tail = rel.split("/").slice(1).join("/"); // rel minus folder name
+					if (tail) {
+						// Remove the tail (and the slash before it) from the end.
+						return abs.slice(0, abs.length - (tail.length + 1)).replace(/\/+$/, "");
+					}
+					// rel was just "<folder>/file" with no subdirs -> parent of file.
+					return abs.replace(/\/[^/]*$/, "");
+				}
+				// Fallback: parent directory of whatever absolute path we have.
+				if (abs.includes("/")) return abs.replace(/\/[^/]*$/, "");
+				return abs;
+			}
+
+			// Directory picker ---------------------------------------------
+			const pickDirectory = document.getElementById("pickDirectory");
+			const pickDirectoryInput = document.getElementById("pickDirectoryInput");
+			const directoryField = document.getElementById("directoryField");
+			if (pickDirectory && pickDirectoryInput) {
+				pickDirectory.addEventListener("click", () => pickDirectoryInput.click());
+				pickDirectoryInput.addEventListener("change", () => {
+					const file = pickDirectoryInput.files && pickDirectoryInput.files[0];
+					if (!file) return;
+					const folder = deriveFolderPath(file);
+					if (folder) writeSetting("directory", folder, directoryField);
+					pickDirectoryInput.value = ""; // allow re-picking same folder
+				});
+			}
+
+			// App picker ----------------------------------------------------
+			const pickApp = document.getElementById("pickApp");
+			const pickAppInput = document.getElementById("pickAppInput");
+			const appField = document.getElementById("appField");
+			if (pickApp && pickAppInput) {
+				pickApp.addEventListener("click", () => pickAppInput.click());
+				pickAppInput.addEventListener("change", () => {
+					const file = pickAppInput.files && pickAppInput.files[0];
+					if (!file) return;
+					const path = file.path || "";
+					if (path) writeSetting("app", path, appField);
+					pickAppInput.value = "";
+				});
+			}
 		</script>
 	</body>
 </html>
