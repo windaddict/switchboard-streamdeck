@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Focus tmux Window</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="tmux window">
+			<sdpi-select
+				setting="target"
+				datasource="getTmuxWindows"
+				loading="Reading tmux…"
+				hot-reload
+			></sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="On press">
+			<sdpi-checkbox setting="switchWindow" label="Also switch tmux to this window" default="true"></sdpi-checkbox>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Pick a window by name; pressing raises the iTerm2 window running that
+			tmux session. Unchecking the box only raises the window without changing
+			the active tmux window. The list reads live from <code>tmux</code>; reopen
+			this inspector to refresh.
+		</div>
+	</body>
+</html>

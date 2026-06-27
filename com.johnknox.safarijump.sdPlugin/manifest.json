@@ -73,6 +73,20 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Focus tmux Window",
+			"UUID": "com.johnknox.safarijump.tmux",
+			"Icon": "imgs/actions/tmux/icon",
+			"Tooltip": "Raise the iTerm2 window for a tmux window, and optionally switch to it.",
+			"PropertyInspectorPath": "ui/focus-tmux.html",
+			"Controllers": ["Keypad"],
+			"States": [
+				{
+					"Image": "imgs/actions/tmux/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }
