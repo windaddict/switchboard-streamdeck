@@ -126,6 +126,44 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Cycle App Windows",
+			"UUID": "com.johnknox.safarijump.appwindows",
+			"Icon": "imgs/actions/appwindows/icon",
+			"Tooltip": "Dial: cycle the windows of the frontmost application.",
+			"Controllers": ["Encoder"],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Previous / next window"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/appwindows/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "BBEdit Documents",
+			"UUID": "com.johnknox.safarijump.bbeditdoc",
+			"Icon": "imgs/actions/bbeditdoc/icon",
+			"Tooltip": "Dial: move between the open documents in BBEdit's front window.",
+			"Controllers": ["Encoder"],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Previous / next document"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/bbeditdoc/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

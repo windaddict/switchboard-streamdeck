@@ -1,5 +1,7 @@
 import streamDeck, { LogLevel } from "@elgato/streamdeck";
 
+import { CycleAppWindows } from "./actions/app-windows-dial.js";
+import { BBEditDocDial } from "./actions/bbedit-doc-dial.js";
 import { FocusTmuxWindow } from "./actions/focus-tmux.js";
 import { JumpToTab } from "./actions/jump-to-tab.js";
 import { ScrollWindow } from "./actions/scroll-dial.js";
@@ -15,5 +17,7 @@ streamDeck.actions.registerAction(new SwitchApp());
 streamDeck.actions.registerAction(new FocusTmuxWindow());
 streamDeck.actions.registerAction(new TmuxPaneDial());
 streamDeck.actions.registerAction(new CycleTmuxWindow());
+streamDeck.actions.registerAction(new CycleAppWindows());
+streamDeck.actions.registerAction(new BBEditDocDial());
 
 streamDeck.connect();
