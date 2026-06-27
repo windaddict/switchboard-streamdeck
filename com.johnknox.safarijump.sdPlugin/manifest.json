@@ -164,6 +164,20 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Open File",
+			"UUID": "com.johnknox.safarijump.openfile",
+			"Icon": "imgs/actions/openfile/icon",
+			"Tooltip": "Open the newest / latest / pattern-matched file in a folder, with a live ✓/✗ status badge.",
+			"PropertyInspectorPath": "ui/open-file.html",
+			"Controllers": ["Keypad"],
+			"States": [
+				{
+					"Image": "imgs/actions/openfile/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

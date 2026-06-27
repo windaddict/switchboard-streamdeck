@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Open File</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Directory">
+			<sdpi-textfield setting="directory" placeholder="/Users/you/Downloads"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="Pattern">
+			<sdpi-textfield setting="pattern" default="*" placeholder="*  or  *.md  or  report-*.pdf"></sdpi-textfield>
+			<div style="font-size: 11px; color: #999; margin-top: 4px;">
+				Glob over file names: <code>*</code> = any text, <code>?</code> = one
+				character. Anchored (e.g. <code>*.md</code> matches only <code>.md</code>).
+			</div>
+		</sdpi-item>
+
+		<sdpi-item label="Pick">
+			<sdpi-select setting="pick" default="modified">
+				<option value="modified">Latest modified</option>
+				<option value="created">Newest created</option>
+				<option value="name">Last by name</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="Open with">
+			<sdpi-select setting="openWith" id="openWith" default="default">
+				<option value="default">Default app</option>
+				<option value="bbedit">BBEdit</option>
+				<option value="app">Other app…</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="App" id="row-app">
+			<sdpi-textfield setting="app" placeholder="App name or /path/To/App.app"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="Status icon">
+			<sdpi-checkbox setting="statusIndicator" label="Show ✓ / ✗ when a match exists" default="true"></sdpi-checkbox>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Press to open the chosen file. With the status icon on, the key shows a
+			green check when a matching file exists or a red ✗ when none does
+			(re-checked every few seconds).
+		</div>
+
+		<script>
+			const openWithEl = document.getElementById("openWith");
+			const rowApp = document.getElementById("row-app");
+			function applyVisibility(v) {
+				rowApp.style.display = v === "app" ? "" : "none";
+			}
+			openWithEl.addEventListener("valuechange", (e) => applyVisibility(e.detail?.value ?? openWithEl.value));
+			openWithEl.addEventListener("change", () => applyVisibility(openWithEl.value));
+			document.addEventListener("DOMContentLoaded", () => applyVisibility(openWithEl.value || "default"));
+		</script>
+	</body>
+</html>

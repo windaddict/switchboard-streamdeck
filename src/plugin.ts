@@ -4,6 +4,7 @@ import { CycleAppWindows } from "./actions/app-windows-dial.js";
 import { BBEditDocDial } from "./actions/bbedit-doc-dial.js";
 import { FocusTmuxWindow } from "./actions/focus-tmux.js";
 import { JumpToTab } from "./actions/jump-to-tab.js";
+import { OpenFile } from "./actions/open-file.js";
 import { ScrollWindow } from "./actions/scroll-dial.js";
 import { SwitchApp } from "./actions/switch-app.js";
 import { CycleTmuxWindow } from "./actions/tmux-window-dial.js";
@@ -19,5 +20,6 @@ streamDeck.actions.registerAction(new TmuxPaneDial());
 streamDeck.actions.registerAction(new CycleTmuxWindow());
 streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
+streamDeck.actions.registerAction(new OpenFile());
 
 streamDeck.connect();
