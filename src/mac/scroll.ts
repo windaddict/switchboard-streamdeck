@@ -109,8 +109,17 @@ export function jumpTopPlan(): KeystrokePlan {
 }
 
 /**
+ * Seconds to pause between consecutive synthetic key presses. macOS coalesces
+ * (drops) System Events key codes fired back-to-back with no gap, which made
+ * `linesPerTick` appear to have no effect — 6 presses scrolled the same as 1.
+ * A small delay lets each press register so the count actually scales.
+ */
+const KEYSTROKE_DELAY_SECONDS = 0.02;
+
+/**
  * Render a {@link KeystrokePlan} into an AppleScript that sends its key code
- * `repeats` times via System Events.
+ * `repeats` times via System Events, pausing briefly between presses so they
+ * are not coalesced.
  *
  * If `repeats <= 0`, returns a no-op script containing no `key code` line.
  * Otherwise emits a `repeat` loop. The `using {...}` clause is included only
@@ -130,6 +139,7 @@ export function buildKeystrokeScript(plan: KeystrokePlan): string {
 		'tell application "System Events"',
 		`\trepeat ${plan.repeats} times`,
 		`\t\tkey code ${plan.keyCode}${using}`,
+		`\t\tdelay ${KEYSTROKE_DELAY_SECONDS}`,
 		"\tend repeat",
 		"end tell",
 		'return "ok"',

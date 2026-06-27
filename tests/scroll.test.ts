@@ -104,4 +104,14 @@ describe("buildKeystrokeScript", () => {
 		const script = buildKeystrokeScript({ keyCode: 125, repeats: 0, modifiers: [] });
 		expect(script).not.toContain("key code");
 	});
+
+	it("inserts a delay inside the loop so rapid synthetic keys are not coalesced", () => {
+		const script = buildKeystrokeScript({ keyCode: 125, repeats: 3, modifiers: [] });
+		const lines = script.split("\n");
+		const start = lines.findIndex((l) => l.includes("repeat 3 times"));
+		const end = lines.findIndex((l) => l.includes("end repeat"));
+		const body = lines.slice(start + 1, end).join("\n");
+		expect(body).toContain("key code 125");
+		expect(body).toContain("delay ");
+	});
 });
