@@ -15,19 +15,19 @@
 
 		<sdpi-item label="Default speed">
 			<sdpi-select setting="speed" default="slow">
-				<option value="slow">Slow (arrow keys)</option>
-				<option value="fast">Fast (page up/down)</option>
+				<option value="slow">Slow (fine)</option>
+				<option value="fast">Fast (5× lines)</option>
 			</sdpi-select>
 		</sdpi-item>
 
 		<sdpi-item label="Lines per tick">
-			<sdpi-textfield setting="linesPerTick" default="3" placeholder="slow-mode steps per dial tick"></sdpi-textfield>
+			<sdpi-textfield setting="linesPerTick" default="3" placeholder="lines scrolled per dial tick (fast = 5×)"></sdpi-textfield>
 		</sdpi-item>
 
 		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
-			Rotate to scroll the frontmost window. Sending keystrokes needs
-			Accessibility access for Stream Deck (System Settings → Privacy &
-			Security → Accessibility).
+			Rotate to scroll the frontmost window with a real scroll-wheel event.
+			Posting scroll events needs Accessibility access for Stream Deck
+			(System Settings → Privacy & Security → Accessibility).
 		</div>
 	</body>
 </html>
