@@ -23,10 +23,11 @@ export const FRONT_WINDOW_SCRIPT = `tell application "System Events"
 	return appName & "|" & (name of front window of p)
 end tell`;
 
-export interface FrontWindow {
+// A `type` (not interface) so it satisfies JsonValue when used in settings.
+export type FrontWindow = {
 	app: string;
 	title: string;
-}
+};
 
 /** Parse `app|title` (title may contain further `|`, kept intact). */
 export function parseFrontWindow(output: string): FrontWindow {

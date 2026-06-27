@@ -179,6 +179,20 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Window Ring",
+			"UUID": "com.movingavg.switchboard.windowring",
+			"Icon": "imgs/actions/windowring/icon",
+			"Tooltip": "Long-press to add/remove the current window; tap to cycle through your saved windows.",
+			"PropertyInspectorPath": "ui/window-ring.html",
+			"Controllers": ["Keypad"],
+			"States": [
+				{
+					"Image": "imgs/actions/windowring/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

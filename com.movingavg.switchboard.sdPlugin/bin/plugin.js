@@ -969,7 +969,7 @@ function buildOpenFileImage(status) {
 }
 
 /** How often the status badge re-checks the directory (ms). */
-const POLL_MS = 10_000;
+const POLL_MS$1 = 10_000;
 /**
  * Open the newest / latest-modified / pattern-matched file in a directory with
  * the default app, BBEdit, or a chosen app. When the status indicator is on,
@@ -998,7 +998,7 @@ let OpenFile = (() => {
                 return;
             this.visible.set(ev.action.id, ev.action);
             if (this.timer === undefined) {
-                this.timer = setInterval(() => void this.refreshAll(), POLL_MS);
+                this.timer = setInterval(() => void this.refreshAll(), POLL_MS$1);
             }
             await this.updateStatus(ev.action, ev.payload.settings);
         }
@@ -1438,7 +1438,7 @@ function sessionHue(session) {
     }
     return h;
 }
-function round(n) {
+function round$1(n) {
     return Math.round(n * 10) / 10;
 }
 /** Escape text for safe embedding inside SVG/XML. */
@@ -1459,7 +1459,7 @@ function dotsSvg(count, activeIndex, hue) {
     const y = 86;
     let out = "";
     for (let i = 0; i < count; i++) {
-        const cx = round(startX + i * gap);
+        const cx = round$1(startX + i * gap);
         const active = i === activeIndex;
         const r = active ? 4 : 2.5;
         const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
@@ -1640,6 +1640,191 @@ let TmuxPaneDial = (() => {
     return _classThis;
 })();
 
+/**
+ * Pure logic for the "window ring" dial/key: a user-curated list of windows you
+ * tap through. A window is identified by (app, title) — macOS exposes no stable
+ * window id via AppleScript, so a window whose title changes can drift out of
+ * the ring (documented limitation). Focusing reuses `apps.ts` (activate + raise
+ * the window whose title matches); the frontmost window is read via
+ * `app-windows.ts` `FRONT_WINDOW_SCRIPT`.
+ */
+/** Two ring entries are the same window when app and title both match. */
+function sameWindow(a, b) {
+    return a.app === b.app && a.title === b.title;
+}
+/** Index of a window in the ring, or -1. */
+function indexOfWindow(list, w) {
+    return list.findIndex((x) => sameWindow(x, w));
+}
+/**
+ * Toggle a window's membership: remove it if present, otherwise append it.
+ * A window with an empty app (no frontmost window) is never added.
+ */
+function toggleWindow(list, w) {
+    if (!w.app)
+        return { list, added: false };
+    const i = indexOfWindow(list, w);
+    if (i >= 0)
+        return { list: list.filter((_, idx) => idx !== i), added: false };
+    return { list: [...list, w], added: true };
+}
+/**
+ * Next cursor position (round-robin). A cursor of -1 (or non-integer) yields 0,
+ * so the first tap lands on the first window. Negative values wrap correctly.
+ */
+function nextIndex(len, cursor) {
+    if (len <= 0)
+        return 0;
+    const c = Number.isInteger(cursor) ? cursor : -1;
+    return (((c + 1) % len) + len) % len;
+}
+function round(n) {
+    return Math.round(n * 10) / 10;
+}
+/**
+ * Build the 72×72 key image: a stacked-windows glyph, the window count, and a
+ * ring that turns green when the current frontmost window is in the list.
+ */
+function buildRingImage(count, currentInList) {
+    const ring = currentInList ? "#2ecc71" : "#5a5a5e";
+    const label = String(count);
+    const fontSize = label.length > 1 ? 24 : 28;
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
+        `<rect width="72" height="72" rx="12" fill="#1d1d1f"/>` +
+        `<rect x="4" y="4" width="64" height="64" rx="10" fill="none" stroke="${ring}" stroke-width="4"/>` +
+        `<rect x="20" y="14" width="24" height="18" rx="3" fill="#3a3a3c" stroke="#7a7a7e" stroke-width="2"/>` +
+        `<rect x="28" y="22" width="24" height="18" rx="3" fill="#0a84ff" stroke="#3aa0ff" stroke-width="2"/>` +
+        `<text x="36" y="${round(60)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+        `font-size="${fontSize}" font-weight="700" fill="#ffffff">${label}</text>` +
+        `</svg>`);
+}
+
+/** Press held this long (ms) counts as a long press (add/remove). */
+const LONG_PRESS_MS = 500;
+/** How often the key icon re-checks whether the front window is in the ring. */
+const POLL_MS = 3000;
+/**
+ * A user-curated ring of windows. Long-press adds the frontmost window (or
+ * removes it if already in the ring); a short tap focuses the next window. The
+ * key shows the count and a green ring when the current window is a member.
+ */
+let WindowRing = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.windowring" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        downAt = new Map();
+        visible = new Map();
+        timer;
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => void this.refreshAll(), POLL_MS);
+            }
+            await this.updateIcon(ev.action, ev.payload.settings.windows ?? []);
+        }
+        onWillDisappear(ev) {
+            this.visible.delete(ev.action.id);
+            this.downAt.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        onKeyDown(ev) {
+            this.downAt.set(ev.action.id, Date.now());
+        }
+        async onKeyUp(ev) {
+            const down = this.downAt.get(ev.action.id);
+            this.downAt.delete(ev.action.id);
+            const isLong = down !== undefined && Date.now() - down >= LONG_PRESS_MS;
+            if (isLong) {
+                await this.handleLongPress(ev);
+            }
+            else {
+                await this.handleShortPress(ev);
+            }
+        }
+        /** Long press: add the frontmost window, or remove it if already in the ring. */
+        async handleLongPress(ev) {
+            const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
+            if (!front.ok) {
+                this.warn(front.code, "read the front window");
+                await ev.action.showAlert();
+                return;
+            }
+            const window = parseFrontWindow(front.stdout);
+            const settings = ev.payload.settings;
+            const { list, added } = toggleWindow(settings.windows ?? [], window);
+            if (!added && list.length === (settings.windows ?? []).length) {
+                // nothing changed (e.g. no frontmost window)
+                await ev.action.showAlert();
+                return;
+            }
+            await ev.action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
+            await ev.action.showOk();
+            await this.updateIcon(ev.action, list);
+        }
+        /** Short tap: focus the next window in the ring (round-robin). */
+        async handleShortPress(ev) {
+            const settings = ev.payload.settings;
+            const list = settings.windows ?? [];
+            if (list.length === 0) {
+                await ev.action.showAlert();
+                return;
+            }
+            const cursor = nextIndex(list.length, settings.cursor ?? -1);
+            const target = list[cursor];
+            const result = await runAppleScript(buildAppScript(resolveApp({ appName: target.app, titlePattern: target.title })));
+            if (!result.ok) {
+                this.warn(result.code, `focus ${target.app}`);
+                await ev.action.showAlert();
+            }
+            await ev.action.setSettings({ ...settings, cursor });
+            await this.updateIcon(ev.action, list);
+        }
+        async refreshAll() {
+            for (const action of this.visible.values()) {
+                const settings = await action.getSettings();
+                await this.updateIcon(action, settings.windows ?? []);
+            }
+        }
+        /** Paint the count + a green/grey ring depending on whether the front window is a member. */
+        async updateIcon(action, list) {
+            try {
+                const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
+                const inList = front.ok ? indexOfWindow(list, parseFrontWindow(front.stdout)) >= 0 : false;
+                await action.setImage(svgToDataUri$1(buildRingImage(list.length, inList)));
+            }
+            catch (err) {
+                streamDeck.logger.debug(`Window Ring icon update skipped: ${String(err)}`);
+            }
+        }
+        warn(code, what) {
+            if (code === "permission-denied") {
+                streamDeck.logger.error(`Window Ring could not ${what}. Grant Accessibility: System Settings > Privacy & ` +
+                    "Security > Accessibility > enable Stream Deck.");
+            }
+            else {
+                streamDeck.logger.error(`Window Ring failed to ${what} (${code}).`);
+            }
+        }
+    });
+    return _classThis;
+})();
+
 streamDeck.logger.setLevel(LogLevel.INFO);
 streamDeck.actions.registerAction(new JumpToTab());
 streamDeck.actions.registerAction(new ScrollWindow());
@@ -1650,5 +1835,6 @@ streamDeck.actions.registerAction(new CycleTmuxWindow());
 streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
 streamDeck.actions.registerAction(new OpenFile());
+streamDeck.actions.registerAction(new WindowRing());
 streamDeck.connect();
 //# sourceMappingURL=plugin.js.map

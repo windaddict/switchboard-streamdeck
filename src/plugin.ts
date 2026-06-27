@@ -9,6 +9,7 @@ import { ScrollWindow } from "./actions/scroll-dial.js";
 import { SwitchApp } from "./actions/switch-app.js";
 import { CycleTmuxWindow } from "./actions/tmux-window-dial.js";
 import { TmuxPaneDial } from "./actions/tmux-pane-dial.js";
+import { WindowRing } from "./actions/window-ring.js";
 
 streamDeck.logger.setLevel(LogLevel.INFO);
 
@@ -21,5 +22,6 @@ streamDeck.actions.registerAction(new CycleTmuxWindow());
 streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
 streamDeck.actions.registerAction(new OpenFile());
+streamDeck.actions.registerAction(new WindowRing());
 
 streamDeck.connect();

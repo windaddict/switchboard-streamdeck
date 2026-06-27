@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Window Ring</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+		<style>
+			.ring-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+			.ring-row .meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ddd; }
+			.ring-row .app { color: #9bd0c0; font-weight: 600; }
+			.ring-row button { background: #3a2a2a; color: #ff8a8a; border: 1px solid #5a3a3a; border-radius: 4px; cursor: pointer; }
+			.muted { color: #888; font-size: 11px; }
+		</style>
+	</head>
+	<body>
+		<div class="muted" style="margin-bottom: 10px;">
+			<b>Long-press</b> the key to add the current window (or remove it if it's
+			already listed). <b>Short tap</b> cycles to the next window. The key shows
+			the count and a green ring when the current window is in the list.
+		</div>
+
+		<sdpi-item label="Windows">
+			<div id="ringList" style="width: 100%;"><span class="muted">No windows yet — long-press the key to add the current one.</span></div>
+		</sdpi-item>
+
+		<script>
+			const sd = window.SDPIComponents?.streamDeckClient;
+			const listEl = document.getElementById("ringList");
+			let current = {};
+
+			function render(windows) {
+				if (!windows || windows.length === 0) {
+					listEl.innerHTML = '<span class="muted">No windows yet — long-press the key to add the current one.</span>';
+					return;
+				}
+				listEl.innerHTML = "";
+				windows.forEach((w, i) => {
+					const row = document.createElement("div");
+					row.className = "ring-row";
+					const meta = document.createElement("div");
+					meta.className = "meta";
+					meta.innerHTML =
+						'<span class="app"></span> — <span class="title"></span>';
+					meta.querySelector(".app").textContent = w.app || "(app)";
+					meta.querySelector(".title").textContent = w.title || "(untitled)";
+					const del = document.createElement("button");
+					del.type = "button";
+					del.textContent = "✕";
+					del.title = "Remove from ring";
+					del.addEventListener("click", () => removeAt(i));
+					row.appendChild(meta);
+					row.appendChild(del);
+					listEl.appendChild(row);
+				});
+			}
+
+			async function removeAt(i) {
+				const windows = Array.isArray(current.windows) ? [...current.windows] : [];
+				windows.splice(i, 1);
+				current = { ...current, windows };
+				if (sd) await sd.setSettings(current);
+				render(windows);
+			}
+
+			if (sd) {
+				sd.didReceiveSettings.subscribe((e) => {
+					current = e?.payload?.settings ?? current;
+					render(current.windows);
+				});
+				sd.getSettings();
+			}
+		</script>
+	</body>
+</html>
