@@ -59,41 +59,23 @@ export function nextSpeed(s: Speed): Speed {
 	return s === "fast" ? "slow" : "fast";
 }
 
+/** In "fast" mode each tick scrolls this many times the slow-mode line count. */
+export const FAST_MULTIPLIER = 5;
+
 /**
- * Map a dial rotation to a {@link KeystrokePlan}.
+ * Map a dial rotation to a signed scroll distance in lines, posted as a single
+ * proportional scroll-wheel event by the native helper (not synthetic
+ * keystrokes — those coalesce and never scale).
  *
  * Positive ticks scroll DOWN; negative ticks scroll UP. Ticks are truncated
- * toward zero and the magnitude (absolute value) drives repeat count.
- *
- * - fast: Page Down (121) / Page Up (116), one press per tick.
- * - slow: Down arrow (125) / Up arrow (126), `linesPerTick` presses per tick.
- *
- * `linesPerTick` defaults to 3 when omitted. A zero rotation yields a plan
- * with `repeats: 0` (a no-op); its key code defaults to the "down" key for
- * the given speed. Modifiers are always empty.
+ * toward zero. In "slow" mode a tick is `linesPerTick` lines; in "fast" mode it
+ * is `linesPerTick * FAST_MULTIPLIER`. `linesPerTick` defaults to 3. A zero
+ * rotation returns 0 (a no-op).
  */
-export function scrollPlan(
-	ticks: number,
-	speed: Speed,
-	linesPerTick: number = 3,
-): KeystrokePlan {
+export function scrollLines(ticks: number, speed: Speed, linesPerTick: number = 3): number {
 	const truncated = Math.trunc(ticks);
-	const down = truncated >= 0;
-	const magnitude = Math.abs(truncated);
-
-	if (speed === "fast") {
-		return {
-			keyCode: down ? 121 : 116,
-			repeats: magnitude,
-			modifiers: [],
-		};
-	}
-
-	return {
-		keyCode: down ? 125 : 126,
-		repeats: magnitude * linesPerTick,
-		modifiers: [],
-	};
+	const perTick = speed === "fast" ? linesPerTick * FAST_MULTIPLIER : linesPerTick;
+	return truncated * perTick;
 }
 
 /**

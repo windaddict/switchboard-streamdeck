@@ -13,10 +13,11 @@ import {
 	jumpTopPlan,
 	nextSpeed,
 	normalizeLinesPerTick,
-	scrollPlan,
+	scrollLines,
 	type ScrollSettings,
 	type Speed,
 } from "../mac/scroll.js";
+import { runScroll } from "../mac/scroll-runner.js";
 
 /**
  * Dial action: rotate to scroll the frontmost window; press to either jump to
@@ -35,11 +36,18 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 	override async onDialRotate(ev: DialRotateEvent<ScrollSettings>): Promise<void> {
 		const speed: Speed = ev.payload.settings.speed ?? "slow";
 		const linesPerTick = normalizeLinesPerTick(ev.payload.settings.linesPerTick);
-		const plan = scrollPlan(ev.payload.ticks, speed, linesPerTick);
-		if (plan.repeats <= 0) return;
+		const lines = scrollLines(ev.payload.ticks, speed, linesPerTick);
+		if (lines === 0) return;
 
-		const result = await runAppleScript(buildKeystrokeScript(plan));
-		if (!result.ok) this.warn(result.code);
+		// One proportional scroll-wheel event via the native helper — no keystroke
+		// spam, so the line count actually scales and there is no per-press lag.
+		const result = await runScroll(lines, import.meta.url);
+		if (!result.trusted) {
+			streamDeck.logger.error(
+				"Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
+					"Accessibility > enable Stream Deck (synthetic scroll needs this).",
+			);
+		}
 	}
 
 	override async onDialDown(ev: DialDownEvent<ScrollSettings>): Promise<void> {

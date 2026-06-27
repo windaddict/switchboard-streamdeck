@@ -1,48 +1,50 @@
 import { describe, it, expect } from "vitest";
 import {
-	scrollPlan,
+	scrollLines,
+	FAST_MULTIPLIER,
 	nextSpeed,
 	jumpTopPlan,
 	normalizeLinesPerTick,
 	buildKeystrokeScript,
 } from "../src/mac/scroll.js";
 
-describe("scrollPlan", () => {
-	it("slow down: scrollPlan(1, 'slow', 3) => keyCode 125, repeats 3", () => {
-		expect(scrollPlan(1, "slow", 3)).toMatchObject({ keyCode: 125, repeats: 3 });
+describe("scrollLines", () => {
+	it("slow down: scrollLines(1, 'slow', 3) => 3 (positive = down)", () => {
+		expect(scrollLines(1, "slow", 3)).toBe(3);
 	});
 
-	it("slow up: scrollPlan(-2, 'slow', 3) => keyCode 126, repeats 6", () => {
-		expect(scrollPlan(-2, "slow", 3)).toMatchObject({ keyCode: 126, repeats: 6 });
+	it("slow up: scrollLines(-2, 'slow', 3) => -6 (negative = up)", () => {
+		expect(scrollLines(-2, "slow", 3)).toBe(-6);
 	});
 
-	it("fast down: scrollPlan(2, 'fast') => keyCode 121, repeats 2", () => {
-		expect(scrollPlan(2, "fast")).toMatchObject({ keyCode: 121, repeats: 2 });
+	it("fast down scales by FAST_MULTIPLIER: scrollLines(1, 'fast', 3) => 15", () => {
+		expect(scrollLines(1, "fast", 3)).toBe(3 * FAST_MULTIPLIER);
 	});
 
-	it("fast up: scrollPlan(-1, 'fast') => keyCode 116, repeats 1", () => {
-		expect(scrollPlan(-1, "fast")).toMatchObject({ keyCode: 116, repeats: 1 });
+	it("fast up: scrollLines(-2, 'fast', 3) => -30", () => {
+		expect(scrollLines(-2, "fast", 3)).toBe(-6 * FAST_MULTIPLIER);
 	});
 
-	it("zero ticks => repeats 0", () => {
-		expect(scrollPlan(0, "slow", 3).repeats).toBe(0);
+	it("linesPerTick actually scales the result (2 vs 6 differ)", () => {
+		expect(scrollLines(1, "slow", 2)).toBe(2);
+		expect(scrollLines(1, "slow", 6)).toBe(6);
 	});
 
-	it("slow with omitted linesPerTick uses default 3", () => {
-		expect(scrollPlan(1, "slow").repeats).toBe(3);
+	it("zero ticks => 0 (no-op)", () => {
+		expect(scrollLines(0, "slow", 3)).toBe(0);
 	});
 
-	it("modifiers are always [] for scrollPlan", () => {
-		expect(scrollPlan(1, "slow", 3).modifiers).toEqual([]);
-		expect(scrollPlan(-2, "slow", 5).modifiers).toEqual([]);
-		expect(scrollPlan(3, "fast").modifiers).toEqual([]);
-		expect(scrollPlan(-4, "fast").modifiers).toEqual([]);
-		expect(scrollPlan(0, "slow").modifiers).toEqual([]);
+	it("omitted linesPerTick defaults to 3", () => {
+		expect(scrollLines(1, "slow")).toBe(3);
 	});
 
 	it("truncates fractional ticks toward zero", () => {
-		expect(scrollPlan(2.9, "fast").repeats).toBe(2);
-		expect(scrollPlan(-2.9, "fast").repeats).toBe(2);
+		expect(scrollLines(2.9, "slow", 2)).toBe(4);
+		expect(scrollLines(-2.9, "fast", 1)).toBe(-2 * FAST_MULTIPLIER);
+	});
+
+	it("FAST_MULTIPLIER is 5", () => {
+		expect(FAST_MULTIPLIER).toBe(5);
 	});
 });
 

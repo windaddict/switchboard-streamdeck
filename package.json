@@ -6,6 +6,7 @@
 	"private": true,
 	"scripts": {
 		"build": "rollup -c",
+		"build:helper": "swiftc -O -o com.johnknox.safarijump.sdPlugin/bin/macos/scroll helper/scroll.swift",
 		"watch": "rollup -c -w",
 		"test": "vitest run",
 		"test:watch": "vitest",
