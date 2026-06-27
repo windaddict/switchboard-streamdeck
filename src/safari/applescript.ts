@@ -4,12 +4,11 @@
  * interpolation to avoid AppleScript injection.
  */
 
+import { escapeForAppleScript } from "../applescript/escape.js";
 import type { ResolvedTarget } from "./targets.js";
 
-/** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
-export function escapeForAppleScript(value: string): string {
-	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
+// Re-exported for back-compat: existing tests import escapeForAppleScript here.
+export { escapeForAppleScript };
 
 /** Build a title-match clause from a `||`-separated pattern list. */
 function titleClause(titlePattern: string | undefined): string {

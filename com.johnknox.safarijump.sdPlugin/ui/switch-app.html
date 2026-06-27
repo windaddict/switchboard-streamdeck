@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Open / Switch App</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Application">
+			<sdpi-textfield setting="appName" placeholder="e.g. Safari, Google Chrome, Notes"></sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="Window title contains">
+			<sdpi-textfield setting="titlePattern" placeholder="(optional) raise the matching window"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Use the app's exact name. Leave the title blank to just open/switch to
+			the app. Title matching raises the first window whose name contains the
+			text and needs Accessibility access for Stream Deck.
+		</div>
+	</body>
+</html>

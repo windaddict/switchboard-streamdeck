@@ -1,10 +1,10 @@
 {
 	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
-	"Name": "Safari Jump",
-	"Version": "1.0.0.0",
+	"Name": "Mac Jump",
+	"Version": "1.1.0.0",
 	"Author": "John Knox",
-	"Description": "Jump to (or open) a Safari tab. Built-in presets for multi-account Gmail and Google Calendar, custom websites, and private-window targets.",
-	"Category": "Safari Jump",
+	"Description": "Mac automation for Stream Deck: jump to Safari tabs (multi-account Gmail/Calendar, custom sites, private windows), scroll the frontmost window with a dial, and open/switch apps by window title.",
+	"Category": "Mac Jump",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"Icon": "imgs/plugin/marketplace",
 	"URL": "https://github.com/johnknox/streamdeck-safari-jump",
@@ -35,6 +35,41 @@
 			"States": [
 				{
 					"Image": "imgs/actions/jump/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Scroll Window",
+			"UUID": "com.johnknox.safarijump.scroll",
+			"Icon": "imgs/actions/scroll/icon",
+			"Tooltip": "Dial: scroll the frontmost window. Press to jump to top or toggle fast/slow.",
+			"PropertyInspectorPath": "ui/scroll-window.html",
+			"Controllers": ["Encoder"],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Scroll up / down",
+					"Push": "Jump to top / toggle speed"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/scroll/key",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"Name": "Open / Switch App",
+			"UUID": "com.johnknox.safarijump.switchapp",
+			"Icon": "imgs/actions/switchapp/icon",
+			"Tooltip": "Open or switch to an app, optionally focusing a window by title pattern.",
+			"PropertyInspectorPath": "ui/switch-app.html",
+			"Controllers": ["Keypad"],
+			"States": [
+				{
+					"Image": "imgs/actions/switchapp/key",
 					"TitleAlignment": "bottom"
 				}
 			]

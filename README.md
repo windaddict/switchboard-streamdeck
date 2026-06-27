@@ -1,8 +1,30 @@
-# Safari Jump — Stream Deck plugin
+# Mac Jump — Stream Deck plugin
 
-Jump to (or open) a Safari tab from a Stream Deck key. Built-in presets for
-multi-account **Gmail** and **Google Calendar**, plus **custom websites** and
-**private-window** targets.
+macOS automation for Stream Deck. Three actions:
+
+- **Jump to Tab** (key) — jump to / open a Safari tab. Built-in presets for
+  multi-account **Gmail** and **Google Calendar**, plus **custom websites** and
+  **private-window** targets.
+- **Scroll Window** (dial) — rotate to scroll the frontmost window; press to
+  **jump to top** or **toggle fast/slow**. Fast = Page Up/Down, slow = arrow
+  keys × *lines per tick*.
+- **Open / Switch App** (key) — `activate` an app (launch or switch);
+  optionally raise the window whose **title** contains a pattern.
+
+> Plugin UUID is still `com.johnknox.safarijump` (kept so existing buttons
+> survive); the display name is **Mac Jump**.
+
+## Permissions
+
+- **Jump to Tab / Open-Switch App** → **Automation** access to the target app
+  (Safari, etc.): System Settings → Privacy & Security → Automation → Stream Deck.
+- **Scroll Window / window-title matching** → **Accessibility** access (sending
+  keystrokes / raising windows): System Settings → Privacy & Security →
+  Accessibility → enable Stream Deck.
+
+Denied Automation surfaces as osascript `-1743`, denied Accessibility as
+`-1719`; `runner.ts` classifies both as `permission-denied` and the action logs
+the exact re-enable path instead of failing silently.
 
 ## Why this exists
 

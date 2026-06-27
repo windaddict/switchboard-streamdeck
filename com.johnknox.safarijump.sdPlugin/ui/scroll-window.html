@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Scroll Window</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="On press">
+			<sdpi-select setting="pressAction" default="jumpTop">
+				<option value="jumpTop">Jump to top</option>
+				<option value="toggleSpeed">Toggle fast / slow</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="Default speed">
+			<sdpi-select setting="speed" default="slow">
+				<option value="slow">Slow (arrow keys)</option>
+				<option value="fast">Fast (page up/down)</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="Lines per tick">
+			<sdpi-textfield setting="linesPerTick" default="3" placeholder="slow-mode steps per dial tick"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Rotate to scroll the frontmost window. Sending keystrokes needs
+			Accessibility access for Stream Deck (System Settings → Privacy &
+			Security → Accessibility).
+		</div>
+	</body>
+</html>
