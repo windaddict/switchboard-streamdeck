@@ -1683,12 +1683,17 @@ function round(n) {
 }
 /**
  * Build the 72×72 key image: a stacked-windows glyph, the window count, and a
- * ring that turns green when the current frontmost window is in the list.
+ * ring that turns green when the current frontmost window is in the list. Pass
+ * `badge: "removed"` to overlay a transient red "−" used as removal feedback.
  */
-function buildRingImage(count, currentInList) {
+function buildRingImage(count, currentInList, badge) {
     const ring = currentInList ? "#2ecc71" : "#5a5a5e";
     const label = String(count);
     const fontSize = label.length > 1 ? 24 : 28;
+    const removed = badge === "removed"
+        ? `<circle cx="54" cy="19" r="13" fill="#e74c3c" stroke="#1d1d1f" stroke-width="2"/>` +
+            `<path d="M47 19h14" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>`
+        : "";
     return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
         `<rect width="72" height="72" rx="12" fill="#1d1d1f"/>` +
         `<rect x="4" y="4" width="64" height="64" rx="10" fill="none" stroke="${ring}" stroke-width="4"/>` +
@@ -1696,6 +1701,7 @@ function buildRingImage(count, currentInList) {
         `<rect x="28" y="22" width="24" height="18" rx="3" fill="#0a84ff" stroke="#3aa0ff" stroke-width="2"/>` +
         `<text x="36" y="${round(60)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
         `font-size="${fontSize}" font-weight="700" fill="#ffffff">${label}</text>` +
+        removed +
         `</svg>`);
 }
 
@@ -1776,15 +1782,22 @@ let WindowRing = (() => {
             }
             const window = parseFrontWindow(front.stdout);
             const before = settings.windows ?? [];
-            const { list } = toggleWindow(before, window);
-            if (list.length === before.length) {
-                await action.showAlert(); // nothing to add (no frontmost window)
+            const { list, added } = toggleWindow(before, window);
+            if (!added && list.length === before.length) {
+                await action.showAlert(); // no-op: no frontmost window to add
                 return;
             }
             await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-            await action.showOk(); // visual: the long-press registered
-            this.playSound(settings); // audio: optional
-            await this.updateIcon(action, list);
+            this.playSound(settings); // audio: optional, both add and remove
+            if (added) {
+                await action.showOk(); // green check = added
+                await this.updateIcon(action, list);
+            }
+            else {
+                // removed: distinct red "−" flash, then revert to the normal icon
+                await action.setImage(svgToDataUri$1(buildRingImage(list.length, false, "removed")));
+                setTimeout(() => void this.updateIcon(action, list), 900);
+            }
         }
         /** Short tap: focus the next window in the ring (round-robin). */
         async handleShortPress(action, settings) {

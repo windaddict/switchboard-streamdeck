@@ -51,12 +51,22 @@ function round(n: number): number {
 
 /**
  * Build the 72×72 key image: a stacked-windows glyph, the window count, and a
- * ring that turns green when the current frontmost window is in the list.
+ * ring that turns green when the current frontmost window is in the list. Pass
+ * `badge: "removed"` to overlay a transient red "−" used as removal feedback.
  */
-export function buildRingImage(count: number, currentInList: boolean): string {
+export function buildRingImage(
+	count: number,
+	currentInList: boolean,
+	badge?: "removed",
+): string {
 	const ring = currentInList ? "#2ecc71" : "#5a5a5e";
 	const label = String(count);
 	const fontSize = label.length > 1 ? 24 : 28;
+	const removed =
+		badge === "removed"
+			? `<circle cx="54" cy="19" r="13" fill="#e74c3c" stroke="#1d1d1f" stroke-width="2"/>` +
+				`<path d="M47 19h14" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>`
+			: "";
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
 		`<rect width="72" height="72" rx="12" fill="#1d1d1f"/>` +
@@ -65,6 +75,7 @@ export function buildRingImage(count: number, currentInList: boolean): string {
 		`<rect x="28" y="22" width="24" height="18" rx="3" fill="#0a84ff" stroke="#3aa0ff" stroke-width="2"/>` +
 		`<text x="36" y="${round(60)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
 		`font-size="${fontSize}" font-weight="700" fill="#ffffff">${label}</text>` +
+		removed +
 		`</svg>`
 	);
 }

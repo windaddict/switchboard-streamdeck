@@ -101,15 +101,23 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 		}
 		const window = parseFrontWindow(front.stdout);
 		const before = settings.windows ?? [];
-		const { list } = toggleWindow(before, window);
-		if (list.length === before.length) {
-			await action.showAlert(); // nothing to add (no frontmost window)
+		const { list, added } = toggleWindow(before, window);
+		if (!added && list.length === before.length) {
+			await action.showAlert(); // no-op: no frontmost window to add
 			return;
 		}
+
 		await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-		await action.showOk(); // visual: the long-press registered
-		this.playSound(settings); // audio: optional
-		await this.updateIcon(action, list);
+		this.playSound(settings); // audio: optional, both add and remove
+
+		if (added) {
+			await action.showOk(); // green check = added
+			await this.updateIcon(action, list);
+		} else {
+			// removed: distinct red "−" flash, then revert to the normal icon
+			await action.setImage(svgToDataUri(buildRingImage(list.length, false, "removed")));
+			setTimeout(() => void this.updateIcon(action, list), 900);
+		}
 	}
 
 	/** Short tap: focus the next window in the ring (round-robin). */

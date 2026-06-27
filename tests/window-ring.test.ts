@@ -76,4 +76,12 @@ describe("buildRingImage", () => {
 		expect(svg).toContain("#5a5a5e");
 		expect(svg).not.toContain("#2ecc71");
 	});
+	it("overlays a red minus for the 'removed' badge", () => {
+		const svg = buildRingImage(2, false, "removed");
+		expect(svg).toContain("#e74c3c"); // red badge
+		expect(svg).toContain(">2<"); // shows the new count
+	});
+	it("has no red badge in the normal image", () => {
+		expect(buildRingImage(2, true)).not.toContain("#e74c3c");
+	});
 });
