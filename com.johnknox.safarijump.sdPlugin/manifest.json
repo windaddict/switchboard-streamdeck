@@ -106,6 +106,26 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Cycle tmux Window",
+			"UUID": "com.johnknox.safarijump.tmuxwindial",
+			"Icon": "imgs/actions/tmuxwindial/icon",
+			"Tooltip": "Dial: rotate to cycle tmux windows; push for last window. Shows the current window on the touchscreen.",
+			"Controllers": ["Encoder"],
+			"Encoder": {
+				"layout": "layouts/tmux-window.json",
+				"TriggerDescription": {
+					"Rotate": "Previous / next window",
+					"Push": "Last window"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/tmuxwindial/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }
