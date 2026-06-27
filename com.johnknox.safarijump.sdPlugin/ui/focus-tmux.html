@@ -25,5 +25,34 @@
 			the active tmux window. The list reads live from <code>tmux</code>; reopen
 			this inspector to refresh.
 		</div>
+
+		<script>
+			// sdpi-select only persists a value once it is actively changed, so a
+			// button left on the first shown item (e.g. "copybug") would save an
+			// empty target. Persist whatever the dropdown is showing if nothing is
+			// saved yet, so the displayed selection actually takes effect.
+			const $SD = window.SDPIComponents?.streamDeckClient;
+			const targetSelect = document.querySelector('sdpi-select[setting="target"]');
+			if ($SD && targetSelect) {
+				let current = {};
+				$SD.didReceiveSettings.subscribe((e) => {
+					current = e?.payload?.settings ?? current;
+				});
+				$SD.getSettings();
+
+				const persistShownValue = () => {
+					const shown = targetSelect.value;
+					if (shown && !current.target) {
+						current = { ...current, target: shown };
+						$SD.setSettings(current);
+					}
+				};
+
+				targetSelect.addEventListener("valuechange", persistShownValue);
+				targetSelect.addEventListener("change", persistShownValue);
+				// Fallback once the live datasource has populated the dropdown.
+				setTimeout(persistShownValue, 1200);
+			}
+		</script>
 	</body>
 </html>
