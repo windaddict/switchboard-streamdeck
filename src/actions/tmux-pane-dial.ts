@@ -8,10 +8,10 @@ import streamDeck, {
 import {
 	CANCEL_MODE_ARGS,
 	PANE_IN_MODE_ARGS,
-	paneDirection,
 	paneIsInMode,
 	selectPaneArgs,
 } from "../mac/tmux-pane.js";
+import { rotationDirection } from "../mac/rotation.js";
 import { findTmuxPath, runTmux } from "../mac/tmux-runner.js";
 
 type TmuxPaneSettings = {
@@ -27,7 +27,7 @@ type TmuxPaneSettings = {
 @action({ UUID: "com.movingavg.switchboard.tmuxpane" })
 export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 	override async onDialRotate(ev: DialRotateEvent<TmuxPaneSettings>): Promise<void> {
-		const direction = paneDirection(ev.payload.ticks);
+		const direction = rotationDirection(ev.payload.ticks);
 		if (direction === "none") return;
 
 		const result = await runTmux(selectPaneArgs(direction), findTmuxPath());

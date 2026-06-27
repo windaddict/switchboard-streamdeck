@@ -3,6 +3,8 @@ import {
 	sameWindow,
 	indexOfWindow,
 	toggleWindow,
+	classifyToggle,
+	adjustCursorAfterRemoval,
 	nextIndex,
 	buildRingImage,
 	type RingWindow,
@@ -47,6 +49,33 @@ describe("toggleWindow", () => {
 	});
 });
 
+describe("classifyToggle", () => {
+	it("classifies a new window as 'added'", () => {
+		expect(classifyToggle([a], b)).toEqual({ list: [a, b], outcome: "added", removedIndex: -1 });
+	});
+	it("classifies an existing window as 'removed' with its index", () => {
+		expect(classifyToggle([a, b], a)).toEqual({ list: [b], outcome: "removed", removedIndex: 0 });
+	});
+	it("classifies an empty-app (no front window) as 'noop'", () => {
+		const r = classifyToggle([a], { app: "", title: "" });
+		expect(r.outcome).toBe("noop");
+		expect(r.list).toEqual([a]);
+	});
+});
+
+describe("adjustCursorAfterRemoval", () => {
+	it("leaves the cursor alone when nothing was removed", () => {
+		expect(adjustCursorAfterRemoval(2, -1)).toBe(2);
+	});
+	it("decrements when the removed index is at or before the cursor", () => {
+		expect(adjustCursorAfterRemoval(2, 1)).toBe(1);
+		expect(adjustCursorAfterRemoval(2, 2)).toBe(1);
+	});
+	it("keeps the cursor when the removed index is after it", () => {
+		expect(adjustCursorAfterRemoval(1, 3)).toBe(1);
+	});
+});
+
 describe("nextIndex", () => {
 	it("first tap (cursor -1) lands on 0", () => {
 		expect(nextIndex(3, -1)).toBe(0);
@@ -83,5 +112,9 @@ describe("buildRingImage", () => {
 	});
 	it("has no red badge in the normal image", () => {
 		expect(buildRingImage(2, true)).not.toContain("#e74c3c");
+	});
+	it("uses a smaller font for two-digit counts", () => {
+		expect(buildRingImage(12, true)).toContain('font-size="24"');
+		expect(buildRingImage(3, true)).toContain('font-size="28"');
 	});
 });

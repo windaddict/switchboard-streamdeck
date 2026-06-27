@@ -7,10 +7,8 @@
 
 export type FileStatus = "match" | "none" | "plain";
 
-/** Encode an SVG string as a data URI usable by Stream Deck setImage. */
-export function svgToDataUri(svg: string): string {
-	return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
-}
+// svgToDataUri now lives in the shared svg module; re-exported for callers.
+export { svgToDataUri } from "./svg.js";
 
 function badge(status: FileStatus): string {
 	if (status === "match") {

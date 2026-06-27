@@ -1,21 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-	paneDirection,
 	selectPaneArgs,
 	paneIsInMode,
 	PANE_IN_MODE_ARGS,
 	CANCEL_MODE_ARGS,
 } from "../src/mac/tmux-pane.js";
-
-describe("paneDirection", () => {
-	it("positive ticks => next", () => expect(paneDirection(1)).toBe("next"));
-	it("negative ticks => prev", () => expect(paneDirection(-3)).toBe("prev"));
-	it("zero => none", () => expect(paneDirection(0)).toBe("none"));
-	it("truncates fractional ticks", () => {
-		expect(paneDirection(0.9)).toBe("none");
-		expect(paneDirection(-0.9)).toBe("none");
-	});
-});
 
 describe("selectPaneArgs", () => {
 	it("next => select-pane -t +", () => {

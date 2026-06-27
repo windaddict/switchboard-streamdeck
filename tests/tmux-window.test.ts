@@ -1,24 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
-	windowDirection,
 	selectWindowDirArgs,
 	parseCurrentWindow,
 	parseActiveFlags,
 	sessionHue,
 	buildBackgroundSvg,
-	svgToDataUri,
 	buildWindowFeedback,
 	LAST_WINDOW_ARGS,
 	CURRENT_WINDOW_ARGS,
 	WINDOW_FLAGS_ARGS,
 } from "../src/mac/tmux-window.js";
 
-describe("windowDirection & args", () => {
-	it("positive => next, negative => prev, zero => none", () => {
-		expect(windowDirection(2)).toBe("next");
-		expect(windowDirection(-1)).toBe("prev");
-		expect(windowDirection(0)).toBe("none");
-	});
+describe("window dial args", () => {
 	it("selectWindowDirArgs maps to tmux next/previous-window", () => {
 		expect(selectWindowDirArgs("next")).toEqual(["next-window"]);
 		expect(selectWindowDirArgs("prev")).toEqual(["previous-window"]);
@@ -100,15 +93,6 @@ describe("buildBackgroundSvg", () => {
 		});
 		expect(svg).toContain("a&lt;b&gt;&amp;&quot;x");
 		expect(svg).not.toContain("<b>");
-	});
-});
-
-describe("svgToDataUri", () => {
-	it("produces a base64 svg data uri that round-trips", () => {
-		const uri = svgToDataUri("<svg/>");
-		expect(uri.startsWith("data:image/svg+xml;base64,")).toBe(true);
-		const b64 = uri.slice("data:image/svg+xml;base64,".length);
-		expect(Buffer.from(b64, "base64").toString("utf8")).toBe("<svg/>");
 	});
 });
 

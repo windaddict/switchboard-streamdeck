@@ -937,16 +937,23 @@ function buildOpenArgs(filePath, opener, app) {
     return [filePath];
 }
 
+/** Small shared SVG helpers used by the key/touchscreen image builders. */
+/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
+function svgToDataUri(svg) {
+    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+/** Round to one decimal place — keeps generated SVG coordinates compact. */
+function round(n) {
+    return Math.round(n * 10) / 10;
+}
+
 /**
  * Builds the Open File key image as an SVG: a document glyph with an optional
  * status badge — a green check when a matching file exists, a red X when none
  * does. Pure and unit-testable; the action turns it into a data URI for
  * setImage.
  */
-/** Encode an SVG string as a data URI usable by Stream Deck setImage. */
-function svgToDataUri$1(svg) {
-    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
-}
+// svgToDataUri now lives in the shared svg module; re-exported for callers.
 function badge(status) {
     if (status === "match") {
         return (`<circle cx="53" cy="53" r="14" fill="#2ecc71" stroke="#1d1d1f" stroke-width="2"/>` +
@@ -1079,7 +1086,7 @@ let OpenFile = (() => {
                     const hit = entries && selectFile(entries, settings.pattern ?? "*", settings.pick ?? "modified");
                     status = hit ? "match" : "none";
                 }
-                await action.setImage(svgToDataUri$1(buildOpenFileImage(status)));
+                await action.setImage(svgToDataUri(buildOpenFileImage(status)));
             }
             catch (err) {
                 streamDeck.logger.debug(`Open File status update skipped: ${String(err)}`);
@@ -1394,15 +1401,6 @@ let SwitchApp = (() => {
  * reflects the current session/window. All functions are pure (no tmux, no
  * Stream Deck) so they unit test in isolation.
  */
-/** Map a dial rotation to a window step: positive = next, negative = previous. */
-function windowDirection(ticks) {
-    const t = Math.trunc(ticks);
-    if (t > 0)
-        return "next";
-    if (t < 0)
-        return "prev";
-    return "none";
-}
 /** tmux args to move to the next/previous window in the current session. */
 function selectWindowDirArgs(direction) {
     return direction === "next" ? ["next-window"] : ["previous-window"];
@@ -1438,9 +1436,6 @@ function sessionHue(session) {
     }
     return h;
 }
-function round$1(n) {
-    return Math.round(n * 10) / 10;
-}
 /** Escape text for safe embedding inside SVG/XML. */
 function escapeXml(value) {
     return value
@@ -1459,7 +1454,7 @@ function dotsSvg(count, activeIndex, hue) {
     const y = 86;
     let out = "";
     for (let i = 0; i < count; i++) {
-        const cx = round$1(startX + i * gap);
+        const cx = round(startX + i * gap);
         const active = i === activeIndex;
         const r = active ? 4 : 2.5;
         const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
@@ -1492,10 +1487,6 @@ function buildBackgroundSvg(opts) {
         `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         `</svg>`);
-}
-/** Encode an SVG string as a data URI usable as a layout pixmap value. */
-function svgToDataUri(svg) {
-    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 /** Build the setFeedback payload for the current window + window flags. */
 function buildWindowFeedback(current, flags) {
@@ -1535,7 +1526,7 @@ let CycleTmuxWindow = (() => {
             }
         }
         async onDialRotate(ev) {
-            const direction = windowDirection(ev.payload.ticks);
+            const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
                 const result = await runTmux(selectWindowDirArgs(direction), findTmuxPath());
                 if (!result.ok) {
@@ -1574,15 +1565,6 @@ let CycleTmuxWindow = (() => {
  * copy-mode (return the cursor to the live prompt when scrolled up). All
  * functions are tmux-CLI-agnostic strings/args so they unit test without tmux.
  */
-/** Map a dial rotation to a pane step: positive = next, negative = previous. */
-function paneDirection(ticks) {
-    const t = Math.trunc(ticks);
-    if (t > 0)
-        return "next";
-    if (t < 0)
-        return "prev";
-    return "none";
-}
 /**
  * tmux args to select the next/previous pane relative to the current one
  * (`-t +` / `-t -`). Wraps around within the current window.
@@ -1620,7 +1602,7 @@ let TmuxPaneDial = (() => {
             __runInitializers(_classThis, _classExtraInitializers);
         }
         async onDialRotate(ev) {
-            const direction = paneDirection(ev.payload.ticks);
+            const direction = rotationDirection(ev.payload.ticks);
             if (direction === "none")
                 return;
             const result = await runTmux(selectPaneArgs(direction), findTmuxPath());
@@ -1657,16 +1639,25 @@ function indexOfWindow(list, w) {
     return list.findIndex((x) => sameWindow(x, w));
 }
 /**
- * Toggle a window's membership: remove it if present, otherwise append it.
- * A window with an empty app (no frontmost window) is never added.
+ * Classify what a long-press does to the ring: remove the window if present,
+ * add it if new, or no-op when there's no frontmost window (empty app). Returns
+ * the resulting list, the outcome, and the index removed (-1 otherwise) so the
+ * caller can keep the round-robin cursor consistent.
  */
-function toggleWindow(list, w) {
+function classifyToggle(list, w) {
     if (!w.app)
-        return { list, added: false };
+        return { list, outcome: "noop", removedIndex: -1 };
     const i = indexOfWindow(list, w);
-    if (i >= 0)
-        return { list: list.filter((_, idx) => idx !== i), added: false };
-    return { list: [...list, w], added: true };
+    if (i >= 0) {
+        return { list: list.filter((_, idx) => idx !== i), outcome: "removed", removedIndex: i };
+    }
+    return { list: [...list, w], outcome: "added", removedIndex: -1 };
+}
+/** Keep the cursor pointing at a sensible slot after a window is removed. */
+function adjustCursorAfterRemoval(cursor, removedIndex) {
+    if (removedIndex < 0)
+        return cursor;
+    return cursor >= removedIndex ? cursor - 1 : cursor;
 }
 /**
  * Next cursor position (round-robin). A cursor of -1 (or non-integer) yields 0,
@@ -1677,9 +1668,6 @@ function nextIndex(len, cursor) {
         return 0;
     const c = Number.isInteger(cursor) ? cursor : -1;
     return (((c + 1) % len) + len) % len;
-}
-function round(n) {
-    return Math.round(n * 10) / 10;
 }
 /**
  * Build the 72×72 key image: a stacked-windows glyph, the window count, and a
@@ -1709,13 +1697,14 @@ function buildRingImage(count, currentInList, badge) {
 const LONG_PRESS_MS = 500;
 /** How often the key icon re-checks whether the front window is in the ring. */
 const POLL_MS = 3000;
+/** How long the red "removed" flash stays before reverting to the count icon. */
+const REMOVE_FLASH_MS = 900;
 /** Built-in macOS sound played on long-press when enabled. */
 const SOUND_FILE = "/System/Library/Sounds/Tink.aiff";
 /**
  * A user-curated ring of windows. Long-press adds the frontmost window (or
- * removes it if already in the ring); a short tap focuses the next window. The
- * long-press is detected at the threshold *while still held*, so feedback (a
- * key flash, plus an optional sound) fires the moment it registers.
+ * removes it); a short tap focuses the next. Handlers always read fresh
+ * settings via getSettings() so rapid presses don't clobber each other.
  */
 let WindowRing = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.windowring" })];
@@ -1732,7 +1721,8 @@ let WindowRing = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        pending = new Map();
+        pressTimers = new Map();
+        revertTimers = new Map();
         visible = new Map();
         timer;
         async onWillAppear(ev) {
@@ -1745,11 +1735,10 @@ let WindowRing = (() => {
             await this.updateIcon(ev.action, ev.payload.settings.windows ?? []);
         }
         onWillDisappear(ev) {
-            this.visible.delete(ev.action.id);
-            const t = this.pending.get(ev.action.id);
-            if (t !== undefined)
-                clearTimeout(t);
-            this.pending.delete(ev.action.id);
+            const id = ev.action.id;
+            this.visible.delete(id);
+            this.clearTimer(this.pressTimers, id);
+            this.clearTimer(this.revertTimers, id);
             if (this.visible.size === 0 && this.timer !== undefined) {
                 clearInterval(this.timer);
                 this.timer = undefined;
@@ -1757,50 +1746,57 @@ let WindowRing = (() => {
         }
         onKeyDown(ev) {
             const id = ev.action.id;
-            // Fire the long-press handler at the threshold, while the key is still held.
+            this.clearTimer(this.revertTimers, id); // a new press cancels a pending revert
             const t = setTimeout(() => {
-                this.pending.delete(id);
-                void this.handleLongPress(ev.action, ev.payload.settings).catch((err) => streamDeck.logger.error(`Window Ring long-press failed: ${String(err)}`));
+                this.pressTimers.delete(id);
+                void this.handleLongPress(ev.action).catch((err) => streamDeck.logger.error(`Window Ring long-press failed: ${String(err)}`));
             }, LONG_PRESS_MS);
-            this.pending.set(id, t);
+            this.pressTimers.set(id, t);
         }
         async onKeyUp(ev) {
-            const t = this.pending.get(ev.action.id);
+            const t = this.pressTimers.get(ev.action.id);
             if (t === undefined)
-                return; // long press already handled at the threshold
+                return; // long press already fired at the threshold
             clearTimeout(t);
-            this.pending.delete(ev.action.id);
-            await this.handleShortPress(ev.action, ev.payload.settings);
+            this.pressTimers.delete(ev.action.id);
+            await this.handleShortPress(ev.action);
         }
         /** Long press: toggle the frontmost window in the ring + give feedback. */
-        async handleLongPress(action, settings) {
+        async handleLongPress(action) {
             const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
             if (!front.ok) {
                 this.warn(front.code, "read the front window");
                 await action.showAlert();
                 return;
             }
-            const window = parseFrontWindow(front.stdout);
+            const settings = await action.getSettings(); // fresh — avoids rapid-press races
             const before = settings.windows ?? [];
-            const { list, added } = toggleWindow(before, window);
-            if (!added && list.length === before.length) {
-                await action.showAlert(); // no-op: no frontmost window to add
+            const { list, outcome, removedIndex } = classifyToggle(before, parseFrontWindow(front.stdout));
+            if (outcome === "noop") {
+                streamDeck.logger.debug("Window Ring long-press with no frontmost window to add.");
+                await action.showAlert();
                 return;
             }
-            await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-            this.playSound(settings); // audio: optional, both add and remove
-            if (added) {
+            const cursor = adjustCursorAfterRemoval(settings.cursor ?? -1, removedIndex);
+            await action.setSettings({ ...settings, windows: list, cursor });
+            this.playSound(settings);
+            if (outcome === "added") {
                 await action.showOk(); // green check = added
                 await this.updateIcon(action, list);
             }
             else {
-                // removed: distinct red "−" flash, then revert to the normal icon
-                await action.setImage(svgToDataUri$1(buildRingImage(list.length, false, "removed")));
-                setTimeout(() => void this.updateIcon(action, list), 900);
+                // removed: distinct red "−" flash, then revert to the live icon
+                await action.setImage(svgToDataUri(buildRingImage(list.length, false, "removed")));
+                this.clearTimer(this.revertTimers, action.id);
+                this.revertTimers.set(action.id, setTimeout(() => {
+                    this.revertTimers.delete(action.id);
+                    void this.refreshIcon(action);
+                }, REMOVE_FLASH_MS));
             }
         }
         /** Short tap: focus the next window in the ring (round-robin). */
-        async handleShortPress(action, settings) {
+        async handleShortPress(action) {
+            const settings = await action.getSettings(); // fresh
             const list = settings.windows ?? [];
             if (list.length === 0) {
                 await action.showAlert();
@@ -1816,30 +1812,44 @@ let WindowRing = (() => {
             await action.setSettings({ ...settings, cursor });
             await this.updateIcon(action, list);
         }
-        /** Fire-and-forget system sound when enabled. */
+        async refreshAll() {
+            const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
+            const current = front.ok ? parseFrontWindow(front.stdout) : null;
+            for (const action of this.visible.values()) {
+                const settings = await action.getSettings();
+                await this.paintIcon(action, settings.windows ?? [], current);
+            }
+        }
+        /** Re-read settings and repaint (used by the revert timer). */
+        async refreshIcon(action) {
+            const settings = await action.getSettings();
+            await this.updateIcon(action, settings.windows ?? []);
+        }
+        async updateIcon(action, list) {
+            const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
+            await this.paintIcon(action, list, front.ok ? parseFrontWindow(front.stdout) : null);
+        }
+        async paintIcon(action, list, current) {
+            try {
+                const inList = current ? indexOfWindow(list, current) >= 0 : false;
+                await action.setImage(svgToDataUri(buildRingImage(list.length, inList)));
+            }
+            catch (err) {
+                streamDeck.logger.debug(`Window Ring icon update skipped: ${String(err)}`);
+            }
+        }
+        clearTimer(map, id) {
+            const t = map.get(id);
+            if (t !== undefined)
+                clearTimeout(t);
+            map.delete(id);
+        }
         playSound(settings) {
             if (settings.sound !== true)
                 return;
             execFile("/usr/bin/afplay", [SOUND_FILE], () => {
                 /* best-effort; ignore errors */
             });
-        }
-        async refreshAll() {
-            for (const action of this.visible.values()) {
-                const settings = await action.getSettings();
-                await this.updateIcon(action, settings.windows ?? []);
-            }
-        }
-        /** Paint the count + a green/grey ring depending on whether the front window is a member. */
-        async updateIcon(action, list) {
-            try {
-                const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
-                const inList = front.ok ? indexOfWindow(list, parseFrontWindow(front.stdout)) >= 0 : false;
-                await action.setImage(svgToDataUri$1(buildRingImage(list.length, inList)));
-            }
-            catch (err) {
-                streamDeck.logger.debug(`Window Ring icon update skipped: ${String(err)}`);
-            }
         }
         warn(code, what) {
             if (code === "permission-denied") {

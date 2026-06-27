@@ -7,6 +7,7 @@ import streamDeck, {
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
+import { rotationDirection } from "../mac/rotation.js";
 import { findTmuxPath, runTmux } from "../mac/tmux-runner.js";
 import {
 	buildWindowFeedback,
@@ -16,7 +17,6 @@ import {
 	parseCurrentWindow,
 	selectWindowDirArgs,
 	WINDOW_FLAGS_ARGS,
-	windowDirection,
 } from "../mac/tmux-window.js";
 
 type TmuxWindowDialSettings = {
@@ -38,7 +38,7 @@ export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<TmuxWindowDialSettings>): Promise<void> {
-		const direction = windowDirection(ev.payload.ticks);
+		const direction = rotationDirection(ev.payload.ticks);
 		if (direction !== "none") {
 			const result = await runTmux(selectWindowDirArgs(direction), findTmuxPath());
 			if (!result.ok) {

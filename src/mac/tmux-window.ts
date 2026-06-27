@@ -5,18 +5,11 @@
  * Stream Deck) so they unit test in isolation.
  */
 
-export type WindowDirection = "next" | "prev" | "none";
-
-/** Map a dial rotation to a window step: positive = next, negative = previous. */
-export function windowDirection(ticks: number): WindowDirection {
-	const t = Math.trunc(ticks);
-	if (t > 0) return "next";
-	if (t < 0) return "prev";
-	return "none";
-}
+import type { RotationDirection } from "./rotation.js";
+import { round, svgToDataUri } from "./svg.js";
 
 /** tmux args to move to the next/previous window in the current session. */
-export function selectWindowDirArgs(direction: Exclude<WindowDirection, "none">): string[] {
+export function selectWindowDirArgs(direction: Exclude<RotationDirection, "none">): string[] {
 	return direction === "next" ? ["next-window"] : ["previous-window"];
 }
 
@@ -61,10 +54,6 @@ export function sessionHue(session: string): number {
 		h = (h * 31 + session.charCodeAt(i)) % 360;
 	}
 	return h;
-}
-
-function round(n: number): number {
-	return Math.round(n * 10) / 10;
 }
 
 /** Escape text for safe embedding inside SVG/XML. */
@@ -130,11 +119,6 @@ export function buildBackgroundSvg(opts: BackgroundOptions): string {
 		dotsSvg(count, activeIndex, hue) +
 		`</svg>`
 	);
-}
-
-/** Encode an SVG string as a data URI usable as a layout pixmap value. */
-export function svgToDataUri(svg: string): string {
-	return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
 /** setFeedback payload: a single full-area pixmap keyed `bg` in the layout. */

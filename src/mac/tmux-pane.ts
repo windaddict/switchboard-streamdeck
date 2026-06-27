@@ -4,21 +4,13 @@
  * functions are tmux-CLI-agnostic strings/args so they unit test without tmux.
  */
 
-export type PaneDirection = "next" | "prev" | "none";
-
-/** Map a dial rotation to a pane step: positive = next, negative = previous. */
-export function paneDirection(ticks: number): PaneDirection {
-	const t = Math.trunc(ticks);
-	if (t > 0) return "next";
-	if (t < 0) return "prev";
-	return "none";
-}
+import type { RotationDirection } from "./rotation.js";
 
 /**
  * tmux args to select the next/previous pane relative to the current one
  * (`-t +` / `-t -`). Wraps around within the current window.
  */
-export function selectPaneArgs(direction: Exclude<PaneDirection, "none">): string[] {
+export function selectPaneArgs(direction: Exclude<RotationDirection, "none">): string[] {
 	return ["select-pane", "-t", direction === "next" ? "+" : "-"];
 }
 

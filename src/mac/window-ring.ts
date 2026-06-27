@@ -8,6 +8,7 @@
  */
 
 import type { FrontWindow } from "./app-windows.js";
+import { round } from "./svg.js";
 
 export type RingWindow = FrontWindow; // { app: string; title: string }
 
@@ -21,18 +22,42 @@ export function indexOfWindow(list: RingWindow[], w: RingWindow): number {
 	return list.findIndex((x) => sameWindow(x, w));
 }
 
+export type ToggleOutcome = "added" | "removed" | "noop";
+
 /**
- * Toggle a window's membership: remove it if present, otherwise append it.
+ * Classify what a long-press does to the ring: remove the window if present,
+ * add it if new, or no-op when there's no frontmost window (empty app). Returns
+ * the resulting list, the outcome, and the index removed (-1 otherwise) so the
+ * caller can keep the round-robin cursor consistent.
+ */
+export function classifyToggle(
+	list: RingWindow[],
+	w: RingWindow,
+): { list: RingWindow[]; outcome: ToggleOutcome; removedIndex: number } {
+	if (!w.app) return { list, outcome: "noop", removedIndex: -1 };
+	const i = indexOfWindow(list, w);
+	if (i >= 0) {
+		return { list: list.filter((_, idx) => idx !== i), outcome: "removed", removedIndex: i };
+	}
+	return { list: [...list, w], outcome: "added", removedIndex: -1 };
+}
+
+/** Keep the cursor pointing at a sensible slot after a window is removed. */
+export function adjustCursorAfterRemoval(cursor: number, removedIndex: number): number {
+	if (removedIndex < 0) return cursor;
+	return cursor >= removedIndex ? cursor - 1 : cursor;
+}
+
+/**
+ * Toggle a window's membership (thin wrapper over {@link classifyToggle}).
  * A window with an empty app (no frontmost window) is never added.
  */
 export function toggleWindow(
 	list: RingWindow[],
 	w: RingWindow,
 ): { list: RingWindow[]; added: boolean } {
-	if (!w.app) return { list, added: false };
-	const i = indexOfWindow(list, w);
-	if (i >= 0) return { list: list.filter((_, idx) => idx !== i), added: false };
-	return { list: [...list, w], added: true };
+	const { list: next, outcome } = classifyToggle(list, w);
+	return { list: next, added: outcome === "added" };
 }
 
 /**
@@ -43,10 +68,6 @@ export function nextIndex(len: number, cursor: number): number {
 	if (len <= 0) return 0;
 	const c = Number.isInteger(cursor) ? cursor : -1;
 	return (((c + 1) % len) + len) % len;
-}
-
-function round(n: number): number {
-	return Math.round(n * 10) / 10;
 }
 
 /**

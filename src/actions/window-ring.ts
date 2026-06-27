@@ -13,13 +13,14 @@ import streamDeck, {
 import { runAppleScript } from "../applescript/runner.js";
 import { FRONT_WINDOW_SCRIPT, parseFrontWindow } from "../mac/app-windows.js";
 import { buildAppScript, resolveApp } from "../mac/apps.js";
-import { svgToDataUri } from "../mac/key-image.js";
+import { svgToDataUri } from "../mac/svg.js";
 import {
+	adjustCursorAfterRemoval,
 	buildRingImage,
+	classifyToggle,
 	indexOfWindow,
 	nextIndex,
 	type RingWindow,
-	toggleWindow,
 } from "../mac/window-ring.js";
 
 type WindowRingSettings = {
@@ -33,18 +34,20 @@ type WindowRingSettings = {
 const LONG_PRESS_MS = 500;
 /** How often the key icon re-checks whether the front window is in the ring. */
 const POLL_MS = 3000;
+/** How long the red "removed" flash stays before reverting to the count icon. */
+const REMOVE_FLASH_MS = 900;
 /** Built-in macOS sound played on long-press when enabled. */
 const SOUND_FILE = "/System/Library/Sounds/Tink.aiff";
 
 /**
  * A user-curated ring of windows. Long-press adds the frontmost window (or
- * removes it if already in the ring); a short tap focuses the next window. The
- * long-press is detected at the threshold *while still held*, so feedback (a
- * key flash, plus an optional sound) fires the moment it registers.
+ * removes it); a short tap focuses the next. Handlers always read fresh
+ * settings via getSettings() so rapid presses don't clobber each other.
  */
 @action({ UUID: "com.movingavg.switchboard.windowring" })
 export class WindowRing extends SingletonAction<WindowRingSettings> {
-	private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly pressTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly revertTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly visible = new Map<string, KeyAction<WindowRingSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
 
@@ -58,10 +61,10 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 	}
 
 	override onWillDisappear(ev: WillDisappearEvent<WindowRingSettings>): void {
-		this.visible.delete(ev.action.id);
-		const t = this.pending.get(ev.action.id);
-		if (t !== undefined) clearTimeout(t);
-		this.pending.delete(ev.action.id);
+		const id = ev.action.id;
+		this.visible.delete(id);
+		this.clearTimer(this.pressTimers, id);
+		this.clearTimer(this.revertTimers, id);
 		if (this.visible.size === 0 && this.timer !== undefined) {
 			clearInterval(this.timer);
 			this.timer = undefined;
@@ -70,61 +73,67 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 
 	override onKeyDown(ev: KeyDownEvent<WindowRingSettings>): void {
 		const id = ev.action.id;
-		// Fire the long-press handler at the threshold, while the key is still held.
+		this.clearTimer(this.revertTimers, id); // a new press cancels a pending revert
 		const t = setTimeout(() => {
-			this.pending.delete(id);
-			void this.handleLongPress(ev.action, ev.payload.settings).catch((err) =>
+			this.pressTimers.delete(id);
+			void this.handleLongPress(ev.action).catch((err) =>
 				streamDeck.logger.error(`Window Ring long-press failed: ${String(err)}`),
 			);
 		}, LONG_PRESS_MS);
-		this.pending.set(id, t);
+		this.pressTimers.set(id, t);
 	}
 
 	override async onKeyUp(ev: KeyUpEvent<WindowRingSettings>): Promise<void> {
-		const t = this.pending.get(ev.action.id);
-		if (t === undefined) return; // long press already handled at the threshold
+		const t = this.pressTimers.get(ev.action.id);
+		if (t === undefined) return; // long press already fired at the threshold
 		clearTimeout(t);
-		this.pending.delete(ev.action.id);
-		await this.handleShortPress(ev.action, ev.payload.settings);
+		this.pressTimers.delete(ev.action.id);
+		await this.handleShortPress(ev.action);
 	}
 
 	/** Long press: toggle the frontmost window in the ring + give feedback. */
-	private async handleLongPress(
-		action: KeyAction<WindowRingSettings>,
-		settings: WindowRingSettings,
-	): Promise<void> {
+	private async handleLongPress(action: KeyAction<WindowRingSettings>): Promise<void> {
 		const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
 		if (!front.ok) {
 			this.warn(front.code, "read the front window");
 			await action.showAlert();
 			return;
 		}
-		const window = parseFrontWindow(front.stdout);
+
+		const settings = await action.getSettings(); // fresh — avoids rapid-press races
 		const before = settings.windows ?? [];
-		const { list, added } = toggleWindow(before, window);
-		if (!added && list.length === before.length) {
-			await action.showAlert(); // no-op: no frontmost window to add
+		const { list, outcome, removedIndex } = classifyToggle(before, parseFrontWindow(front.stdout));
+
+		if (outcome === "noop") {
+			streamDeck.logger.debug("Window Ring long-press with no frontmost window to add.");
+			await action.showAlert();
 			return;
 		}
 
-		await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-		this.playSound(settings); // audio: optional, both add and remove
+		const cursor = adjustCursorAfterRemoval(settings.cursor ?? -1, removedIndex);
+		await action.setSettings({ ...settings, windows: list, cursor });
+		this.playSound(settings);
 
-		if (added) {
+		if (outcome === "added") {
 			await action.showOk(); // green check = added
 			await this.updateIcon(action, list);
 		} else {
-			// removed: distinct red "−" flash, then revert to the normal icon
+			// removed: distinct red "−" flash, then revert to the live icon
 			await action.setImage(svgToDataUri(buildRingImage(list.length, false, "removed")));
-			setTimeout(() => void this.updateIcon(action, list), 900);
+			this.clearTimer(this.revertTimers, action.id);
+			this.revertTimers.set(
+				action.id,
+				setTimeout(() => {
+					this.revertTimers.delete(action.id);
+					void this.refreshIcon(action);
+				}, REMOVE_FLASH_MS),
+			);
 		}
 	}
 
 	/** Short tap: focus the next window in the ring (round-robin). */
-	private async handleShortPress(
-		action: KeyAction<WindowRingSettings>,
-		settings: WindowRingSettings,
-	): Promise<void> {
+	private async handleShortPress(action: KeyAction<WindowRingSettings>): Promise<void> {
+		const settings = await action.getSettings(); // fresh
 		const list = settings.windows ?? [];
 		if (list.length === 0) {
 			await action.showAlert();
@@ -143,30 +152,50 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 		await this.updateIcon(action, list);
 	}
 
-	/** Fire-and-forget system sound when enabled. */
+	private async refreshAll(): Promise<void> {
+		const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
+		const current = front.ok ? parseFrontWindow(front.stdout) : null;
+		for (const action of this.visible.values()) {
+			const settings = await action.getSettings();
+			await this.paintIcon(action, settings.windows ?? [], current);
+		}
+	}
+
+	/** Re-read settings and repaint (used by the revert timer). */
+	private async refreshIcon(action: KeyAction<WindowRingSettings>): Promise<void> {
+		const settings = await action.getSettings();
+		await this.updateIcon(action, settings.windows ?? []);
+	}
+
+	private async updateIcon(action: KeyAction<WindowRingSettings>, list: RingWindow[]): Promise<void> {
+		const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
+		await this.paintIcon(action, list, front.ok ? parseFrontWindow(front.stdout) : null);
+	}
+
+	private async paintIcon(
+		action: KeyAction<WindowRingSettings>,
+		list: RingWindow[],
+		current: RingWindow | null,
+	): Promise<void> {
+		try {
+			const inList = current ? indexOfWindow(list, current) >= 0 : false;
+			await action.setImage(svgToDataUri(buildRingImage(list.length, inList)));
+		} catch (err) {
+			streamDeck.logger.debug(`Window Ring icon update skipped: ${String(err)}`);
+		}
+	}
+
+	private clearTimer(map: Map<string, ReturnType<typeof setTimeout>>, id: string): void {
+		const t = map.get(id);
+		if (t !== undefined) clearTimeout(t);
+		map.delete(id);
+	}
+
 	private playSound(settings: WindowRingSettings): void {
 		if (settings.sound !== true) return;
 		execFile("/usr/bin/afplay", [SOUND_FILE], () => {
 			/* best-effort; ignore errors */
 		});
-	}
-
-	private async refreshAll(): Promise<void> {
-		for (const action of this.visible.values()) {
-			const settings = await action.getSettings();
-			await this.updateIcon(action, settings.windows ?? []);
-		}
-	}
-
-	/** Paint the count + a green/grey ring depending on whether the front window is a member. */
-	private async updateIcon(action: KeyAction<WindowRingSettings>, list: RingWindow[]): Promise<void> {
-		try {
-			const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
-			const inList = front.ok ? indexOfWindow(list, parseFrontWindow(front.stdout)) >= 0 : false;
-			await action.setImage(svgToDataUri(buildRingImage(list.length, inList)));
-		} catch (err) {
-			streamDeck.logger.debug(`Window Ring icon update skipped: ${String(err)}`);
-		}
 	}
 
 	private warn(code: string, what: string): void {

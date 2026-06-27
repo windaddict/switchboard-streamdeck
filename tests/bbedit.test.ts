@@ -47,6 +47,17 @@ describe("parseBBEditDocs", () => {
 	it("tolerates empty output", () => {
 		expect(parseBBEditDocs("")).toEqual({ docs: [], activeId: null });
 	});
+	it("skips malformed/short rows and rows with a non-numeric id", () => {
+		const { docs, activeId } = parseBBEditDocs(
+			"45\tgood.md\t100\nshort-row\nx\tbad-id.md\t50\nACTIVE\t45\n",
+		);
+		expect(docs.map((d) => d.id)).toEqual([45]); // only the well-formed numeric-id row
+		expect(activeId).toBe(45);
+	});
+	it("defaults a non-finite modSeconds to 0", () => {
+		const { docs } = parseBBEditDocs("9\tweird.md\tnotanumber\n");
+		expect(docs[0]).toEqual({ id: 9, name: "weird.md", modSeconds: 0 });
+	});
 });
 
 const docs: BBEditDoc[] = [
@@ -72,6 +83,16 @@ describe("orderedDocs", () => {
 		const copy = [...docs];
 		orderedDocs(docs, "alpha");
 		expect(docs).toEqual(copy);
+	});
+	it("breaks ties deterministically by id (equal mod time / equal name)", () => {
+		const tied: BBEditDoc[] = [
+			{ id: 30, name: "same.md", modSeconds: 100 },
+			{ id: 10, name: "same.md", modSeconds: 100 },
+			{ id: 20, name: "same.md", modSeconds: 100 },
+		];
+		expect(orderedDocs(tied, "recent").map((d) => d.id)).toEqual([10, 20, 30]);
+		expect(orderedDocs(tied, "oldest").map((d) => d.id)).toEqual([10, 20, 30]);
+		expect(orderedDocs(tied, "alpha").map((d) => d.id)).toEqual([10, 20, 30]);
 	});
 });
 
