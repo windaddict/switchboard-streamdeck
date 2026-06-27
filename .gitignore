@@ -2,8 +2,14 @@ node_modules/
 dist/
 *.log
 .DS_Store
-com.johnknox.safarijump.sdPlugin/bin/plugin.js
-com.johnknox.safarijump.sdPlugin/bin/plugin.js.map
-com.johnknox.safarijump.sdPlugin/logs/
+
+# Build artifacts: the bundled plugin.js IS committed (so the .sdPlugin is
+# self-contained for drag-and-drop / Homebrew installs). Only the sourcemap
+# and runtime logs are ignored.
+com.movingavg.switchboard.sdPlugin/bin/plugin.js.map
+com.movingavg.switchboard.sdPlugin/logs/
+
+# Packaged installer + cask zip (produced by `npm run pack` / `npm run pack:zip`)
+*.streamDeckPlugin
 
 coverage/

@@ -52,18 +52,51 @@ Ten actions, grouped by what they route your attention to.
 
 ---
 
-## Install (macOS, Stream Deck +)
+## Install
 
-Requires macOS 12+ and the Stream Deck app 6.5+.
+Requires macOS 12+ and the Stream Deck app 6.5+. Pick whichever fits you — in
+all cases, **quit and relaunch Stream Deck afterwards**, then add Switchboard's
+actions to your keys/dials.
+
+### 1. Double-click installer (easiest — no Terminal)
+
+Download **`com.movingavg.switchboard.streamDeckPlugin`** from the
+[latest Release](../../releases/latest) and **double-click it**. Stream Deck
+installs the plugin for you. Done.
+
+### 2. Homebrew
 
 ```bash
-# Option A — symlink the .sdPlugin folder into the Stream Deck plugins dir
+brew install --cask OWNER/switchboard/switchboard
+```
+
+(Requires the published cask; see [`packaging/homebrew/switchboard.rb`](packaging/homebrew/switchboard.rb).)
+
+### 3. Finder — drag the folder
+
+For folks who'd rather use Finder than the Terminal:
+
+1. Download this repo: green **Code** button → **Download ZIP**, then unzip it.
+2. Open Finder and press **⌘⇧G** (Go → Go to Folder). Paste this and press Return:
+   ```
+   ~/Library/Application Support/com.elgato.StreamDeck/Plugins
+   ```
+3. From the unzipped repo, **drag the `com.movingavg.switchboard.sdPlugin` folder**
+   into that Plugins window.
+4. Quit and relaunch Stream Deck.
+
+(The plugin is committed pre-built and self-contained, so the dragged folder
+runs as-is — no build step needed.)
+
+### 4. Terminal (developers)
+
+```bash
+# Symlink the .sdPlugin folder into the Stream Deck plugins dir
 ln -s "$(pwd)/com.movingavg.switchboard.sdPlugin" \
   ~/Library/Application\ Support/com.elgato.StreamDeck/Plugins/
 
-# Option B — use the Elgato CLI
+# …or use the Elgato CLI
 npx @elgato/cli link
-npx @elgato/cli restart com.movingavg.switchboard
 ```
 
 Then restart the Stream Deck app.

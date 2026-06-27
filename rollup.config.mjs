@@ -18,5 +18,8 @@ export default {
 		nodeResolve({ browser: false, exportConditions: ["node"], preferBuiltins: true }),
 		commonjs(),
 	],
-	external: ["@elgato/streamdeck"],
+	// Bundle the SDK so the .sdPlugin is self-contained — it must run from the
+	// Stream Deck Plugins dir (outside this repo's node_modules) when installed
+	// by drag-and-drop / Homebrew / the .streamDeckPlugin installer.
+	external: [],
 };

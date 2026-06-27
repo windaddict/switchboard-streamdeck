@@ -30,7 +30,9 @@
 			"Icon": "imgs/actions/jump/icon",
 			"Tooltip": "Jump to an open Safari tab, or open it if missing.",
 			"PropertyInspectorPath": "ui/jump-to-tab.html",
-			"Controllers": ["Keypad"],
+			"Controllers": [
+				"Keypad"
+			],
 			"States": [
 				{
 					"Image": "imgs/actions/jump/key",
@@ -44,7 +46,9 @@
 			"Icon": "imgs/actions/scroll/icon",
 			"Tooltip": "Dial: scroll the frontmost window. Press to jump to top or toggle fast/slow.",
 			"PropertyInspectorPath": "ui/scroll-window.html",
-			"Controllers": ["Encoder"],
+			"Controllers": [
+				"Encoder"
+			],
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
@@ -65,7 +69,9 @@
 			"Icon": "imgs/actions/switchapp/icon",
 			"Tooltip": "Open or switch to an app, optionally focusing a window by title pattern.",
 			"PropertyInspectorPath": "ui/switch-app.html",
-			"Controllers": ["Keypad"],
+			"Controllers": [
+				"Keypad"
+			],
 			"States": [
 				{
 					"Image": "imgs/actions/switchapp/key",
@@ -79,7 +85,9 @@
 			"Icon": "imgs/actions/tmux/icon",
 			"Tooltip": "Raise the iTerm2 window for a tmux window, and optionally switch to it.",
 			"PropertyInspectorPath": "ui/focus-tmux.html",
-			"Controllers": ["Keypad"],
+			"Controllers": [
+				"Keypad"
+			],
 			"States": [
 				{
 					"Image": "imgs/actions/tmux/key",
@@ -92,7 +100,9 @@
 			"UUID": "com.movingavg.switchboard.tmuxpane",
 			"Icon": "imgs/actions/tmuxpane/icon",
 			"Tooltip": "Dial: rotate to switch tmux panes; push to exit copy-mode (back to the prompt).",
-			"Controllers": ["Encoder"],
+			"Controllers": [
+				"Encoder"
+			],
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
@@ -112,7 +122,9 @@
 			"UUID": "com.movingavg.switchboard.tmuxwindial",
 			"Icon": "imgs/actions/tmuxwindial/icon",
 			"Tooltip": "Dial: rotate to cycle tmux windows; push for last window. Shows the current window on the touchscreen.",
-			"Controllers": ["Encoder"],
+			"Controllers": [
+				"Encoder"
+			],
 			"Encoder": {
 				"layout": "layouts/tmux-window.json",
 				"TriggerDescription": {
@@ -132,7 +144,9 @@
 			"UUID": "com.movingavg.switchboard.appwindows",
 			"Icon": "imgs/actions/appwindows/icon",
 			"Tooltip": "Dial: cycle the windows of the frontmost application.",
-			"Controllers": ["Encoder"],
+			"Controllers": [
+				"Encoder"
+			],
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
@@ -152,7 +166,9 @@
 			"Icon": "imgs/actions/bbeditdoc/icon",
 			"Tooltip": "Dial: move between the open documents in BBEdit's front window.",
 			"PropertyInspectorPath": "ui/bbedit-doc.html",
-			"Controllers": ["Encoder"],
+			"Controllers": [
+				"Encoder"
+			],
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
@@ -172,7 +188,9 @@
 			"Icon": "imgs/actions/openfile/icon",
 			"Tooltip": "Open the newest / latest / pattern-matched file in a folder, with a live ✓/✗ status badge.",
 			"PropertyInspectorPath": "ui/open-file.html",
-			"Controllers": ["Keypad"],
+			"Controllers": [
+				"Keypad"
+			],
 			"States": [
 				{
 					"Image": "imgs/actions/openfile/key",
@@ -186,7 +204,9 @@
 			"Icon": "imgs/actions/windowring/icon",
 			"Tooltip": "Long-press to add/remove the current window; tap to cycle through your saved windows.",
 			"PropertyInspectorPath": "ui/window-ring.html",
-			"Controllers": ["Keypad"],
+			"Controllers": [
+				"Keypad"
+			],
 			"States": [
 				{
 					"Image": "imgs/actions/windowring/key",
