@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+
 import streamDeck, {
 	action,
 	type KeyAction,
@@ -23,21 +25,26 @@ import {
 type WindowRingSettings = {
 	windows?: RingWindow[];
 	cursor?: number;
+	/** Play a sound when a long-press registers. Optional; defaults off. */
+	sound?: boolean;
 };
 
-/** Press held this long (ms) counts as a long press (add/remove). */
+/** Press held this long (ms) registers as a long press (add/remove). */
 const LONG_PRESS_MS = 500;
 /** How often the key icon re-checks whether the front window is in the ring. */
 const POLL_MS = 3000;
+/** Built-in macOS sound played on long-press when enabled. */
+const SOUND_FILE = "/System/Library/Sounds/Tink.aiff";
 
 /**
  * A user-curated ring of windows. Long-press adds the frontmost window (or
  * removes it if already in the ring); a short tap focuses the next window. The
- * key shows the count and a green ring when the current window is a member.
+ * long-press is detected at the threshold *while still held*, so feedback (a
+ * key flash, plus an optional sound) fires the moment it registers.
  */
 @action({ UUID: "com.movingavg.switchboard.windowring" })
 export class WindowRing extends SingletonAction<WindowRingSettings> {
-	private readonly downAt = new Map<string, number>();
+	private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly visible = new Map<string, KeyAction<WindowRingSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
 
@@ -52,7 +59,9 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 
 	override onWillDisappear(ev: WillDisappearEvent<WindowRingSettings>): void {
 		this.visible.delete(ev.action.id);
-		this.downAt.delete(ev.action.id);
+		const t = this.pending.get(ev.action.id);
+		if (t !== undefined) clearTimeout(t);
+		this.pending.delete(ev.action.id);
 		if (this.visible.size === 0 && this.timer !== undefined) {
 			clearInterval(this.timer);
 			this.timer = undefined;
@@ -60,48 +69,57 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 	}
 
 	override onKeyDown(ev: KeyDownEvent<WindowRingSettings>): void {
-		this.downAt.set(ev.action.id, Date.now());
+		const id = ev.action.id;
+		// Fire the long-press handler at the threshold, while the key is still held.
+		const t = setTimeout(() => {
+			this.pending.delete(id);
+			void this.handleLongPress(ev.action, ev.payload.settings).catch((err) =>
+				streamDeck.logger.error(`Window Ring long-press failed: ${String(err)}`),
+			);
+		}, LONG_PRESS_MS);
+		this.pending.set(id, t);
 	}
 
 	override async onKeyUp(ev: KeyUpEvent<WindowRingSettings>): Promise<void> {
-		const down = this.downAt.get(ev.action.id);
-		this.downAt.delete(ev.action.id);
-		const isLong = down !== undefined && Date.now() - down >= LONG_PRESS_MS;
-
-		if (isLong) {
-			await this.handleLongPress(ev);
-		} else {
-			await this.handleShortPress(ev);
-		}
+		const t = this.pending.get(ev.action.id);
+		if (t === undefined) return; // long press already handled at the threshold
+		clearTimeout(t);
+		this.pending.delete(ev.action.id);
+		await this.handleShortPress(ev.action, ev.payload.settings);
 	}
 
-	/** Long press: add the frontmost window, or remove it if already in the ring. */
-	private async handleLongPress(ev: KeyUpEvent<WindowRingSettings>): Promise<void> {
+	/** Long press: toggle the frontmost window in the ring + give feedback. */
+	private async handleLongPress(
+		action: KeyAction<WindowRingSettings>,
+		settings: WindowRingSettings,
+	): Promise<void> {
 		const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
 		if (!front.ok) {
 			this.warn(front.code, "read the front window");
-			await ev.action.showAlert();
+			await action.showAlert();
 			return;
 		}
 		const window = parseFrontWindow(front.stdout);
-		const settings = ev.payload.settings;
-		const { list, added } = toggleWindow(settings.windows ?? [], window);
-		if (!added && list.length === (settings.windows ?? []).length) {
-			// nothing changed (e.g. no frontmost window)
-			await ev.action.showAlert();
+		const before = settings.windows ?? [];
+		const { list } = toggleWindow(before, window);
+		if (list.length === before.length) {
+			await action.showAlert(); // nothing to add (no frontmost window)
 			return;
 		}
-		await ev.action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-		await ev.action.showOk();
-		await this.updateIcon(ev.action, list);
+		await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
+		await action.showOk(); // visual: the long-press registered
+		this.playSound(settings); // audio: optional
+		await this.updateIcon(action, list);
 	}
 
 	/** Short tap: focus the next window in the ring (round-robin). */
-	private async handleShortPress(ev: KeyUpEvent<WindowRingSettings>): Promise<void> {
-		const settings = ev.payload.settings;
+	private async handleShortPress(
+		action: KeyAction<WindowRingSettings>,
+		settings: WindowRingSettings,
+	): Promise<void> {
 		const list = settings.windows ?? [];
 		if (list.length === 0) {
-			await ev.action.showAlert();
+			await action.showAlert();
 			return;
 		}
 		const cursor = nextIndex(list.length, settings.cursor ?? -1);
@@ -111,10 +129,18 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 		);
 		if (!result.ok) {
 			this.warn(result.code, `focus ${target.app}`);
-			await ev.action.showAlert();
+			await action.showAlert();
 		}
-		await ev.action.setSettings({ ...settings, cursor });
-		await this.updateIcon(ev.action, list);
+		await action.setSettings({ ...settings, cursor });
+		await this.updateIcon(action, list);
+	}
+
+	/** Fire-and-forget system sound when enabled. */
+	private playSound(settings: WindowRingSettings): void {
+		if (settings.sound !== true) return;
+		execFile("/usr/bin/afplay", [SOUND_FILE], () => {
+			/* best-effort; ignore errors */
+		});
 	}
 
 	private async refreshAll(): Promise<void> {

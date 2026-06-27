@@ -1699,14 +1699,17 @@ function buildRingImage(count, currentInList) {
         `</svg>`);
 }
 
-/** Press held this long (ms) counts as a long press (add/remove). */
+/** Press held this long (ms) registers as a long press (add/remove). */
 const LONG_PRESS_MS = 500;
 /** How often the key icon re-checks whether the front window is in the ring. */
 const POLL_MS = 3000;
+/** Built-in macOS sound played on long-press when enabled. */
+const SOUND_FILE = "/System/Library/Sounds/Tink.aiff";
 /**
  * A user-curated ring of windows. Long-press adds the frontmost window (or
  * removes it if already in the ring); a short tap focuses the next window. The
- * key shows the count and a green ring when the current window is a member.
+ * long-press is detected at the threshold *while still held*, so feedback (a
+ * key flash, plus an optional sound) fires the moment it registers.
  */
 let WindowRing = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.windowring" })];
@@ -1723,7 +1726,7 @@ let WindowRing = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        downAt = new Map();
+        pending = new Map();
         visible = new Map();
         timer;
         async onWillAppear(ev) {
@@ -1737,52 +1740,57 @@ let WindowRing = (() => {
         }
         onWillDisappear(ev) {
             this.visible.delete(ev.action.id);
-            this.downAt.delete(ev.action.id);
+            const t = this.pending.get(ev.action.id);
+            if (t !== undefined)
+                clearTimeout(t);
+            this.pending.delete(ev.action.id);
             if (this.visible.size === 0 && this.timer !== undefined) {
                 clearInterval(this.timer);
                 this.timer = undefined;
             }
         }
         onKeyDown(ev) {
-            this.downAt.set(ev.action.id, Date.now());
+            const id = ev.action.id;
+            // Fire the long-press handler at the threshold, while the key is still held.
+            const t = setTimeout(() => {
+                this.pending.delete(id);
+                void this.handleLongPress(ev.action, ev.payload.settings).catch((err) => streamDeck.logger.error(`Window Ring long-press failed: ${String(err)}`));
+            }, LONG_PRESS_MS);
+            this.pending.set(id, t);
         }
         async onKeyUp(ev) {
-            const down = this.downAt.get(ev.action.id);
-            this.downAt.delete(ev.action.id);
-            const isLong = down !== undefined && Date.now() - down >= LONG_PRESS_MS;
-            if (isLong) {
-                await this.handleLongPress(ev);
-            }
-            else {
-                await this.handleShortPress(ev);
-            }
+            const t = this.pending.get(ev.action.id);
+            if (t === undefined)
+                return; // long press already handled at the threshold
+            clearTimeout(t);
+            this.pending.delete(ev.action.id);
+            await this.handleShortPress(ev.action, ev.payload.settings);
         }
-        /** Long press: add the frontmost window, or remove it if already in the ring. */
-        async handleLongPress(ev) {
+        /** Long press: toggle the frontmost window in the ring + give feedback. */
+        async handleLongPress(action, settings) {
             const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
             if (!front.ok) {
                 this.warn(front.code, "read the front window");
-                await ev.action.showAlert();
+                await action.showAlert();
                 return;
             }
             const window = parseFrontWindow(front.stdout);
-            const settings = ev.payload.settings;
-            const { list, added } = toggleWindow(settings.windows ?? [], window);
-            if (!added && list.length === (settings.windows ?? []).length) {
-                // nothing changed (e.g. no frontmost window)
-                await ev.action.showAlert();
+            const before = settings.windows ?? [];
+            const { list } = toggleWindow(before, window);
+            if (list.length === before.length) {
+                await action.showAlert(); // nothing to add (no frontmost window)
                 return;
             }
-            await ev.action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
-            await ev.action.showOk();
-            await this.updateIcon(ev.action, list);
+            await action.setSettings({ ...settings, windows: list, cursor: settings.cursor ?? -1 });
+            await action.showOk(); // visual: the long-press registered
+            this.playSound(settings); // audio: optional
+            await this.updateIcon(action, list);
         }
         /** Short tap: focus the next window in the ring (round-robin). */
-        async handleShortPress(ev) {
-            const settings = ev.payload.settings;
+        async handleShortPress(action, settings) {
             const list = settings.windows ?? [];
             if (list.length === 0) {
-                await ev.action.showAlert();
+                await action.showAlert();
                 return;
             }
             const cursor = nextIndex(list.length, settings.cursor ?? -1);
@@ -1790,10 +1798,18 @@ let WindowRing = (() => {
             const result = await runAppleScript(buildAppScript(resolveApp({ appName: target.app, titlePattern: target.title })));
             if (!result.ok) {
                 this.warn(result.code, `focus ${target.app}`);
-                await ev.action.showAlert();
+                await action.showAlert();
             }
-            await ev.action.setSettings({ ...settings, cursor });
-            await this.updateIcon(ev.action, list);
+            await action.setSettings({ ...settings, cursor });
+            await this.updateIcon(action, list);
+        }
+        /** Fire-and-forget system sound when enabled. */
+        playSound(settings) {
+            if (settings.sound !== true)
+                return;
+            execFile("/usr/bin/afplay", [SOUND_FILE], () => {
+                /* best-effort; ignore errors */
+            });
         }
         async refreshAll() {
             for (const action of this.visible.values()) {

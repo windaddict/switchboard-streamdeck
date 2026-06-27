@@ -25,7 +25,7 @@
 	"UUID": "com.movingavg.switchboard",
 	"Actions": [
 		{
-			"Name": "Jump to Tab",
+			"Name": "Safari Tab Jump",
 			"UUID": "com.movingavg.switchboard.jump",
 			"Icon": "imgs/actions/jump/icon",
 			"Tooltip": "Jump to an open Safari tab, or open it if missing.",
