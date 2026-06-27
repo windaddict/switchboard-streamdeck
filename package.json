@@ -6,7 +6,9 @@
 	"private": true,
 	"scripts": {
 		"build": "rollup -c",
+		"postbuild": "npm run validate",
 		"build:helper": "swiftc -O -o com.johnknox.safarijump.sdPlugin/bin/macos/scroll helper/scroll.swift",
+		"validate": "streamdeck validate com.johnknox.safarijump.sdPlugin",
 		"watch": "rollup -c -w",
 		"test": "vitest run",
 		"test:watch": "vitest",
@@ -16,6 +18,7 @@
 		"@elgato/streamdeck": "^1.0.0"
 	},
 	"devDependencies": {
+		"@elgato/cli": "^1.7.4",
 		"@rollup/plugin-commonjs": "^28.0.0",
 		"@rollup/plugin-node-resolve": "^16.0.0",
 		"@rollup/plugin-typescript": "^12.1.0",
