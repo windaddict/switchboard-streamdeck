@@ -105,8 +105,13 @@ npx @elgato/cli restart com.johnknox.safarijump   # reload the plugin live
 The visible name is "Switchboard" but the **UUID stays `com.johnknox.safarijump`**
 for now, because changing it orphans the user's configured buttons. Do the full
 rename as ONE deliberate step right before publishing the repo. It is a
-**breaking change** — the user re-adds and re-configures every Stream Deck button
-once. At that point, change all of these together to `com.movingavg.switchboard`:
+change. **`scripts/rename.sh` automates all of this AND migrates the already-
+configured buttons** (it rewrites the action UUIDs in the Stream Deck profile
+store, so settings are preserved — no re-configuring). Quit Stream Deck, then:
+`scripts/rename.sh --dry-run` to preview, `scripts/rename.sh --yes` to apply.
+
+The script covers steps 1–8 below; they're kept here as the manual reference.
+Target id `com.movingavg.switchboard`:
 
 1. `manifest.json` — `UUID` and every action `UUID` (`.jump`, `.scroll`, … 9 of them).
 2. The `.sdPlugin` folder name → `com.movingavg.switchboard.sdPlugin`.
