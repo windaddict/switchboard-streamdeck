@@ -100,6 +100,28 @@ npx @elgato/cli restart com.johnknox.safarijump   # reload the plugin live
 6. `npm run typecheck && npm test && npm run build`, then `npx @elgato/cli restart …`.
    **Quit + relaunch Stream Deck** so the new action shows in the list.
 
+## Release-prep checklist (deferred rename — decided 2026-06-27)
+
+The visible name is "Switchboard" but the **UUID stays `com.johnknox.safarijump`**
+for now, because changing it orphans the user's configured buttons. Do the full
+rename as ONE deliberate step right before publishing the repo. It is a
+**breaking change** — the user re-adds and re-configures every Stream Deck button
+once. At that point, change all of these together to `com.movingavg.switchboard`:
+
+1. `manifest.json` — `UUID` and every action `UUID` (`.jump`, `.scroll`, … 9 of them).
+2. The `.sdPlugin` folder name → `com.movingavg.switchboard.sdPlugin`.
+3. `rollup.config.mjs` — the `sdPlugin` constant (output path).
+4. `package.json` — `name` → `switchboard`; `build:helper` + `validate` script paths.
+5. `tests/scroll-runner.test.ts` — `BASE` / `EXPECTED_BIN` path literals.
+6. `README.md` (install commands + UUID note) and this `CLAUDE.md`'s self-references.
+7. Repo directory `streamdeck-safari-jump` → `switchboard`.
+8. Re-create the Stream Deck Plugins **symlink** to the new folder; quit + relaunch SD.
+9. (Optional polish) add a `coverage` npm script, top off the ~6 defensive
+   branches, and add a thin action-level test layer with a mocked SDK.
+
+`import.meta.url` resolves the scroll helper relative to the bundle, so no code
+change is needed there once the folder is renamed.
+
 ## Context
 
 This plugin is also a marketing/credibility artifact for John Knox / Moving
