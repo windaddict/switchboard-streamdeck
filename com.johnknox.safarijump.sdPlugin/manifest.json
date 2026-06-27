@@ -86,6 +86,26 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Switch tmux Pane",
+			"UUID": "com.johnknox.safarijump.tmuxpane",
+			"Icon": "imgs/actions/tmuxpane/icon",
+			"Tooltip": "Dial: rotate to switch tmux panes; push to exit copy-mode (back to the prompt).",
+			"Controllers": ["Encoder"],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Previous / next pane",
+					"Push": "Exit copy-mode (scroll to bottom)"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/tmuxpane/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }
