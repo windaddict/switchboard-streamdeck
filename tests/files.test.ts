@@ -4,8 +4,23 @@ import {
 	matchesGlob,
 	selectFile,
 	buildOpenArgs,
+	expandHome,
 	type FileEntry,
 } from "../src/mac/files.js";
+
+describe("expandHome", () => {
+	it("expands a bare ~", () => {
+		expect(expandHome("~", "/Users/x")).toBe("/Users/x");
+	});
+	it("expands a leading ~/", () => {
+		expect(expandHome("~/ea-system/state", "/Users/x")).toBe("/Users/x/ea-system/state");
+	});
+	it("leaves absolute and non-tilde paths unchanged", () => {
+		expect(expandHome("/abs/path", "/Users/x")).toBe("/abs/path");
+		expect(expandHome("", "/Users/x")).toBe("");
+		expect(expandHome("relative/dir", "/Users/x")).toBe("relative/dir");
+	});
+});
 
 describe("globToRegExp / matchesGlob", () => {
 	it("* is anchored (suffix match)", () => {

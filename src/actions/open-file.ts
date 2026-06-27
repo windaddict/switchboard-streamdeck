@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import streamDeck, {
@@ -14,6 +15,7 @@ import streamDeck, {
 
 import {
 	buildOpenArgs,
+	expandHome,
 	type FileEntry,
 	type Opener,
 	type PickMode,
@@ -69,7 +71,7 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 
 	override async onKeyDown(ev: KeyDownEvent<OpenFileSettings>): Promise<void> {
 		const settings = ev.payload.settings;
-		const dir = (settings.directory ?? "").trim();
+		const dir = expandHome((settings.directory ?? "").trim(), homedir());
 		if (!dir) {
 			streamDeck.logger.warn("Open File pressed with no directory configured.");
 			await ev.action.showAlert();
@@ -134,7 +136,7 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 				await action.setImage();
 				return;
 			}
-			const dir = (settings.directory ?? "").trim();
+			const dir = expandHome((settings.directory ?? "").trim(), homedir());
 			let status: FileStatus = "none";
 			if (dir) {
 				const entries = this.list(dir);

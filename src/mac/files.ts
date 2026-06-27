@@ -18,6 +18,17 @@ export type PickMode = "modified" | "created" | "name";
 export type Opener = "default" | "bbedit" | "app";
 
 /**
+ * Expand a leading `~` to the home directory. Node's fs does not understand
+ * `~` (it's a shell convenience), so a directory like "~/Downloads" must be
+ * resolved before use. Non-tilde paths are returned unchanged.
+ */
+export function expandHome(p: string, home: string): string {
+	if (p === "~") return home;
+	if (p.startsWith("~/")) return `${home}${p.slice(1)}`;
+	return p;
+}
+
+/**
  * Convert a filename glob (`*` = any run, `?` = one char) into an anchored,
  * case-insensitive RegExp. All other regex metacharacters are matched literally.
  */
