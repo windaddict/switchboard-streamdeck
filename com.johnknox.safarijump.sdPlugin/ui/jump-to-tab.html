@@ -30,7 +30,12 @@
 			<sdpi-textfield setting="url" placeholder="https://example.com/app"></sdpi-textfield>
 		</sdpi-item>
 		<sdpi-item label="Match pattern" id="row-pattern">
-			<sdpi-textfield setting="urlPattern" placeholder="(optional) e.g. example.com/app"></sdpi-textfield>
+			<sdpi-textfield setting="urlPattern" placeholder="(optional) e.g. example.com/app or github.com/*/pull/*"></sdpi-textfield>
+			<div style="font-size: 11px; color: #999; margin-top: 4px;">
+				Matches anywhere in a tab's URL. Use <code>*</code> as a wildcard for
+				any text, e.g. <code>github.com/*/pull/*</code>. No <code>*</code> = plain
+				substring match.
+			</div>
 		</sdpi-item>
 
 		<!-- Optional title fallback, applies to all services. -->

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildJumpScript, escapeForAppleScript } from "../src/safari/applescript.js";
+import { buildJumpScript, escapeForAppleScript, wildcardSegments } from "../src/safari/applescript.js";
 import type { ResolvedTarget } from "../src/safari/targets.js";
 
 function target(over: Partial<ResolvedTarget> = {}): ResolvedTarget {
@@ -38,8 +38,9 @@ describe("buildJumpScript — normal (non-private)", () => {
 	it('targets Safari', () => {
 		expect(script).toContain('tell application "Safari"');
 	});
-	it("checks the urlPattern inside a contains clause", () => {
-		expect(script).toContain('theURL contains "mail.google.com/mail/u/0"');
+	it("matches the urlPattern via the ordered-segment helper", () => {
+		expect(script).toContain('set segs to {"mail.google.com/mail/u/0"}');
+		expect(script).toContain("my urlMatches(theURL)");
 	});
 	it("uses open location with the url as a fallback", () => {
 		expect(script).toContain('open location "https://mail.google.com/mail/u/0/"');
@@ -96,8 +97,35 @@ describe("buildJumpScript — escaping in output", () => {
 		);
 		// The escaped form must be present...
 		expect(script).toContain('example.com/\\"weird\\"');
-		// ...and no raw breakout quote (a bare " not preceded by a backslash, other
-		// than the legitimate string-literal delimiters the template uses).
-		expect(script).not.toContain('contains "example.com/"weird""');
+		// ...and the raw, unescaped pattern must NOT appear (no quote breakout).
+		expect(script).not.toContain('example.com/"weird"');
+	});
+});
+
+describe("wildcardSegments", () => {
+	it("no wildcard yields a single segment", () => {
+		expect(wildcardSegments("mail.google.com/u/2")).toEqual(["mail.google.com/u/2"]);
+	});
+	it("splits on * and drops empty pieces", () => {
+		expect(wildcardSegments("a*b*c")).toEqual(["a", "b", "c"]);
+	});
+	it("drops empty edges from leading/trailing *", () => {
+		expect(wildcardSegments("*github.com/*/pull*")).toEqual(["github.com/", "/pull"]);
+	});
+	it("bare * or empty string matches anything (no segments)", () => {
+		expect(wildcardSegments("*")).toEqual([]);
+		expect(wildcardSegments("")).toEqual([]);
+	});
+});
+
+describe("buildJumpScript — wildcards", () => {
+	it("renders a *-pattern as ordered segments matched in order", () => {
+		const script = buildJumpScript(target({ urlPattern: "github.com/*/pull/*" }));
+		expect(script).toContain('set segs to {"github.com/", "/pull/"}');
+		expect(script).toContain("my urlMatches(theURL)");
+	});
+	it("keeps a no-* pattern as a single-segment (substring) match", () => {
+		const script = buildJumpScript(target({ urlPattern: "mail.google.com/u/2" }));
+		expect(script).toContain('set segs to {"mail.google.com/u/2"}');
 	});
 });

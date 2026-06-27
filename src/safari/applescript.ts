@@ -23,15 +23,52 @@ function titleClause(titlePattern: string | undefined): string {
 }
 
 /**
+ * Split a URL match pattern into ordered literal segments on `*` wildcards.
+ *
+ * A pattern with no `*` yields a single segment, which matches as a plain
+ * substring (so existing non-wildcard patterns are unchanged). `*` stands for
+ * any run of characters; matching requires the segments to appear in order but
+ * is not anchored (it still matches anywhere in the URL).
+ *
+ * Examples: `"a/b"` -> `["a/b"]`; `"mail.google.com/u/*​/inbox"` ->
+ * `["mail.google.com/u/", "/inbox"]`; `"*"` / `""` -> `[]` (matches anything).
+ */
+export function wildcardSegments(pattern: string): string[] {
+	return pattern.split("*").filter((segment) => segment.length > 0);
+}
+
+/** Render segments as an AppleScript list literal of escaped strings. */
+function segmentsListLiteral(segments: string[]): string {
+	return `{${segments.map((s) => `"${escapeForAppleScript(s)}"`).join(", ")}}`;
+}
+
+/**
  * Find an existing Safari tab matching the URL pattern (or title fallback),
- * focus it, and raise its window. If none is found, open the URL.
+ * focus it, and raise its window. If none is found, open the URL. The URL match
+ * supports `*` wildcards via an ordered-segment containment check.
  */
 function buildNormalScript(t: ResolvedTarget): string {
 	const url = escapeForAppleScript(t.url);
-	const pattern = escapeForAppleScript(t.urlPattern);
+	const segs = segmentsListLiteral(wildcardSegments(t.urlPattern));
 	const titleMatch = titleClause(t.titlePattern);
 
-	return `tell application "Safari"
+	return `on urlMatches(u)
+	set segs to ${segs}
+	set startIdx to 1
+	set uLen to (length of u)
+	repeat with seg in segs
+		set s to (seg as text)
+		if s is not "" then
+			if startIdx > uLen then return false
+			set f to offset of s in (text startIdx thru uLen of u)
+			if f is 0 then return false
+			set startIdx to startIdx + f + (length of s) - 1
+		end if
+	end repeat
+	return true
+end urlMatches
+
+tell application "Safari"
 	set wasFound to false
 	repeat with w in windows
 		repeat with tb in tabs of w
@@ -45,7 +82,7 @@ function buildNormalScript(t: ResolvedTarget): string {
 			on error
 				set theName to ""
 			end try
-			if (theURL contains "${pattern}")${titleMatch} then
+			if (my urlMatches(theURL))${titleMatch} then
 				set current tab of w to tb
 				set index of w to 1
 				set wasFound to true
