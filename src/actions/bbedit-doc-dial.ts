@@ -21,7 +21,10 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	override async onWillAppear(ev: WillAppearEvent<BBEditDocSettings>): Promise<void> {
 		if (ev.action.isDial()) {
 			const result = await runAppleScript(BBEDIT_CURRENT_DOC_SCRIPT);
-			await this.render(ev.action, result.ok ? result.stdout : "");
+			if (!result.ok) {
+				streamDeck.logger.warn(`BBEdit read failed (${result.code}): ${result.stderr || "no stderr"}`);
+			}
+			await this.render(ev.action, result.ok ? result.stdout : this.hint(result.code));
 		}
 	}
 
@@ -30,13 +33,24 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		if (direction === "none") return;
 
 		const result = await runAppleScript(bbeditCycleDocScript(direction));
-		if (!result.ok && result.code === "permission-denied") {
+		if (!result.ok) {
 			streamDeck.logger.error(
-				"BBEdit control blocked. Grant access: System Settings > Privacy & Security > " +
-					"Automation > Stream Deck > enable BBEdit.",
+				`BBEdit cycle failed (${result.code}): ${result.stderr || "no stderr"}`,
 			);
+			if (result.code === "permission-denied") {
+				streamDeck.logger.error(
+					"Grant: System Settings > Privacy & Security > Automation > Stream Deck > enable BBEdit.",
+				);
+			}
+			await this.render(ev.action, this.hint(result.code));
+			return;
 		}
 		await this.render(ev.action, result.stdout);
+	}
+
+	/** Short touchscreen hint when a call fails, so the dial isn't silently dead. */
+	private hint(code: string): string {
+		return code === "permission-denied" ? "grant access" : "no BBEdit?";
 	}
 
 	private async render(dial: DialAction<BBEditDocSettings>, docName: string): Promise<void> {
