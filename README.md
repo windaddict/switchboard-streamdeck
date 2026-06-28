@@ -14,7 +14,7 @@ I'm an engineer by training, but these days I work from the director's chair, no
 
 That's the point. Switchboard is a **Moving Average Labs** artifact — a small, concrete proof of how AI changes the way operators build. The lesson isn't the tmux dials; it's the operating model behind them.
 
-Read the full story in the flagship essay → [essay](https://movingavg.com/<slug>) *(link TBD)*. Advisory work lives at [movingavg.com](https://movingavg.com).
+Read the full story in the flagship essay → [I Directed an AI to Ship Real Software](https://www.movingavg.com/essays/directing-ai-to-ship-real-software.html). Advisory work lives at [movingavg.com](https://movingavg.com).
 
 ---
 
