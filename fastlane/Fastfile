@@ -26,29 +26,50 @@ platform :mac do
     )
   end
 
-  desc "Provision the Developer ID cert, build + sign the universal helpers, and notarize them."
+  desc "Build + sign the universal helpers and notarize them."
+  desc "Prerequisite (one-time, Account Holder only — Apple forbids creating a"
+  desc "Developer ID cert via API key): create a 'Developer ID Application'"
+  desc "certificate in Xcode > Settings > Accounts > 9CHGJ6ZAE6 > Manage"
+  desc "Certificates > + > Developer ID Application. Then `fastlane match import`"
+  desc "it into the certs repo if you want it synced across machines."
   lane :notarize_helpers do
     root = File.expand_path("..", __dir__)
     helper_dir = File.join(root, HELPER_DIR)
     zip = File.join(root, "dist", "switchboard-helpers.zip")
 
-    # 1. Install (or create) the Developer ID Application certificate via match.
-    #    Notarizing bare CLI binaries needs only the cert, not a profile. match
-    #    validates every app_identifier exists in the portal *before* honoring
-    #    skip_provisioning_profiles, so we pass an empty app_identifier (the
-    #    Appfile sets one as the default) to skip that check entirely.
-    match(
-      type: "developer_id",
-      app_identifier: [],
-      skip_provisioning_profiles: true,
-      readonly: false
-    )
+    # 1. Pull the Developer ID cert from the match repo if it's there. readonly:
+    #    never create it — Developer ID cert creation is Account-Holder /
+    #    web-portal only and fails with an API key. If the repo has no such cert
+    #    we fall back to whatever Developer ID cert is already in the keychain.
+    begin
+      match(
+        type: "developer_id",
+        app_identifier: [],
+        skip_provisioning_profiles: true,
+        readonly: true
+      )
+    rescue => e
+      UI.important("match could not fetch a Developer ID cert from the repo (#{e.message}).")
+      UI.important("Using a Developer ID cert from the local keychain instead, if present.")
+    end
 
     # 2. Build the universal helpers; build:helper auto-signs them with the
-    #    Developer ID cert now in the keychain (hardened runtime + timestamp).
+    #    Developer ID cert in the keychain (hardened runtime + timestamp).
     sh("npm --prefix #{root.shellescape} run build:helper")
 
-    # 3. Zip the signed helpers and notarize. Bare CLI binaries can't be
+    # 3. Fail early with a precise fix if the helpers aren't Developer ID signed.
+    %w[scroll tile axcheck].each do |name|
+      info = sh("codesign -dvvv #{File.join(helper_dir, name).shellescape} 2>&1", log: false)
+      next if info.include?("Authority=Developer ID Application")
+
+      UI.user_error!(
+        "#{name} is not Developer ID signed. Create a 'Developer ID Application' " \
+        "certificate (Account Holder): Xcode > Settings > Accounts > 9CHGJ6ZAE6 > " \
+        "Manage Certificates > + > Developer ID Application. Then re-run this lane."
+      )
+    end
+
+    # 4. Zip the signed helpers and notarize. Bare CLI binaries can't be
     #    stapled, so Gatekeeper verifies them online on first run.
     sh("mkdir -p #{File.dirname(zip).shellescape} && ditto -c -k #{helper_dir.shellescape} #{zip.shellescape}")
     notarize(
