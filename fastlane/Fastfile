@@ -72,10 +72,10 @@ platform :mac do
     # 4. Zip the signed helpers and notarize. Bare CLI binaries can't be
     #    stapled, so Gatekeeper verifies them online on first run.
     sh("mkdir -p #{File.dirname(zip).shellescape} && ditto -c -k #{helper_dir.shellescape} #{zip.shellescape}")
+    # notarytool is the only backend in this fastlane version (no use_notarytool flag).
     notarize(
       package: zip,
       bundle_id: NOTARY_BUNDLE_ID,
-      use_notarytool: true,
       api_key: lane_context[SharedValues::APP_STORE_CONNECT_API_KEY],
       skip_stapling: true,
       print_log: true
