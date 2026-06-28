@@ -9064,20 +9064,45 @@ return "ok"`;
 }
 /**
  * Open the URL in a NEW private window. Safari does not expose private-window
- * tabs to AppleScript, so matching an existing private tab is not possible —
- * we always open fresh. Uses the ⌘⇧N menu shortcut via System Events.
+ * tabs to AppleScript, so matching an existing private tab is not possible — we
+ * always open fresh via the ⌘⇧N menu shortcut.
+ *
+ * Safety: rather than a fixed `delay` then blindly writing `front document`
+ * (which, if the private window opened slowly, would navigate the user's CURRENT
+ * tab), we record the front document's URL first, then poll until it changes —
+ * meaning a new window actually became frontmost. We only set the URL once a new
+ * window appears (or when there was nothing to protect), so a slow ⌘⇧N can never
+ * clobber an existing tab.
  */
 function buildPrivateScript(t) {
     const url = escapeForAppleScript(t.url);
-    return `tell application "Safari" to activate
-delay 0.2
+    return `tell application "Safari"
+	activate
+	try
+		set prevURL to (URL of front document)
+	on error
+		set prevURL to ""
+	end try
+end tell
 tell application "System Events"
 	keystroke "n" using {command down, shift down}
 end tell
-delay 0.4
 tell application "Safari"
-	set URL of front document to "${url}"
-	activate
+	set waited to 0
+	set newURL to prevURL
+	repeat until (newURL is not prevURL) or (waited > 40)
+		delay 0.05
+		set waited to waited + 1
+		try
+			set newURL to (URL of front document)
+		on error
+			set newURL to prevURL
+		end try
+	end repeat
+	if (newURL is not prevURL) or (prevURL is "") then
+		set URL of front document to "${url}"
+		activate
+	end if
 end tell
 return "ok"`;
 }

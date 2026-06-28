@@ -68,6 +68,11 @@ describe("buildJumpScript — private", () => {
 	it("does NOT contain the open location fallback", () => {
 		expect(script).not.toContain("open location");
 	});
+	it("guards against clobbering the current tab (records prevURL, polls, conditional set)", () => {
+		expect(script).toContain("set prevURL to (URL of front document)");
+		expect(script).toContain("repeat until (newURL is not prevURL)");
+		expect(script).toContain("if (newURL is not prevURL) or (prevURL is \"\") then");
+	});
 });
 
 describe("buildJumpScript — title fallback", () => {
