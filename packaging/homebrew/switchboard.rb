@@ -20,7 +20,7 @@ cask "switchboard" do
   desc "Stream Deck plugin for fast macOS context-switching (Safari, tmux, iTerm2, BBEdit, windows, files)"
   homepage "https://github.com/windaddict/switchboard-streamdeck"
 
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   # Install the self-contained plugin folder into the Stream Deck Plugins dir.
   artifact "com.movingavg.switchboard.sdPlugin",
