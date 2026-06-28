@@ -213,6 +213,29 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"Name": "Arrange Window",
+			"UUID": "com.movingavg.switchboard.tile",
+			"Icon": "imgs/actions/tile/icon",
+			"Tooltip": "Dial: rotate to tile the frontmost window through halves/thirds/quarters or a grid. Press to maximize.",
+			"PropertyInspectorPath": "ui/arrange-window.html",
+			"Controllers": [
+				"Encoder"
+			],
+			"Encoder": {
+				"layout": "$B1",
+				"TriggerDescription": {
+					"Rotate": "Tile clockwise / counter-clockwise",
+					"Push": "Maximize"
+				}
+			},
+			"States": [
+				{
+					"Image": "imgs/actions/tile/key",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

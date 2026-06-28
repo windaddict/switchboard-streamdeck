@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Arrange Window</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Turn clockwise">
+			<sdpi-select setting="cwScheme" default="grid2x2">
+				<option value="halvesH">Halves — left / right</option>
+				<option value="halvesV">Halves — top / bottom</option>
+				<option value="thirdsH">Thirds — columns</option>
+				<option value="thirdsV">Thirds — rows</option>
+				<option value="quartersH">Quarters — columns</option>
+				<option value="quartersV">Quarters — rows</option>
+				<option value="grid2x2">2×2 grid (quarters)</option>
+				<option value="grid2x3">2×3 grid (half height, third width)</option>
+				<option value="grid2x4">2×4 grid (half height, quarter width)</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<sdpi-item label="Turn counter-clockwise">
+			<sdpi-select setting="ccwScheme" default="grid2x2">
+				<option value="halvesH">Halves — left / right</option>
+				<option value="halvesV">Halves — top / bottom</option>
+				<option value="thirdsH">Thirds — columns</option>
+				<option value="thirdsV">Thirds — rows</option>
+				<option value="quartersH">Quarters — columns</option>
+				<option value="quartersV">Quarters — rows</option>
+				<option value="grid2x2">2×2 grid (quarters)</option>
+				<option value="grid2x3">2×3 grid (half height, third width)</option>
+				<option value="grid2x4">2×4 grid (half height, quarter width)</option>
+			</sdpi-select>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			Rotate to move the frontmost window through the chosen arrangement;
+			press to maximize. Set both directions to the same arrangement and
+			counter-clockwise simply reverses clockwise — handy for nudging a
+			window around a grid. Moving windows needs Accessibility access for
+			Stream Deck (System Settings → Privacy &amp; Security → Accessibility).
+		</div>
+	</body>
+</html>

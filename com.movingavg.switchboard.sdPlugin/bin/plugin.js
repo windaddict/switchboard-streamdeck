@@ -9737,6 +9737,216 @@ let SwitchApp = (() => {
 })();
 
 /**
+ * Pure geometry + ordering for the "Arrange Window" dial. The dial walks the
+ * frontmost window through the cells of a grid; each rotation direction is
+ * configured with its own scheme. All arrangements reduce to a (cols × rows)
+ * grid, and cells are visited in serpentine order (row 0 left→right, row 1
+ * right→left, …) so a 2-row grid is traversed clockwise — e.g. quarters go
+ * TL → TR → BR → BL, matching how you'd lay windows around the screen.
+ *
+ * This module is intentionally free of any macOS/AppleScript dependency: it
+ * emits a normalized cell {x,y,w,h} in 0..1 of the screen's *visible* frame,
+ * which the native helper maps to pixels and applies. That keeps the tricky
+ * part (which cell, which direction, wrap-around) unit-testable.
+ */
+/** The arrangements offered in the property inspector, keyed by setting value.
+ * Columns = divisions across the width; rows = divisions down the height. */
+const SCHEMES = {
+    halvesH: { cols: 2, rows: 1 }, // left / right
+    halvesV: { cols: 1, rows: 2 }, // top / bottom
+    thirdsH: { cols: 3, rows: 1 }, // three columns
+    thirdsV: { cols: 1, rows: 3 }, // three rows
+    quartersH: { cols: 4, rows: 1 }, // four columns
+    quartersV: { cols: 1, rows: 4 }, // four rows
+    grid2x2: { cols: 2, rows: 2 }, // quarters: half height × half width
+    grid2x3: { cols: 3, rows: 2 }, // half height × third width
+    grid2x4: { cols: 4, rows: 2 }, // half height × quarter width
+};
+/** Short human labels for the touchscreen readout + the property inspector. */
+const SCHEME_LABELS = {
+    halvesH: "Halves ↔",
+    halvesV: "Halves ↕",
+    thirdsH: "Thirds ↔",
+    thirdsV: "Thirds ↕",
+    quartersH: "Quarters ↔",
+    quartersV: "Quarters ↕",
+    grid2x2: "2×2 grid",
+    grid2x3: "2×3 grid",
+    grid2x4: "2×4 grid",
+};
+const DEFAULT_SCHEME = "grid2x2";
+function isSchemeKey(s) {
+    return s !== undefined && Object.prototype.hasOwnProperty.call(SCHEMES, s);
+}
+function resolveScheme(s) {
+    return isSchemeKey(s) ? s : DEFAULT_SCHEME;
+}
+/**
+ * The ordered cells of a scheme, in serpentine order. Even rows run
+ * left→right, odd rows right→left, so a 2-row grid walks clockwise.
+ */
+function cells(scheme) {
+    const { cols, rows } = scheme;
+    const cw = 1 / cols;
+    const ch = 1 / rows;
+    const out = [];
+    for (let r = 0; r < rows; r++) {
+        const row = [];
+        for (let c = 0; c < cols; c++) {
+            row.push({ x: c * cw, y: r * ch, w: cw, h: ch });
+        }
+        if (r % 2 === 1)
+            row.reverse();
+        out.push(...row);
+    }
+    return out;
+}
+/** The full-screen cell used by the press-to-maximize action. */
+const FULL_CELL = { x: 0, y: 0, w: 1, h: 1 };
+/**
+ * Advance the tiling cursor one detent.
+ *
+ * - If both directions share a scheme, CW and CCW are exact inverses
+ *   (turning back retraces your steps).
+ * - If the directions use different schemes, each direction is an independent
+ *   forward cycler through its own scheme (turning the other way switches to
+ *   the other arrangement, starting from its first cell).
+ */
+function nextTile(settings, direction) {
+    const cw = resolveScheme(settings.cwScheme);
+    const ccw = resolveScheme(settings.ccwScheme);
+    const target = direction === "next" ? cw : ccw;
+    const order = cells(SCHEMES[target]);
+    const n = order.length;
+    const same = cw === ccw;
+    const idx = settings.index ?? -1;
+    const entering = settings.activeScheme !== target || idx < 0;
+    let newIndex;
+    if (same) {
+        if (entering) {
+            newIndex = direction === "next" ? 0 : n - 1;
+        }
+        else {
+            newIndex = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
+        }
+    }
+    else {
+        // Different schemes: each direction advances forward in its own scheme.
+        newIndex = entering ? 0 : (idx + 1) % n;
+    }
+    return {
+        activeScheme: target,
+        index: newIndex,
+        cell: order[newIndex],
+        position: `${newIndex + 1}/${n}`,
+    };
+}
+
+/**
+ * Invokes the native `tile` helper (bin/macos/tile) that moves+resizes the
+ * focused window to a normalized rectangle of its screen's visible frame via
+ * the Accessibility API. The helper path is derived from a base URL (normally
+ * `import.meta.url` of the bundled plugin) so it resolves inside the installed
+ * plugin folder. `exec` is injectable for tests.
+ *
+ * The helper takes four fractions (0..1): x y w h, where y is measured from the
+ * top of the visible frame. It prints "untrusted" to stderr when it lacks
+ * Accessibility (the move is a no-op in that case).
+ */
+/** Resolve the helper binary path relative to the bundled plugin entry point. */
+function tileHelperPath(baseUrl) {
+    return fileURLToPath(new URL("macos/tile", baseUrl));
+}
+/** Round to a few decimals so the CLI args stay short and stable. */
+function frac(n) {
+    return (Math.round(n * 1e4) / 1e4).toString();
+}
+/** Apply a normalized cell to the focused window via the helper. */
+function runTile(cell, baseUrl, exec = execFile) {
+    const bin = tileHelperPath(baseUrl);
+    const args = [frac(cell.x), frac(cell.y), frac(cell.w), frac(cell.h)];
+    return new Promise((resolve) => {
+        exec(bin, args, (error, _stdout, stderr) => {
+            const trusted = !/untrusted/i.test(String(stderr ?? ""));
+            resolve({ ok: !error, trusted });
+        });
+    });
+}
+
+/**
+ * Dial action: rotate to walk the frontmost window through a grid of positions;
+ * each rotation direction has its own configurable arrangement (halves, thirds,
+ * quarters, or 2-row grids). Same scheme on both directions → CCW reverses CW.
+ * Press maximizes the window within the screen's visible frame.
+ */
+let ArrangeWindow = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tile" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        async onWillAppear(ev) {
+            if (ev.action.isDial()) {
+                await this.render(ev.action, ev.payload.settings);
+            }
+        }
+        async onDialRotate(ev) {
+            const direction = rotationDirection(ev.payload.ticks);
+            if (direction === "none")
+                return;
+            const step = nextTile(ev.payload.settings, direction);
+            const updated = {
+                ...ev.payload.settings,
+                activeScheme: step.activeScheme,
+                index: step.index,
+            };
+            await ev.action.setSettings(updated);
+            const result = await runTile(step.cell, import.meta.url);
+            if (!result.trusted)
+                this.warnUntrusted();
+            await this.render(ev.action, updated, step.position);
+        }
+        async onDialDown(ev) {
+            // Press = maximize within the visible frame, and reset the cursor so the
+            // next rotation starts fresh from the first cell.
+            const updated = { ...ev.payload.settings, index: -1 };
+            await ev.action.setSettings(updated);
+            const result = await runTile(FULL_CELL, import.meta.url);
+            if (!result.trusted)
+                this.warnUntrusted();
+            await this.render(ev.action, updated, "max");
+        }
+        /** Touchscreen readout: the active arrangement + position; never blocks. */
+        async render(dial, settings, value) {
+            const scheme = settings.activeScheme ?? settings.cwScheme ?? DEFAULT_SCHEME;
+            try {
+                await dial.setFeedback({
+                    title: "Arrange",
+                    value: value ?? SCHEME_LABELS[scheme],
+                });
+            }
+            catch (err) {
+                streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
+            }
+        }
+        warnUntrusted() {
+            streamDeck.logger.error("Arrange Window blocked. Grant Accessibility: System Settings > Privacy & " +
+                "Security > Accessibility > enable Stream Deck (moving windows needs this).");
+        }
+    });
+    return _classThis;
+})();
+
+/**
  * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
  * push for last-window, and render a dynamic touchscreen background that
  * reflects the current session/window. All functions are pure (no tmux, no
@@ -10220,5 +10430,6 @@ streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
 streamDeck.actions.registerAction(new OpenFile());
 streamDeck.actions.registerAction(new WindowRing());
+streamDeck.actions.registerAction(new ArrangeWindow());
 streamDeck.connect();
 //# sourceMappingURL=plugin.js.map
