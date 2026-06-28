@@ -9900,7 +9900,12 @@ let ArrangeWindow = (() => {
             }
         }
         async onDialRotate(ev) {
-            const direction = rotationDirection(ev.payload.ticks);
+            // Invert the reported tick sign so the window FOLLOWS the wheel: turning
+            // the dial counter-clockwise walks the window counter-clockwise around the
+            // grid (and selects the ccw scheme), and clockwise orbits it clockwise.
+            // Our serpentine order advances "forward" = clockwise, so without this the
+            // motion ran opposite to the physical rotation.
+            const direction = rotationDirection(-ev.payload.ticks);
             if (direction === "none")
                 return;
             const step = nextTile(ev.payload.settings, direction);
