@@ -10,12 +10,23 @@ OUT="com.movingavg.switchboard.sdPlugin/bin/macos"
 TMP="$(mktemp -d)"
 mkdir -p "$OUT"
 
+# Sign with a Developer ID Application cert when one is in the keychain (needed
+# for distribution + notarization, so downloaded helpers aren't Gatekeeper-
+# blocked). Falls back to the default ad-hoc linker signature for dev builds.
+SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+	| awk -F'"' '/Developer ID Application/{print $2; exit}')"
+
 build() {
 	local name="$1" src="$2"
 	swiftc -O -target arm64-apple-macos12 -o "$TMP/$name.arm64" "$src"
 	swiftc -O -target x86_64-apple-macos12 -o "$TMP/$name.x86_64" "$src"
 	lipo -create "$TMP/$name.arm64" "$TMP/$name.x86_64" -o "$OUT/$name"
-	echo "$name: $(lipo -archs "$OUT/$name")"
+	if [ -n "$SIGN_ID" ]; then
+		codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$OUT/$name"
+		echo "$name: $(lipo -archs "$OUT/$name") — signed ($SIGN_ID)"
+	else
+		echo "$name: $(lipo -archs "$OUT/$name") — ad-hoc (no Developer ID cert in keychain)"
+	fi
 }
 
 build scroll helper/scroll.swift
