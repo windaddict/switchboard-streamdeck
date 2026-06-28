@@ -147,9 +147,13 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 		if (!result.ok) {
 			this.warn(result.code, `focus ${target.app}`);
 			await action.showAlert();
+			return;
 		}
 		await action.setSettings({ ...settings, cursor });
-		await this.updateIcon(action, list);
+		// We just focused a ring member, so the front window is in the list by
+		// definition — paint directly instead of spending a second osascript
+		// round-trip (FRONT_WINDOW_SCRIPT) just to rediscover that.
+		await this.paintIcon(action, list, target);
 	}
 
 	private async refreshAll(): Promise<void> {
