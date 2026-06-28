@@ -5,10 +5,9 @@ plugin is shippable as-is.
 
 ## Bugs / correctness (from the code review)
 
-- [ ] **Private-window Safari safety.** `buildPrivateScript` (`src/safari/applescript.ts`)
-      uses fixed `delay 0.2/0.4` after ⌘⇧N. Under load a slow private-window open
-      could let `set URL of front document` navigate the user's *current* tab.
-      Poll for the new window instead of using fixed delays.
+- [x] **Private-window Safari safety.** Fixed — `buildPrivateScript` now records
+      the front doc URL, sends ⌘⇧N, polls until a new window is frontmost, and
+      only then sets the URL (so a slow open can't clobber the current tab).
 - [ ] **AppleScript newline escaping.** `escapeForAppleScript` (`src/applescript/escape.ts`)
       handles `\` and `"` only; a title pattern containing a newline/tab produces
       an invalid script. Encode or strip them.
@@ -44,7 +43,8 @@ plugin is shippable as-is.
       `elgato`, `macos`, `tmux`, `iterm2`, `bbedit`, `safari`, `window-manager`,
       `automation`) and a social-preview image.
 - [ ] Replace the flagship-essay placeholder link in `README.md` once published.
-- [ ] Add a screenshot / short demo GIF to the README.
+- [x] Hero showcase image added (`docs/switchboard-hero.png`). A true animated
+      demo GIF still needs a real Stream Deck screen recording (optional).
 
 ## Security / privacy (from the security review)
 
