@@ -1,6 +1,6 @@
 # Switchboard
 
-![Switchboard — a macOS Stream Deck plugin with ten actions for switching Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, and files](docs/switchboard-hero.png)
+![Switchboard — a macOS Stream Deck plugin with eleven actions for switching Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
 
 *An operator's control surface for macOS — routing your attention across tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
@@ -20,7 +20,7 @@ Read the full story in the flagship essay → [essay](https://movingavg.com/<slu
 
 ## What it does
 
-Ten actions, grouped by what they route your attention to.
+Eleven actions, grouped by what they route your attention to.
 
 **Safari**
 - **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards.
@@ -29,6 +29,7 @@ Ten actions, grouped by what they route your attention to.
 - **Open / Switch App** *(key)* — launch or switch to an app, optionally focusing a window whose title matches a pattern.
 - **Cycle App Windows** *(dial)* — rotate through the windows of the frontmost application.
 - **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); push to jump to the top or toggle fast/slow.
+- **Arrange Window** *(dial)* — rotate to tile the frontmost window through a grid; each direction picks its own arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid). Same scheme both ways and counter-clockwise just reverses clockwise. Push to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
 - **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
 
 **tmux & iTerm2**
@@ -132,7 +133,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 219 passing tests · `streamdeck validate` runs in the build.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 239 passing tests · `streamdeck validate` runs in the build.
 
 ```bash
 npm install
