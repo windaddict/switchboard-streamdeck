@@ -35,17 +35,17 @@ plugin is shippable as-is.
 
 ## Release / publishing
 
-- [ ] Cut a GitHub release: `npm run build && npm run pack && npm run pack:zip`,
-      attach `dist/*.streamDeckPlugin` + `dist/*.sdPlugin.zip`, tag `vX.Y.Z`.
-- [ ] Fill `packaging/homebrew/switchboard.rb`: version + sha256 of the zip
-      (owner/slug already set to `windaddict/switchboard-streamdeck`); host in a
-      `homebrew-switchboard` tap.
-- [ ] Set the GitHub repo **About** + **topics** (`stream-deck`, `streamdeck-plugin`,
-      `elgato`, `macos`, `tmux`, `iterm2`, `bbedit`, `safari`, `window-manager`,
-      `automation`) and a social-preview image.
-- [ ] Replace the flagship-essay placeholder link in `README.md` once published.
-- [x] Hero showcase image added (`docs/switchboard-hero.png`). A true animated
-      demo GIF still needs a real Stream Deck screen recording (optional).
+- [x] **Released.** v1.0.0 and v1.1.0 are out (GitHub + Homebrew tap). The full,
+      ordered runbook is now `/release` (`.claude/commands/release.md`); the
+      CLAUDE.md "Releasing" section summarizes it.
+- [x] `packaging/homebrew/switchboard.rb` filled + the `windaddict/homebrew-switchboard`
+      tap is live and verified (`brew fetch` matches the release sha).
+- [x] GitHub repo About + topics + social-preview image set.
+- [x] Flagship-essay link wired in `README.md`
+      (movingavg.com/essays/directing-ai-to-ship-real-software.html).
+- [x] Hero showcase image (`docs/switchboard-hero.png`), regenerated from the
+      manifest by `scripts/make-hero.py`. A true animated demo GIF still needs a
+      real Stream Deck screen recording (optional).
 
 ## Security / privacy (from the security review)
 
@@ -54,17 +54,11 @@ plugin is shippable as-is.
       `user.email` is set to the same noreply address. Zero occurrences of the
       old personal email remain. No secrets/keys/PII were found in the tree or
       history.
-- [ ] **Sign + notarize the native helpers.** They're currently ad-hoc signed,
-      so on a Mac that downloaded the release, Gatekeeper can block the helper
-      binaries (Scroll/Arrange do nothing). Primary path is Fastlane (mirrors the
-      Passages project): `bundle exec fastlane mac notarize_helpers` provisions
-      the Developer ID cert via `match developer_id`, rebuilds + signs the
-      helpers, and notarizes them (App Store Connect API key at
-      `~/.keys/AuthKey_RP35L4P23G.p8`, Team `9CHGJ6ZAE6`). `build:helper`
-      auto-signs whenever a Developer ID cert is in the keychain;
-      `scripts/notarize-helpers.sh` is a no-Fastlane fallback. **Needs:** the
-      match passphrase (`MATCH_PASSWORD`) and run access to the `windaddict/iOS-certs`
-      repo — same as Passages. Run before the next public release.
+- [x] **Native helpers signed + notarized** (shipped in v1.1.0). Universal
+      (arm64+x86_64), Developer ID "Moving Average Inc. (9CHGJ6ZAE6)", notarized
+      (status Accepted). Pipeline: `bundle exec fastlane mac notarize_helpers`
+      (see CLAUDE.md "Signing & notarization"). Re-run only when a `helper/*.swift`
+      changes, then commit the freshly signed binaries before releasing.
 
 ## Maintenance note
 

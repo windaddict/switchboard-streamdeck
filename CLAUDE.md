@@ -6,7 +6,8 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Ten actions today.
+that script before ever renaming again. Eleven actions today (the manifest is the
+source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
 
@@ -24,11 +25,19 @@ tests/*.test.ts             # vitest; one file per pure module
 com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js
   ui/*.html                 # property inspectors (sdpi-components from CDN)
+  ui/lib/permissions.js     # shared PI Accessibility-warning banner (see below)
   layouts/*.json            # custom encoder (touchscreen) layouts
   imgs/actions/<a>/*.png    # icon.png/@2x + key.png/@2x per action
-  bin/plugin.js             # rollup output (gitignored)
-  bin/macos/scroll          # compiled Swift helper (committed, arm64)
-helper/scroll.swift         # native CGScrollWheel poster (see scroll dial)
+  bin/plugin.js             # rollup output — COMMITTED (self-contained bundle)
+  bin/macos/{scroll,tile,axcheck}  # compiled Swift helpers — committed, UNIVERSAL
+                            #   (arm64+x86_64), Developer ID signed + notarized
+helper/{scroll,tile,axcheck}.swift # native helpers (scroll wheel / window tiling / AX probe)
+scripts/
+  build-helpers.sh          # build the 3 helpers universal; auto-sign if a Developer ID cert is present
+  notarize-helpers.sh       # no-Fastlane notarize fallback
+  make-hero.py              # regenerate docs/switchboard-hero.png from the manifest
+  rename.sh                 # UUID migration tool (see Rename section)
+fastlane/                   # Developer ID signing + notarization (see Releasing)
 ```
 
 **Design rule:** put all logic in pure `src/mac/*` (or `safari/*`) functions and
@@ -39,11 +48,20 @@ those functions. Every action's hard part lives in a tested pure module.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules)
+npm test              # vitest (pure modules) — 245 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
-npm run build:helper  # swiftc helper/scroll.swift -> bin/macos/scroll (rarely needed)
+npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
+                      #   auto-signs with Developer ID if that cert is in the keychain
+python3 scripts/make-hero.py   # regenerate the README hero after adding/renaming actions
 npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
 ```
+
+**Committed build artifacts (important):** unlike a typical SDK plugin, both
+`bin/plugin.js` (the rollup bundle, with the SDK bundled in — `external: []`) and
+the three `bin/macos/*` helpers are **committed**, so the `.sdPlugin` folder is
+self-contained for drag-and-drop / Homebrew installs. Therefore: **after any
+source change, `npm run build` and commit the updated `bin/plugin.js`**, or the
+installed copy ships stale code. The `build` step is gated by `streamdeck validate`.
 
 **Reload semantics (important):**
 - **Code-only change** (rebuilt `bin/plugin.js`): `streamdeck restart` (above) reloads it live — no app restart.
@@ -78,6 +96,25 @@ npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
   Automation (Apple Events, error **-1743**) for controlling apps via AppleScript;
   Accessibility (error **-1719**) for keystrokes / scroll / `CGEventPost`. Surface
   the right re-enable path; never fail silently.
+- **Live Accessibility warning in the PI.** Actions needing Accessibility show a
+  ⚠️ banner in their settings screen when the grant is missing. Wiring: the PI
+  includes `<script src="lib/permissions.js"></script>` (self-injects the banner
+  + Re-check button), which sends `{event:"checkAccessibility"}` to the plugin;
+  the action's `onSendToPlugin` calls `respondToAccessibilityCheck(ev.payload,
+  import.meta.url)` (`src/actions/pi-permissions.ts`), which runs the side-effect-
+  free `bin/macos/axcheck` probe and replies. Only a definitive `untrusted` shows
+  the banner (missing/old helper → treated as granted, no false alarm). Automation
+  (Apple Events) can't be probed without prompting, so those PIs use a static
+  *Requires* note instead.
+- **Dial direction.** `mac/rotation.ts` maps ticks → `next`/`prev` (positive =
+  clockwise per the SDK). For a *visible* rotation (the tile dial orbiting a
+  window) the on-hardware sign can feel inverted; `tile-dial.ts` exposes an
+  **Invert dial direction** setting rather than hard-coding a sign. Don't change
+  the shared `rotationDirection` to "fix" one action — flip at the action boundary.
+- **PI ↔ plugin messaging** uses `SDPIComponents.streamDeckClient`: receive with
+  `.sendToPropertyInspector.subscribe(e => e.payload)`, send with
+  `.send("sendToPlugin", payload)`. The dropdown `datasource=` mechanism and the
+  permission check both ride this (see `focus-tmux.ts` / `pi-permissions.ts`).
 - **`fs` does not expand `~`.** Resolve a leading tilde yourself (`files.ts`
   `expandHome`). Stream Deck also launches plugins with a **minimal PATH** — use
   absolute binary paths (e.g. `tmux-runner.ts` `findTmuxPath` probes
@@ -97,10 +134,75 @@ npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
 1. Write the pure logic + tests in `src/mac/<feature>.ts` + `tests/<feature>.test.ts`.
 2. Write the action shell in `src/actions/<feature>.ts` (`@action({ UUID: "com.movingavg.switchboard.<x>" })`).
 3. Register it in `src/plugin.ts`.
-4. Add the action object to `manifest.json` (Keypad or Encoder; custom `layout` if needed).
-5. Add icons under `imgs/actions/<x>/` (and a PI under `ui/` if it has settings).
-6. `npm run typecheck && npm test && npm run build`, then `npx @elgato/cli restart …`.
-   **Quit + relaunch Stream Deck** so the new action shows in the list.
+4. Add the action object to `manifest.json` (Keypad or Encoder; custom `layout` if needed; `PropertyInspectorPath` if it has a settings screen).
+5. Add icons under `imgs/actions/<x>/` (icon 20/40 + key 72/144 via `inkscape`).
+   Add a PI under `ui/` — include `<script src="lib/permissions.js"></script>`
+   if the action needs Accessibility (and wire `onSendToPlugin` →
+   `respondToAccessibilityCheck`); add a **Requires:** note for any app/permission.
+6. **Native helper?** add `helper/<x>.swift`, a `build()` line in
+   `scripts/build-helpers.sh`, and a runner in `src/mac/` that resolves the binary
+   via `import.meta.url` (see `tile-runner.ts`). Run `npm run build:helper`.
+7. `npm run typecheck && npm test && npm run build` (commits-worthy: also the
+   rebuilt `bin/plugin.js`), then `npx @elgato/cli restart …`. **Quit + relaunch
+   Stream Deck** so the new action shows in the list.
+8. `python3 scripts/make-hero.py` to refresh the README hero, and bump the action
+   count + test count in `README.md`.
+
+## Releasing (the end-to-end runbook lives in `.claude/commands/release.md`)
+
+Short version — see that command for the exact, ordered steps:
+
+1. Bump `package.json` version; update README counts. Commit, `git push origin main`.
+2. `npm run build` (NOT `build:helper` — see below) then `npm run pack` +
+   `npm run pack:zip` → `dist/*.streamDeckPlugin` + `dist/*.sdPlugin.zip`.
+3. `shasum -a 256 dist/com.movingavg.switchboard.sdPlugin.zip`; put that version +
+   sha in BOTH `packaging/homebrew/switchboard.rb` (this repo) and
+   `~/code/homebrew-switchboard/Casks/switchboard.rb` (the **separate tap repo**).
+   Commit + push both.
+4. `gh release create vX.Y.Z dist/...streamDeckPlugin dist/...sdPlugin.zip --repo
+   windaddict/switchboard-streamdeck --title … --notes …`.
+5. Verify: `brew update && brew fetch --cask windaddict/switchboard/switchboard`
+   should print `✔︎ Cask switchboard (X.Y.Z)`.
+
+**CRITICAL — ship the exact notarized binaries.** The `bin/macos/*` helpers are
+notarized by their content hash. `npm run build` only rebuilds `bin/plugin.js`
+(JS, fine). **Do NOT run `npm run build:helper` during a release** — re-signing
+changes the binaries' hashes and invalidates notarization. Only rebuild helpers
+when their `.swift` changed, and then re-notarize (below) before releasing.
+
+## Signing & notarization (Fastlane, mirrors the Passages project)
+
+The helpers must be **Developer ID signed + notarized** or Gatekeeper blocks them
+on a downloaded install (Scroll/Arrange silently do nothing on someone else's Mac).
+
+- One command: `bundle exec fastlane mac notarize_helpers`. It fetches the
+  Developer ID cert (readonly `match developer_id`, falling back to the keychain),
+  rebuilds + signs the helpers, and notarizes the zip via the App Store Connect
+  API key (`~/.keys/AuthKey_RP35L4P23G.p8`, Team `9CHGJ6ZAE6`).
+- **One-time, Account Holder only:** Apple forbids creating a Developer ID cert
+  via API key. Create it once in **Xcode → Settings → Accounts → 9CHGJ6ZAE6 →
+  Manage Certificates → + → Developer ID Application**. The lane never tries to
+  create it.
+- After notarization, **commit the freshly signed `bin/macos/*`** — those exact
+  files are what Apple notarized and what the release must ship. Then cut the
+  release (above) WITHOUT rerunning `build:helper`.
+- Gotchas baked into the Fastfile (don't undo them): `match` needs
+  `app_identifier: []` (it validates every identifier *before* honoring
+  `skip_provisioning_profiles`); `notarize` in this fastlane version has no
+  `use_notarytool` option; bare CLI binaries can't be stapled (`skip_stapling`),
+  so Gatekeeper verifies them online on first run.
+
+## Git & commits
+
+- This repo commits as the GitHub **noreply** email
+  (`4132973+windaddict@users.noreply.github.com`, set as the repo-local
+  `user.email`) — history was scrubbed of the personal address. Don't reintroduce it.
+- Commit each logical unit separately; messages `type: description` (`feat | fix |
+  docs | build | release | chore`). Push only when asked / at a clean checkpoint.
+- **`chmod` is unavailable here.** To mark a script executable in git:
+  `git add <f>` then `git update-index --chmod=+x <f>`. That sets the index mode
+  but not the working-tree mode, so the file then shows "modified" — fix the disk
+  mode with `git checkout -- <f>`.
 
 ## Rename — COMPLETED (legacy `com.johnknox.safarijump` → `com.movingavg.switchboard`)
 
