@@ -3,11 +3,14 @@ import streamDeck, {
 	type DialAction,
 	type DialDownEvent,
 	type DialRotateEvent,
+	type JsonValue,
+	type SendToPluginEvent,
 	SingletonAction,
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
 import { rotationDirection } from "../mac/rotation.js";
+import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
 	DEFAULT_SCHEME,
 	FULL_CELL,
@@ -61,6 +64,11 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 		const result = await runTile(FULL_CELL, import.meta.url);
 		if (!result.trusted) this.warnUntrusted();
 		await this.render(ev.action, updated, "max");
+	}
+
+	/** Answer the property inspector's live Accessibility-permission check. */
+	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, TileSettings>): Promise<void> {
+		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
 	/** Touchscreen readout: the active arrangement + position; never blocks. */

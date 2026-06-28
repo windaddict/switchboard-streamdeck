@@ -27,6 +27,12 @@
 			<div id="ringList" style="width: 100%;"><span class="muted">No windows yet — long-press the key to add the current one.</span></div>
 		</sdpi-item>
 
+		<div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			<b>Requires:</b> Accessibility access for Stream Deck (it reads and
+			raises windows across apps).
+		</div>
+
+		<script src="lib/permissions.js"></script>
 		<script>
 			const sd = window.SDPIComponents?.streamDeckClient;
 			const listEl = document.getElementById("ringList");

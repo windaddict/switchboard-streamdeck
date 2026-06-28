@@ -13,8 +13,8 @@ import path, { join } from 'node:path';
 import { cwd } from 'node:process';
 import fs, { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
 /**!
  * @author Elgato
@@ -8452,6 +8452,49 @@ function rotationDirection(ticks) {
 }
 
 /**
+ * Queries macOS Accessibility (AX) trust via the native `axcheck` helper, so
+ * the property inspector can show a live "permission not granted" warning. The
+ * helper has no side effects and does not prompt. `exec` is injectable for
+ * tests.
+ *
+ * Resolves `false` only when the helper definitively reports `untrusted`. A
+ * spawn error / missing binary / unexpected output resolves `true` so an old
+ * install (no helper) never raises a false alarm.
+ */
+/** Resolve the axcheck binary path relative to the bundled plugin entry point. */
+function axcheckHelperPath(baseUrl) {
+    return fileURLToPath(new URL("macos/axcheck", baseUrl));
+}
+/** True when the process has Accessibility trust (or the check is inconclusive). */
+function checkAccessibility(baseUrl, exec = execFile) {
+    const bin = axcheckHelperPath(baseUrl);
+    return new Promise((resolve) => {
+        exec(bin, [], (_error, stdout) => {
+            // Only a definitive "untrusted" raises the warning; anything else
+            // (trusted, error, missing helper) is treated as granted to avoid
+            // false positives on installs without the helper.
+            resolve(String(stdout ?? "").trim() !== "untrusted");
+        });
+    });
+}
+
+/**
+ * Shared property-inspector handler for the live Accessibility warning. Actions
+ * that need Accessibility call this from their `onSendToPlugin`; it answers the
+ * PI's `checkAccessibility` request and pushes the result back so the PI can
+ * show or hide its warning banner. Returns true when it handled the message, so
+ * an action with its own datasource handling can early-return.
+ */
+async function respondToAccessibilityCheck(payload, baseUrl) {
+    const event = payload?.event;
+    if (event !== "checkAccessibility")
+        return false;
+    const trusted = await checkAccessibility(baseUrl);
+    await streamDeck.ui.current?.sendToPropertyInspector({ event: "checkAccessibility", trusted });
+    return true;
+}
+
+/**
  * Dial action: cycle the windows of the frontmost application using the macOS
  * "Move focus to next window" shortcut. The touchscreen shows the front app and
  * its current window title, refreshed after each step.
@@ -8486,6 +8529,10 @@ let CycleAppWindows = (() => {
                 }
             }
             await this.refresh(ev.action);
+        }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
         async refresh(dial) {
             const result = await runAppleScript(FRONT_WINDOW_SCRIPT);
@@ -9612,6 +9659,10 @@ let ScrollWindow = (() => {
             if (!result.ok)
                 this.warn(result.code);
         }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
+        }
         /** Best-effort touchscreen readout of the current speed; never blocks scrolling. */
         async render(dial, settings) {
             const speed = settings.speed ?? "slow";
@@ -9731,6 +9782,10 @@ let SwitchApp = (() => {
             else {
                 streamDeck.logger.error(`Open/Switch App failed: ${result.stderr || result.code}`);
             }
+        }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
     });
     return _classThis;
@@ -9929,6 +9984,10 @@ let ArrangeWindow = (() => {
             if (!result.trusted)
                 this.warnUntrusted();
             await this.render(ev.action, updated, "max");
+        }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
         /** Touchscreen readout: the active arrangement + position; never blocks. */
         async render(dial, settings, value) {
@@ -10371,6 +10430,10 @@ let WindowRing = (() => {
             // definition — paint directly instead of spending a second osascript
             // round-trip (FRONT_WINDOW_SCRIPT) just to rediscover that.
             await this.paintIcon(action, list, target);
+        }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
         async refreshAll() {
             const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick

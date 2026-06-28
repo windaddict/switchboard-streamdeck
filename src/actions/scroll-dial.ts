@@ -3,11 +3,14 @@ import streamDeck, {
 	type DialAction,
 	type DialDownEvent,
 	type DialRotateEvent,
+	type JsonValue,
+	type SendToPluginEvent,
 	SingletonAction,
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
+import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
 	buildKeystrokeScript,
 	jumpTopPlan,
@@ -64,6 +67,11 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		// Default press behaviour: jump to the top of the document (⌘↑).
 		const result = await runAppleScript(buildKeystrokeScript(jumpTopPlan()));
 		if (!result.ok) this.warn(result.code);
+	}
+
+	/** Answer the property inspector's live Accessibility-permission check. */
+	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, ScrollSettings>): Promise<void> {
+		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
 	/** Best-effort touchscreen readout of the current speed; never blocks scrolling. */

@@ -2,6 +2,8 @@ import streamDeck, {
 	action,
 	type DialAction,
 	type DialRotateEvent,
+	type JsonValue,
+	type SendToPluginEvent,
 	SingletonAction,
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
@@ -9,6 +11,7 @@ import streamDeck, {
 import { runAppleScript } from "../applescript/runner.js";
 import { appWindowCycleScript, FRONT_WINDOW_SCRIPT, parseFrontWindow } from "../mac/app-windows.js";
 import { rotationDirection } from "../mac/rotation.js";
+import { respondToAccessibilityCheck } from "./pi-permissions.js";
 
 type AppWindowsSettings = Record<string, never>;
 
@@ -37,6 +40,11 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 			}
 		}
 		await this.refresh(ev.action);
+	}
+
+	/** Answer the property inspector's live Accessibility-permission check. */
+	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, AppWindowsSettings>): Promise<void> {
+		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
 	private async refresh(dial: DialAction<AppWindowsSettings>): Promise<void> {

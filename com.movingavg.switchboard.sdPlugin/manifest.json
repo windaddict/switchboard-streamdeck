@@ -144,6 +144,7 @@
 			"UUID": "com.movingavg.switchboard.appwindows",
 			"Icon": "imgs/actions/appwindows/icon",
 			"Tooltip": "Dial: cycle the windows of the frontmost application.",
+			"PropertyInspectorPath": "ui/app-windows.html",
 			"Controllers": [
 				"Encoder"
 			],

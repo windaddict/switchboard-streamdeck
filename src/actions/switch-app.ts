@@ -1,7 +1,14 @@
-import streamDeck, { action, type KeyDownEvent, SingletonAction } from "@elgato/streamdeck";
+import streamDeck, {
+	action,
+	type JsonValue,
+	type KeyDownEvent,
+	type SendToPluginEvent,
+	SingletonAction,
+} from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
 import { type AppSettings, buildAppScript, resolveApp } from "../mac/apps.js";
+import { respondToAccessibilityCheck } from "./pi-permissions.js";
 
 /**
  * Open or switch to an app, optionally focusing a window whose title contains a
@@ -36,5 +43,10 @@ export class SwitchApp extends SingletonAction<AppSettings> {
 		} else {
 			streamDeck.logger.error(`Open/Switch App failed: ${result.stderr || result.code}`);
 		}
+	}
+
+	/** Answer the property inspector's live Accessibility-permission check. */
+	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, AppSettings>): Promise<void> {
+		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 }

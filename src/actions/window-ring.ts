@@ -2,9 +2,11 @@ import { execFile } from "node:child_process";
 
 import streamDeck, {
 	action,
+	type JsonValue,
 	type KeyAction,
 	type KeyDownEvent,
 	type KeyUpEvent,
+	type SendToPluginEvent,
 	SingletonAction,
 	type WillAppearEvent,
 	type WillDisappearEvent,
@@ -22,6 +24,7 @@ import {
 	nextIndex,
 	type RingWindow,
 } from "../mac/window-ring.js";
+import { respondToAccessibilityCheck } from "./pi-permissions.js";
 
 type WindowRingSettings = {
 	windows?: RingWindow[];
@@ -154,6 +157,11 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 		// definition — paint directly instead of spending a second osascript
 		// round-trip (FRONT_WINDOW_SCRIPT) just to rediscover that.
 		await this.paintIcon(action, list, target);
+	}
+
+	/** Answer the property inspector's live Accessibility-permission check. */
+	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, WindowRingSettings>): Promise<void> {
+		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
 	private async refreshAll(): Promise<void> {

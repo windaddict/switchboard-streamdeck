@@ -20,3 +20,4 @@ build() {
 
 build scroll helper/scroll.swift
 build tile helper/tile.swift
+build axcheck helper/axcheck.swift
