@@ -69,7 +69,7 @@ installs the plugin for you. Done.
 ### 2. Homebrew
 
 ```bash
-brew install --cask OWNER/switchboard/switchboard
+brew install --cask windaddict/switchboard/switchboard
 ```
 
 (Requires the published cask; see [`packaging/homebrew/switchboard.rb`](packaging/homebrew/switchboard.rb).)
@@ -125,6 +125,8 @@ If a grant is denied, the key shows an alert and the plugin log spells out the e
 Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 > **Disclaimer of warranty & liability.** Switchboard automates your Mac: it sends keystrokes and scroll events and drives other applications (Safari, iTerm2, BBEdit, Finder, and others) via AppleScript and System Events. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, **FITNESS FOR A PARTICULAR PURPOSE**, AND NONINFRINGEMENT. You use it entirely at your own risk; in no event shall the author be liable for any claim, damages, data loss, or other liability arising from the software or its use.
+
+> **Trademarks & affiliation.** Switchboard is an independent, unofficial project. It is **not affiliated with, endorsed by, or sponsored by** Elgato or Corsair Memory, Inc. **Stream Deck** is a trademark of Corsair Memory, Inc., used here only to describe compatibility. Safari is a trademark of Apple Inc.; BBEdit of Bare Bones Software, Inc.; iTerm2 and all other product names, logos, and brands are the property of their respective owners.
 
 ---
 

@@ -37,8 +37,9 @@ plugin is shippable as-is.
 
 - [ ] Cut a GitHub release: `npm run build && npm run pack && npm run pack:zip`,
       attach `dist/*.streamDeckPlugin` + `dist/*.sdPlugin.zip`, tag `vX.Y.Z`.
-- [ ] Fill `packaging/homebrew/switchboard.rb`: OWNER, version, sha256 of the zip;
-      host in a `homebrew-switchboard` tap.
+- [ ] Fill `packaging/homebrew/switchboard.rb`: version + sha256 of the zip
+      (owner/slug already set to `windaddict/switchboard-streamdeck`); host in a
+      `homebrew-switchboard` tap.
 - [ ] Set the GitHub repo **About** + **topics** (`stream-deck`, `streamdeck-plugin`,
       `elgato`, `macos`, `tmux`, `iterm2`, `bbedit`, `safari`, `window-manager`,
       `automation`) and a social-preview image.
@@ -48,10 +49,11 @@ plugin is shippable as-is.
 
 ## Security / privacy (from the security review)
 
-- [ ] **Commit-author email is public.** Every commit carries
-      `john@windaddict.com`. Before the first public push, decide whether to keep
-      it or scrub it (set a GitHub `noreply` email and rewrite history with
-      `git filter-repo`). No secrets/keys/PII were found in the tree or history.
+- [x] **Commit-author email scrubbed.** History was rewritten so every commit
+      carries `4132973+windaddict@users.noreply.github.com`; the repo's local
+      `user.email` is set to the same noreply address. Zero occurrences of the
+      old personal email remain. No secrets/keys/PII were found in the tree or
+      history.
 
 ## Maintenance note
 

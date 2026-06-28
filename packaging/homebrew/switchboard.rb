@@ -4,10 +4,10 @@
 #   1. `npm run build && npm run pack:zip` to produce
 #      dist/com.movingavg.switchboard.sdPlugin.zip
 #   2. Attach that zip to a GitHub Release tagged v<version>.
-#   3. Fill in OWNER, version, and sha256 below
+#   3. Fill in version and sha256 below
 #      (`shasum -a 256 dist/com.movingavg.switchboard.sdPlugin.zip`).
 #   4. Host this file in a tap repo named `homebrew-switchboard` under Casks/,
-#      so users can: `brew install --cask OWNER/switchboard/switchboard`.
+#      so users can: `brew install --cask windaddict/switchboard/switchboard`.
 #      (Or users can install it directly from a local copy:
 #       `brew install --cask ./packaging/homebrew/switchboard.rb`.)
 
@@ -15,10 +15,10 @@ cask "switchboard" do
   version "1.2.0"
   sha256 "REPLACE_WITH_SHA256_OF_THE_ZIP"
 
-  url "https://github.com/OWNER/switchboard/releases/download/v#{version}/com.movingavg.switchboard.sdPlugin.zip"
+  url "https://github.com/windaddict/switchboard-streamdeck/releases/download/v#{version}/com.movingavg.switchboard.sdPlugin.zip"
   name "Switchboard"
   desc "Stream Deck plugin for fast macOS context-switching (Safari, tmux, iTerm2, BBEdit, windows, files)"
-  homepage "https://github.com/OWNER/switchboard"
+  homepage "https://github.com/windaddict/switchboard-streamdeck"
 
   depends_on macos: ">= :monterey"
 
