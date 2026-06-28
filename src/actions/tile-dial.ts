@@ -35,13 +35,15 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<TileSettings>): Promise<void> {
-		// Invert the reported tick sign so the window FOLLOWS the wheel: turning
-		// the dial counter-clockwise walks the window counter-clockwise around the
-		// grid (and selects the ccw scheme), and clockwise orbits it clockwise.
-		// Our serpentine order advances "forward" = clockwise, so without this the
-		// motion ran opposite to the physical rotation.
-		const direction = rotationDirection(-ev.payload.ticks);
+		// Clockwise → cw scheme stepping forward; counter-clockwise → ccw scheme
+		// stepping in reverse (nextTile handles that). The dial reports clockwise
+		// as positive ticks; `invertDial` flips this for hardware that reports
+		// rotation the other way.
+		let direction = rotationDirection(ev.payload.ticks);
 		if (direction === "none") return;
+		if (ev.payload.settings.invertDial) {
+			direction = direction === "next" ? "prev" : "next";
+		}
 
 		const step = nextTile(ev.payload.settings, direction);
 		const updated: TileSettings = {

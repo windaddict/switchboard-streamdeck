@@ -64,70 +64,85 @@ describe("cells — serpentine order gives clockwise on 2-row grids", () => {
 	});
 });
 
-describe("nextTile — same scheme on both directions (CCW reverses CW)", () => {
-	const base: TileSettings = { cwScheme: "grid2x2", ccwScheme: "grid2x2" };
+describe("nextTile — window follows the dial (thirds, both directions)", () => {
+	const base: TileSettings = { cwScheme: "thirdsH", ccwScheme: "thirdsH" };
 
-	it("first CW places at the first cell (index 0)", () => {
-		const step = nextTile(base, "next");
-		expect(step.index).toBe(0);
-		expect(step.activeScheme).toBe("grid2x2");
-		expect(step.position).toBe("1/4");
+	it("clockwise walks far-left → middle → right", () => {
+		const a = nextTile(base, "next"); // fresh
+		expect(a.index).toBe(0); // far left
+		const b = nextTile({ ...base, activeScheme: "thirdsH", index: a.index }, "next");
+		expect(b.index).toBe(1); // middle
+		const c = nextTile({ ...base, activeScheme: "thirdsH", index: b.index }, "next");
+		expect(c.index).toBe(2); // right
 	});
 
-	it("first CCW places at the last cell (counter-clockwise-most)", () => {
-		const step = nextTile(base, "prev");
-		expect(step.index).toBe(3);
-		expect(step.position).toBe("4/4");
+	it("counter-clockwise walks far-right → middle → far-left", () => {
+		const a = nextTile(base, "prev"); // fresh
+		expect(a.index).toBe(2); // far right
+		const b = nextTile({ ...base, activeScheme: "thirdsH", index: a.index }, "prev");
+		expect(b.index).toBe(1); // middle
+		const c = nextTile({ ...base, activeScheme: "thirdsH", index: b.index }, "prev");
+		expect(c.index).toBe(0); // far left
 	});
 
-	it("CW advances forward and wraps", () => {
-		let s: TileSettings = { ...base, activeScheme: "grid2x2", index: 3 };
-		expect(nextTile(s, "next").index).toBe(0); // wrap 3 → 0
-		s = { ...base, activeScheme: "grid2x2", index: 1 };
-		expect(nextTile(s, "next").index).toBe(2);
+	it("reversing direction mid-sequence retraces (CW to middle, CCW back to left)", () => {
+		const mid = nextTile({ ...base, activeScheme: "thirdsH", index: 0 }, "next");
+		expect(mid.index).toBe(1);
+		const back = nextTile({ ...base, activeScheme: "thirdsH", index: mid.index }, "prev");
+		expect(back.index).toBe(0);
 	});
 
-	it("CW then CCW returns to where you started (exact inverse)", () => {
-		const afterCw = nextTile({ ...base, activeScheme: "grid2x2", index: 1 }, "next");
-		expect(afterCw.index).toBe(2);
-		const afterCcw = nextTile(
-			{ ...base, activeScheme: afterCw.activeScheme, index: afterCw.index },
-			"prev",
-		);
-		expect(afterCcw.index).toBe(1);
-	});
-
-	it("CCW wraps 0 → last", () => {
-		const s: TileSettings = { ...base, activeScheme: "grid2x2", index: 0 };
-		expect(nextTile(s, "prev").index).toBe(3);
+	it("clockwise wraps right → far-left; counter-clockwise wraps left → far-right", () => {
+		expect(nextTile({ ...base, activeScheme: "thirdsH", index: 2 }, "next").index).toBe(0);
+		expect(nextTile({ ...base, activeScheme: "thirdsH", index: 0 }, "prev").index).toBe(2);
 	});
 });
 
-describe("nextTile — different schemes per direction (independent forward cyclers)", () => {
-	const mixed: TileSettings = { cwScheme: "halvesH", ccwScheme: "thirdsV" };
+describe("nextTile — quarters orbit follows the dial", () => {
+	const base: TileSettings = { cwScheme: "grid2x2", ccwScheme: "grid2x2" };
 
-	it("CW uses the cw scheme starting at cell 0", () => {
+	it("clockwise orbits TL → TR → BR → BL (indices 0,1,2,3)", () => {
+		let idx = -1;
+		const seen: number[] = [];
+		for (let i = 0; i < 4; i++) {
+			const step = nextTile({ ...base, activeScheme: "grid2x2", index: idx }, "next");
+			seen.push(step.index);
+			idx = step.index;
+		}
+		expect(seen).toEqual([0, 1, 2, 3]);
+	});
+
+	it("counter-clockwise orbits TL → BL → BR → TR (indices 0,3,2,1)", () => {
+		const seen: number[] = [];
+		// start placed at TL (index 0), then turn CCW repeatedly
+		let idx = 0;
+		for (let i = 0; i < 4; i++) {
+			const step = nextTile({ ...base, activeScheme: "grid2x2", index: idx }, "prev");
+			seen.push(step.index);
+			idx = step.index;
+		}
+		expect(seen).toEqual([3, 2, 1, 0]);
+	});
+});
+
+describe("nextTile — different schemes per direction", () => {
+	const mixed: TileSettings = { cwScheme: "thirdsH", ccwScheme: "grid2x2" };
+
+	it("clockwise uses the cw scheme forward from cell 0", () => {
 		const step = nextTile(mixed, "next");
-		expect(step.activeScheme).toBe("halvesH");
+		expect(step.activeScheme).toBe("thirdsH");
 		expect(step.index).toBe(0);
-		expect(step.position).toBe("1/2");
 	});
 
-	it("continuing CW advances forward within the cw scheme", () => {
-		const step = nextTile({ ...mixed, activeScheme: "halvesH", index: 0 }, "next");
-		expect(step.index).toBe(1);
-		expect(step.position).toBe("2/2");
+	it("switching to counter-clockwise re-enters the ccw scheme at its last cell", () => {
+		const step = nextTile({ ...mixed, activeScheme: "thirdsH", index: 1 }, "prev");
+		expect(step.activeScheme).toBe("grid2x2");
+		expect(step.index).toBe(3); // reverse entry = last cell
 	});
 
-	it("switching to CCW jumps to the ccw scheme's first cell", () => {
-		const step = nextTile({ ...mixed, activeScheme: "halvesH", index: 1 }, "prev");
-		expect(step.activeScheme).toBe("thirdsV");
-		expect(step.index).toBe(0); // enters forward, not reversed
-	});
-
-	it("continuing CCW advances forward within the ccw scheme (not backward)", () => {
-		const step = nextTile({ ...mixed, activeScheme: "thirdsV", index: 0 }, "prev");
-		expect(step.index).toBe(1);
+	it("continuing counter-clockwise steps the ccw scheme in reverse", () => {
+		const step = nextTile({ ...mixed, activeScheme: "grid2x2", index: 3 }, "prev");
+		expect(step.index).toBe(2);
 	});
 });
 

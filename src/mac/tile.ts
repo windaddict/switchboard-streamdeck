@@ -82,10 +82,12 @@ export function cells(scheme: Scheme): Cell[] {
 export const FULL_CELL: Cell = { x: 0, y: 0, w: 1, h: 1 };
 
 export type TileSettings = {
-	/** Scheme used when the dial turns clockwise (positive ticks). */
+	/** Scheme used when the dial turns clockwise. */
 	cwScheme?: SchemeKey;
-	/** Scheme used when the dial turns counter-clockwise (negative ticks). */
+	/** Scheme used when the dial turns counter-clockwise. */
 	ccwScheme?: SchemeKey;
+	/** Flip the dial direction (for hardware that reports rotation inverted). */
+	invertDial?: boolean;
 	/** Which scheme `index` currently refers to (internal cursor state). */
 	activeScheme?: SchemeKey;
 	/** Cursor within the active scheme's order; <0 means "not yet placed". */
@@ -103,38 +105,38 @@ export type TileStep = {
 };
 
 /**
- * Advance the tiling cursor one detent.
+ * Advance the tiling cursor one detent so the window follows the dial.
  *
- * - If both directions share a scheme, CW and CCW are exact inverses
- *   (turning back retraces your steps).
- * - If the directions use different schemes, each direction is an independent
- *   forward cycler through its own scheme (turning the other way switches to
- *   the other arrangement, starting from its first cell).
+ * - Clockwise (`next`) uses the clockwise scheme and steps FORWARD through its
+ *   order (thirds: left → middle → right; quarters: TL → TR → BR → BL).
+ * - Counter-clockwise (`prev`) uses the counter-clockwise scheme and steps in
+ *   REVERSE (thirds: right → middle → left; quarters: TL → BL → BR → TR).
+ *
+ * Entry points are chosen so a fresh clockwise turn starts at the first cell and
+ * a fresh counter-clockwise turn starts at the last — and changing direction
+ * across two different schemes re-enters the other scheme at its matching end.
+ * The caller maps physical rotation to direction (and may invert it for
+ * hardware that reports rotation the other way).
  */
 export function nextTile(settings: TileSettings, direction: Direction): TileStep {
-	const cw = resolveScheme(settings.cwScheme);
-	const ccw = resolveScheme(settings.ccwScheme);
-	const target = direction === "next" ? cw : ccw;
-	const order = cells(SCHEMES[target]);
+	const scheme =
+		direction === "next" ? resolveScheme(settings.cwScheme) : resolveScheme(settings.ccwScheme);
+	const order = cells(SCHEMES[scheme]);
 	const n = order.length;
-	const same = cw === ccw;
 	const idx = settings.index ?? -1;
-	const entering = settings.activeScheme !== target || idx < 0;
+	const entering = settings.activeScheme !== scheme || idx < 0;
 
-	let newIndex: number;
-	if (same) {
-		if (entering) {
-			newIndex = direction === "next" ? 0 : n - 1;
-		} else {
-			newIndex = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
-		}
-	} else {
-		// Different schemes: each direction advances forward in its own scheme.
-		newIndex = entering ? 0 : (idx + 1) % n;
-	}
+	const newIndex =
+		direction === "next"
+			? entering
+				? 0
+				: (idx + 1) % n
+			: entering
+				? n - 1
+				: (idx - 1 + n) % n;
 
 	return {
-		activeScheme: target,
+		activeScheme: scheme,
 		index: newIndex,
 		cell: order[newIndex],
 		position: `${newIndex + 1}/${n}`,
