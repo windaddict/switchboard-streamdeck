@@ -4,13 +4,13 @@
 
 *An operator's control surface for macOS — routing your attention across tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-A **macOS Stream Deck plugin** for fast context-switching: jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
 
 ---
 
 ## The story
 
-I'm not an engineer. I'm a technology-alignment advisor to MedTech and SaaS CEOs — the person in the director's chair, not the IDE. Switchboard exists because I directed an AI agent (Claude) to build it: I specified what I wanted, steered the design, reviewed the work, and insisted on tests at every step. Working that way, a non-engineer shipped a working, tested tool in an afternoon.
+I'm an engineer by training, but these days I work from the director's chair, not the IDE — I advise MedTech and SaaS CEOs on aligning technology with strategy. I didn't *write* Switchboard; I **directed** an AI agent (Claude) to build it: I specified what I wanted, steered the design, reviewed the work, and insisted on tests at every step. That's how a working, tested tool shipped in an afternoon.
 
 That's the point. Switchboard is a **Moving Average Labs** artifact — a small, concrete proof of how AI changes the way operators build. The lesson isn't the tmux dials; it's the operating model behind them.
 
