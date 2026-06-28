@@ -1,5 +1,7 @@
 # Switchboard
 
+![Switchboard — a macOS Stream Deck plugin with ten actions for switching Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, and files](docs/switchboard-hero.png)
+
 *An operator's control surface for macOS — routing your attention across tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
 A **macOS Stream Deck plugin** for fast context-switching: jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
