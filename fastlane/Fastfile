@@ -33,10 +33,16 @@ platform :mac do
     zip = File.join(root, "dist", "switchboard-helpers.zip")
 
     # 1. Install (or create) the Developer ID Application certificate via match.
-    #    skip_provisioning_profiles: notarizing bare CLI binaries needs only the
-    #    cert, not a Developer ID profile (which would require the App ID
-    #    'com.movingavg.switchboard' to be registered in the portal).
-    match(type: "developer_id", skip_provisioning_profiles: true, readonly: false)
+    #    Notarizing bare CLI binaries needs only the cert, not a profile. match
+    #    validates every app_identifier exists in the portal *before* honoring
+    #    skip_provisioning_profiles, so we pass an empty app_identifier (the
+    #    Appfile sets one as the default) to skip that check entirely.
+    match(
+      type: "developer_id",
+      app_identifier: [],
+      skip_provisioning_profiles: true,
+      readonly: false
+    )
 
     # 2. Build the universal helpers; build:helper auto-signs them with the
     #    Developer ID cert now in the keychain (hardened runtime + timestamp).
