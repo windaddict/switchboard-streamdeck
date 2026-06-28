@@ -191,6 +191,11 @@ on a downloaded install (Scroll/Arrange silently do nothing on someone else's Ma
   `skip_provisioning_profiles`); `notarize` in this fastlane version has no
   `use_notarytool` option; bare CLI binaries can't be stapled (`skip_stapling`),
   so Gatekeeper verifies them online on first run.
+- **Debugging the Fastfile:** `bundle exec fastlane lanes` parses + lists lanes
+  without contacting Apple. When an action rejects an option or errors cryptically,
+  read the installed gem source rather than guessing —
+  `bundle exec ruby -e 'puts Gem::Specification.find_by_name("match").gem_dir'` —
+  (that's how `app_identifier: []` and the dropped `use_notarytool` were found).
 
 ## Git & commits
 
