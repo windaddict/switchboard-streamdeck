@@ -7,7 +7,7 @@
 	"scripts": {
 		"build": "rollup -c",
 		"postbuild": "npm run validate",
-		"build:helper": "swiftc -O -o com.movingavg.switchboard.sdPlugin/bin/macos/scroll helper/scroll.swift && swiftc -O -o com.movingavg.switchboard.sdPlugin/bin/macos/tile helper/tile.swift",
+		"build:helper": "bash scripts/build-helpers.sh",
 		"validate": "streamdeck validate com.movingavg.switchboard.sdPlugin",
 		"pack": "streamdeck pack com.movingavg.switchboard.sdPlugin --output dist --force",
 		"pack:zip": "mkdir -p dist && ditto -c -k --keepParent com.movingavg.switchboard.sdPlugin dist/com.movingavg.switchboard.sdPlugin.zip",
