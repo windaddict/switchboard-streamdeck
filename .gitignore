@@ -13,3 +13,11 @@ com.movingavg.switchboard.sdPlugin/logs/
 *.streamDeckPlugin
 
 coverage/
+
+# Fastlane: never commit signing keys or run artifacts.
+*.p8
+fastlane/auth_key.json
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/test_output/
+Gemfile.lock

@@ -56,12 +56,15 @@ plugin is shippable as-is.
       history.
 - [ ] **Sign + notarize the native helpers.** They're currently ad-hoc signed,
       so on a Mac that downloaded the release, Gatekeeper can block the helper
-      binaries (Scroll/Arrange do nothing). Pipeline is scaffolded:
-      `build:helper` auto-signs with a **Developer ID Application** cert when one
-      is in the keychain, and `scripts/notarize-helpers.sh` submits to Apple
-      (Team `9CHGJ6ZAE6`). **Blocked on:** installing a Developer ID Application
-      cert (keychain currently has only an "Apple Development" cert) and creating
-      a notarytool keychain profile. Do this before the next public release.
+      binaries (Scroll/Arrange do nothing). Primary path is Fastlane (mirrors the
+      Passages project): `bundle exec fastlane mac notarize_helpers` provisions
+      the Developer ID cert via `match developer_id`, rebuilds + signs the
+      helpers, and notarizes them (App Store Connect API key at
+      `~/.keys/AuthKey_RP35L4P23G.p8`, Team `9CHGJ6ZAE6`). `build:helper`
+      auto-signs whenever a Developer ID cert is in the keychain;
+      `scripts/notarize-helpers.sh` is a no-Fastlane fallback. **Needs:** the
+      match passphrase (`MATCH_PASSWORD`) and run access to the `windaddict/iOS-certs`
+      repo — same as Passages. Run before the next public release.
 
 ## Maintenance note
 

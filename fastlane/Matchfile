@@ -1,0 +1,9 @@
+# Switchboard distributes native CLI helpers outside the App Store, so it needs
+# a Developer ID Application certificate (not the appstore type Passages uses).
+# match stores/retrieves it in the same private certs repo.
+git_url "git@github.com:windaddict/iOS-certs.git"
+storage_mode "git"
+
+type "developer_id"
+app_identifier ["com.movingavg.switchboard"]
+username "john.knox@movingavg.com"

@@ -1,0 +1,56 @@
+# Fastlane config for signing + notarizing Switchboard's native helpers
+# (bin/macos/{scroll,tile,axcheck}). Mirrors the App Store Connect API key auth
+# used by the Passages project — no Apple ID password or 2FA needed.
+#
+# One-time prerequisite: the same API key Passages uses, at
+#   ~/.keys/AuthKey_RP35L4P23G.p8
+# plus your match passphrase in MATCH_PASSWORD (as for Passages).
+#
+# Run:  bundle exec fastlane mac notarize_helpers
+
+require "shellwords"
+
+opt_out_usage
+
+PLUGIN_DIR = "com.movingavg.switchboard.sdPlugin".freeze
+HELPER_DIR = "#{PLUGIN_DIR}/bin/macos".freeze
+# Bundle id used only to label the notarization submission.
+NOTARY_BUNDLE_ID = "com.movingavg.switchboard.helpers".freeze
+
+platform :mac do
+  before_all do
+    app_store_connect_api_key(
+      key_id: "RP35L4P23G",
+      issuer_id: "69a6de73-49f5-47e3-e053-5b8c7c11a4d1",
+      key_filepath: File.expand_path("~/.keys/AuthKey_RP35L4P23G.p8")
+    )
+  end
+
+  desc "Provision the Developer ID cert, build + sign the universal helpers, and notarize them."
+  lane :notarize_helpers do
+    root = File.expand_path("..", __dir__)
+    helper_dir = File.join(root, HELPER_DIR)
+    zip = File.join(root, "dist", "switchboard-helpers.zip")
+
+    # 1. Install (or create) the Developer ID Application certificate via match.
+    match(type: "developer_id", readonly: false)
+
+    # 2. Build the universal helpers; build:helper auto-signs them with the
+    #    Developer ID cert now in the keychain (hardened runtime + timestamp).
+    sh("npm --prefix #{root.shellescape} run build:helper")
+
+    # 3. Zip the signed helpers and notarize. Bare CLI binaries can't be
+    #    stapled, so Gatekeeper verifies them online on first run.
+    sh("mkdir -p #{File.dirname(zip).shellescape} && ditto -c -k #{helper_dir.shellescape} #{zip.shellescape}")
+    notarize(
+      package: zip,
+      bundle_id: NOTARY_BUNDLE_ID,
+      use_notarytool: true,
+      api_key: lane_context[SharedValues::APP_STORE_CONNECT_API_KEY],
+      skip_stapling: true,
+      print_log: true
+    )
+
+    UI.success("Helpers signed + notarized. Run `npm run build && npm run pack` and cut the release.")
+  end
+end
