@@ -51,6 +51,10 @@ describe("buildJumpScript — normal (non-private)", () => {
 	it("does NOT contain the private-window keystroke", () => {
 		expect(script).not.toContain('keystroke "n"');
 	});
+	it("coerces a missing-value tab URL/name to \"\" (unloaded tabs return missing value without erroring)", () => {
+		expect(script).toContain('if theURL is missing value then set theURL to ""');
+		expect(script).toContain('if theName is missing value then set theName to ""');
+	});
 });
 
 describe("buildJumpScript — private", () => {

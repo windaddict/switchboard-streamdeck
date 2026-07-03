@@ -9058,6 +9058,11 @@ function segmentsListLiteral(segments) {
  * Find an existing Safari tab matching the URL pattern (or title fallback),
  * focus it, and raise its window. If none is found, open the URL. The URL match
  * supports `*` wildcards via an ordered-segment containment check.
+ *
+ * `URL of tb` / `name of tb` on an unloaded (suspended/session-restored) tab
+ * does not error — it returns `missing value`, which slips past the try blocks
+ * and would crash urlMatches with -1728 ("Can't get length of missing value"),
+ * killing the whole scan. Hence the explicit `missing value` -> "" coercions.
  */
 function buildNormalScript(t) {
     const url = escapeForAppleScript(t.url);
@@ -9088,11 +9093,13 @@ tell application "Safari"
 			on error
 				set theURL to ""
 			end try
+			if theURL is missing value then set theURL to ""
 			try
 				set theName to name of tb
 			on error
 				set theName to ""
 			end try
+			if theName is missing value then set theName to ""
 			if (my urlMatches(theURL))${titleMatch} then
 				set current tab of w to tb
 				set index of w to 1
