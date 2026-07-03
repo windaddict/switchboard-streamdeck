@@ -92,6 +92,11 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   Events drops most of them, so "lines per tick" didn't scale. The scroll dial now
   posts ONE proportional `CGScrollWheel` event via the native `bin/macos/scroll`
   helper. For one-shot keys (Cmd+↑, Cmd+`) keystrokes are fine.
+- **Safari returns `missing value` (no error!) for `URL of tab` / `name of tab`**
+  on an unloaded session-restored tab. A `try/on error` guard doesn't catch it, and
+  `length of missing value` throws -1728, killing the whole tab scan — one stale
+  tab broke every Jump to Tab button. Coerce `missing value` to `""` explicitly
+  (see `buildNormalScript` in `src/safari/applescript.ts`).
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:
   Automation (Apple Events, error **-1743**) for controlling apps via AppleScript;
   Accessibility (error **-1719**) for keystrokes / scroll / `CGEventPost`. Surface
