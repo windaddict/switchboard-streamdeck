@@ -27,29 +27,32 @@ return "ok"`;
 }
 
 /**
- * AppleScript to activate the next/previous VISIBLE application. System Events
- * lists visible processes in a stable order; we find the frontmost, step to its
- * neighbour (wrapping), and raise it. Returns the activated app's name.
+ * JXA (run via `runJxa`) to activate the next/previous visible regular app.
+ * NSWorkspace is queried directly through the ObjC bridge — measured ~0.12s
+ * per call vs ~0.7s for the equivalent System Events `whose visible is true`
+ * enumeration, and it needs no Accessibility grant. Apps are taken in
+ * launch order, hidden ones skipped; wraps at both ends. Returns the
+ * activated app's name.
  */
-export function appCycleScript(direction: Exclude<RotationDirection, "none">): string {
-	const step = direction === "next" ? "frontIdx + 1" : "frontIdx - 1";
-	return `tell application "System Events"
-	set procs to application processes whose visible is true
-	set n to count of procs
-	if n is 0 then return ""
-	set frontIdx to 1
-	repeat with i from 1 to n
-		if frontmost of item i of procs then
-			set frontIdx to i
-			exit repeat
-		end if
-	end repeat
-	set targetIdx to ${step}
-	if targetIdx > n then set targetIdx to 1
-	if targetIdx < 1 then set targetIdx to n
-	set frontmost of item targetIdx of procs to true
-	return name of item targetIdx of procs
-end tell`;
+export function appCycleJxa(direction: Exclude<RotationDirection, "none">): string {
+	const step = direction === "next" ? "frontIdx + 1" : "frontIdx - 1 + regular.length";
+	return `ObjC.import("AppKit");
+function run() {
+	const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+	const regular = [];
+	for (let i = 0; i < apps.count; i++) {
+		const a = apps.objectAtIndex(i);
+		if (a.activationPolicy === $.NSApplicationActivationPolicyRegular && !a.hidden) regular.push(a);
+	}
+	if (regular.length === 0) return "";
+	let frontIdx = 0;
+	for (let i = 0; i < regular.length; i++) {
+		if (regular[i].active) { frontIdx = i; break; }
+	}
+	const target = regular[(${step}) % regular.length];
+	target.activateWithOptions($.NSApplicationActivateIgnoringOtherApps);
+	return ObjC.unwrap(target.localizedName);
+}`;
 }
 
 /**

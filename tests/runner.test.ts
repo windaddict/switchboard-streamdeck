@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
 	runAppleScript,
+	runJxa,
 	classifyError,
 	type ExecFileLike,
 } from "../src/safari/runner.js";
@@ -55,5 +56,19 @@ describe("runAppleScript", () => {
 		});
 		const result = await runAppleScript("SCRIPT", exec);
 		expect(result).toMatchObject({ ok: false, code: "error" });
+	});
+});
+
+describe("runJxa", () => {
+	it("invokes osascript with the JavaScript language flag", async () => {
+		let seen: readonly string[] = [];
+		const exec = ((_file: string, args: readonly string[], _o: object, cb: (e: Error | null, so: string, se: string) => void) => {
+			seen = args;
+			cb(null, "Safari", "");
+		}) as never;
+		const result = await runJxa("function run() { return 1; }", exec);
+		expect(seen.slice(0, 2)).toEqual(["-l", "JavaScript"]);
+		expect(result.ok).toBe(true);
+		expect(result.stdout).toBe("Safari");
 	});
 });

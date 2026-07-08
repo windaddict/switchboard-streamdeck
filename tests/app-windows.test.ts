@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { rotationDirection } from "../src/mac/rotation.js";
 import {
-	appCycleScript,
+	appCycleJxa,
 	appWindowCycleScript,
 	appWindowsFeedback,
 	FRONT_WINDOW_SCRIPT,
@@ -51,25 +51,28 @@ describe("toggleAppWindowsMode", () => {
 	});
 });
 
-describe("appCycleScript", () => {
-	it("cycles only VISIBLE application processes", () => {
-		expect(appCycleScript("next")).toContain("whose visible is true");
+describe("appCycleJxa", () => {
+	it("queries NSWorkspace directly (no System Events round-trip)", () => {
+		const s = appCycleJxa("next");
+		expect(s).toContain("$.NSWorkspace.sharedWorkspace.runningApplications");
+		expect(s).not.toContain("System Events");
 	});
-	it("next steps forward and wraps past the end", () => {
-		const s = appCycleScript("next");
-		expect(s).toContain("set targetIdx to frontIdx + 1");
-		expect(s).toContain("if targetIdx > n then set targetIdx to 1");
+	it("cycles only visible REGULAR apps (no background agents, no hidden apps)", () => {
+		const s = appCycleJxa("next");
+		expect(s).toContain("NSApplicationActivationPolicyRegular");
+		expect(s).toContain("!a.hidden");
 	});
-	it("prev steps backward and wraps past the start", () => {
-		const s = appCycleScript("prev");
-		expect(s).toContain("set targetIdx to frontIdx - 1");
-		expect(s).toContain("if targetIdx < 1 then set targetIdx to n");
+	it("next steps forward with wrap via modulo", () => {
+		expect(appCycleJxa("next")).toContain("regular[(frontIdx + 1) % regular.length]");
 	});
-	it("raises the target instead of sending keystrokes (no Cmd+Tab emulation)", () => {
-		const s = appCycleScript("next");
-		expect(s).toContain("set frontmost of item targetIdx of procs to true");
+	it("prev steps backward with wrap via modulo", () => {
+		expect(appCycleJxa("prev")).toContain("regular[(frontIdx - 1 + regular.length) % regular.length]");
+	});
+	it("activates the target and returns its name (no keystroke emulation)", () => {
+		const s = appCycleJxa("next");
+		expect(s).toContain("target.activateWithOptions");
+		expect(s).toContain("target.localizedName");
 		expect(s).not.toContain("keystroke");
-		expect(s).not.toContain("key code");
 	});
 });
 

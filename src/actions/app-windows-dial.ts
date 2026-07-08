@@ -11,9 +11,9 @@ import streamDeck, {
 	type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
-import { runAppleScript } from "../applescript/runner.js";
+import { runAppleScript, runJxa } from "../applescript/runner.js";
 import {
-	appCycleScript,
+	appCycleJxa,
 	appWindowCycleScript,
 	type AppWindowsMode,
 	appWindowsFeedback,
@@ -62,8 +62,10 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 		}
 
 		const mode = this.mode(ev.action.id);
-		const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
-		const result = await runAppleScript(script);
+		const result =
+			mode === "apps"
+				? await runJxa(appCycleJxa(direction))
+				: await runAppleScript(appWindowCycleScript(direction));
 		if (!result.ok && result.code === "permission-denied") {
 			streamDeck.logger.error(
 				"Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +

@@ -40,12 +40,12 @@ export function classifyError(stderr: string): Exclude<ErrorCode, "success"> {
 	return "error";
 }
 
-export function runAppleScript(
-	script: string,
-	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+function runOsascript(
+	args: readonly string[],
+	exec: ExecFileLike,
 ): Promise<RunResult> {
 	return new Promise((resolve) => {
-		exec("/usr/bin/osascript", ["-e", script], { timeout: 8000 }, (error, stdout, stderr) => {
+		exec("/usr/bin/osascript", args, { timeout: 8000 }, (error, stdout, stderr) => {
 			const out = String(stdout ?? "");
 			const err = String(stderr ?? "");
 			if (error) {
@@ -55,4 +55,23 @@ export function runAppleScript(
 			}
 		});
 	});
+}
+
+export function runAppleScript(
+	script: string,
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-e", script], exec);
+}
+
+/**
+ * Run a JXA (JavaScript for Automation) script. Same osascript binary, but the
+ * ObjC bridge lets scripts hit AppKit directly (e.g. NSWorkspace) instead of
+ * Apple-Eventing the System Events process — ~5x faster for process queries.
+ */
+export function runJxa(
+	script: string,
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-l", "JavaScript", "-e", script], exec);
 }
