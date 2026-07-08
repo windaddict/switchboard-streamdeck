@@ -142,7 +142,8 @@
 					"Image": "imgs/actions/tmuxwindial/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "Cycle App Windows",
@@ -166,7 +167,8 @@
 					"Image": "imgs/actions/appwindows/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "BBEdit Documents",
