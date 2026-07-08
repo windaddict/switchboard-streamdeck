@@ -53,18 +53,18 @@ end tell`;
 }
 
 /**
- * Touchscreen readout for the dial. Windows mode: front app on top, window
- * title below (the historical rendering). Apps mode: a fixed "Apps" caption so
- * the mode itself is always visible, with the frontmost app below.
+ * Touchscreen readout for the dial: the title names the MODE (what rotation
+ * moves through), the value shows where you are — the window title (falling
+ * back to the app name for title-less windows) or the frontmost app.
  */
 export function appWindowsFeedback(
 	mode: AppWindowsMode,
 	front: FrontWindow,
 ): { title: string; value: string } {
 	if (mode === "apps") {
-		return { title: "Apps ⇄", value: front.app || "—" };
+		return { title: "Apps", value: front.app || "—" };
 	}
-	return { title: front.app || "Windows", value: front.title || "—" };
+	return { title: "Windows", value: front.title || front.app || "—" };
 }
 
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */

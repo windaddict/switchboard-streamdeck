@@ -49,16 +49,26 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 
 	override async onDialRotate(ev: DialRotateEvent<AppWindowsSettings>): Promise<void> {
 		const direction = rotationDirection(ev.payload.ticks);
-		if (direction !== "none") {
-			const mode = this.mode(ev.action.id);
-			const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
-			const result = await runAppleScript(script);
-			if (!result.ok && result.code === "permission-denied") {
-				streamDeck.logger.error(
-					"Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
-						"Security > Accessibility > enable Stream Deck.",
-				);
-			}
+		if (direction === "none") {
+			await this.refresh(ev.action);
+			return;
+		}
+
+		const mode = this.mode(ev.action.id);
+		const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
+		const result = await runAppleScript(script);
+		if (!result.ok && result.code === "permission-denied") {
+			streamDeck.logger.error(
+				"Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
+					"Security > Accessibility > enable Stream Deck.",
+			);
+		}
+
+		// The cycle script already returns the activated app's name — paint from
+		// it directly instead of spending a second osascript round-trip per tick.
+		if (mode === "apps" && result.ok && result.stdout.trim() !== "") {
+			await this.paint(ev.action, appWindowsFeedback("apps", { app: result.stdout.trim(), title: "" }));
+			return;
 		}
 		await this.refresh(ev.action);
 	}
@@ -88,8 +98,15 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 	private async refresh(dial: DialAction<AppWindowsSettings>): Promise<void> {
 		const result = await runAppleScript(FRONT_WINDOW_SCRIPT);
 		if (!result.ok) return;
+		await this.paint(dial, appWindowsFeedback(this.mode(dial.id), parseFrontWindow(result.stdout)));
+	}
+
+	private async paint(
+		dial: DialAction<AppWindowsSettings>,
+		feedback: { title: string; value: string },
+	): Promise<void> {
 		try {
-			await dial.setFeedback(appWindowsFeedback(this.mode(dial.id), parseFrontWindow(result.stdout)));
+			await dial.setFeedback(feedback);
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}

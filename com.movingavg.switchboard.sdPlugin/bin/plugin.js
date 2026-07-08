@@ -8457,15 +8457,15 @@ function appCycleScript(direction) {
 end tell`;
 }
 /**
- * Touchscreen readout for the dial. Windows mode: front app on top, window
- * title below (the historical rendering). Apps mode: a fixed "Apps" caption so
- * the mode itself is always visible, with the frontmost app below.
+ * Touchscreen readout for the dial: the title names the MODE (what rotation
+ * moves through), the value shows where you are — the window title (falling
+ * back to the app name for title-less windows) or the frontmost app.
  */
 function appWindowsFeedback(mode, front) {
     if (mode === "apps") {
-        return { title: "Apps ⇄", value: front.app || "—" };
+        return { title: "Apps", value: front.app || "—" };
     }
-    return { title: front.app || "Windows", value: front.title || "—" };
+    return { title: "Windows", value: front.title || front.app || "—" };
 }
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */
 const FRONT_WINDOW_SCRIPT = `tell application "System Events"
@@ -8570,14 +8570,22 @@ let CycleAppWindows = (() => {
         }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
-            if (direction !== "none") {
-                const mode = this.mode(ev.action.id);
-                const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
-                const result = await runAppleScript(script);
-                if (!result.ok && result.code === "permission-denied") {
-                    streamDeck.logger.error("Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
-                        "Security > Accessibility > enable Stream Deck.");
-                }
+            if (direction === "none") {
+                await this.refresh(ev.action);
+                return;
+            }
+            const mode = this.mode(ev.action.id);
+            const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
+            const result = await runAppleScript(script);
+            if (!result.ok && result.code === "permission-denied") {
+                streamDeck.logger.error("Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
+                    "Security > Accessibility > enable Stream Deck.");
+            }
+            // The cycle script already returns the activated app's name — paint from
+            // it directly instead of spending a second osascript round-trip per tick.
+            if (mode === "apps" && result.ok && result.stdout.trim() !== "") {
+                await this.paint(ev.action, appWindowsFeedback("apps", { app: result.stdout.trim(), title: "" }));
+                return;
             }
             await this.refresh(ev.action);
         }
@@ -8602,8 +8610,11 @@ let CycleAppWindows = (() => {
             const result = await runAppleScript(FRONT_WINDOW_SCRIPT);
             if (!result.ok)
                 return;
+            await this.paint(dial, appWindowsFeedback(this.mode(dial.id), parseFrontWindow(result.stdout)));
+        }
+        async paint(dial, feedback) {
             try {
-                await dial.setFeedback(appWindowsFeedback(this.mode(dial.id), parseFrontWindow(result.stdout)));
+                await dial.setFeedback(feedback);
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);

@@ -75,14 +75,21 @@ describe("appCycleScript", () => {
 
 describe("appWindowsFeedback", () => {
 	const front = { app: "Safari", title: "Inbox" };
-	it("windows mode shows app over window title (historical rendering)", () => {
-		expect(appWindowsFeedback("windows", front)).toEqual({ title: "Safari", value: "Inbox" });
+	it("the title names the MODE so a glance shows what rotation does", () => {
+		expect(appWindowsFeedback("windows", front).title).toBe("Windows");
+		expect(appWindowsFeedback("apps", front).title).toBe("Apps");
 	});
-	it("apps mode shows a fixed mode caption over the front app", () => {
-		expect(appWindowsFeedback("apps", front)).toEqual({ title: "Apps \u21c4", value: "Safari" });
+	it("windows mode shows the window title as the value", () => {
+		expect(appWindowsFeedback("windows", front).value).toBe("Inbox");
+	});
+	it("windows mode falls back to the app name for a title-less window", () => {
+		expect(appWindowsFeedback("windows", { app: "Finder", title: "" }).value).toBe("Finder");
+	});
+	it("apps mode shows the front app as the value", () => {
+		expect(appWindowsFeedback("apps", front).value).toBe("Safari");
 	});
 	it("falls back to placeholders when nothing is frontmost", () => {
-		expect(appWindowsFeedback("windows", { app: "", title: "" })).toEqual({ title: "Windows", value: "\u2014" });
+		expect(appWindowsFeedback("windows", { app: "", title: "" }).value).toBe("\u2014");
 		expect(appWindowsFeedback("apps", { app: "", title: "" }).value).toBe("\u2014");
 	});
 });

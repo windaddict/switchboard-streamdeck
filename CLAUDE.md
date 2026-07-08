@@ -59,7 +59,7 @@ they intentionally reset to the default on appearance.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 296 tests today
+npm test              # vitest (pure modules) — 298 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -76,13 +76,15 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 
 **Reload semantics (important):**
 - **Code-only change** (rebuilt `bin/plugin.js`): `streamdeck restart` (above) reloads it live — no app restart.
-- **`streamdeck restart` can silently no-op**: the CLI prints ✔ and StreamDeck.log
-  shows the deep link "Handled", yet the old plugin process keeps running (bit us
-  after a manifest edit — new features "didn't work" because the deck was still on
-  a days-old bundle). ALWAYS verify the reload took:
+- **`streamdeck restart` silently no-ops on this setup** (SD 7.5): the CLI prints
+  ✔ and StreamDeck.log shows the deep link "Handled", yet the old plugin process
+  keeps running (bit us twice in one day — new features "didn't work" because the
+  deck was still on a days-old bundle). ALWAYS verify the reload took:
   `ps -o lstart -p $(pgrep -f switchboard.sdPlugin/bin/plugin.js)` — the start time
-  must be *now*. If stale: `killall "Stream Deck" && open -a "Elgato Stream Deck"`
-  (an osascript `quit` may be blocked with error -128).
+  must be *now*. Reliable reload: `kill $(pgrep -f switchboard.sdPlugin/bin/plugin.js)`
+  — Stream Deck respawns the plugin within seconds on the new bundle. Full app
+  relaunch (`killall "Stream Deck" && open -a "Elgato Stream Deck"`) only needed
+  for manifest changes; an osascript `quit` may be blocked with error -128.
 - **Manifest change that adds/renames an ACTION**: the Stream Deck app caches the
   action list — the user must **fully quit and relaunch Stream Deck** for new
   actions to appear. PI/code changes don't need this; new actions do.
