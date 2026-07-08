@@ -6,7 +6,7 @@
 		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
 	</head>
 	<body>
-		<sdpi-item label="Turn clockwise">
+		<sdpi-item label="Arrangement A">
 			<sdpi-select setting="cwScheme" default="grid2x2">
 				<option value="halvesH">Halves — left / right</option>
 				<option value="halvesV">Halves — top / bottom</option>
@@ -20,8 +20,8 @@
 			</sdpi-select>
 		</sdpi-item>
 
-		<sdpi-item label="Turn counter-clockwise">
-			<sdpi-select setting="ccwScheme" default="grid2x2">
+		<sdpi-item label="Arrangement B">
+			<sdpi-select setting="ccwScheme" default="halvesH">
 				<option value="halvesH">Halves — left / right</option>
 				<option value="halvesV">Halves — top / bottom</option>
 				<option value="thirdsH">Thirds — columns</option>
@@ -39,10 +39,10 @@
 		</sdpi-item>
 
 		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
-			Rotate to move the frontmost window through the chosen arrangement;
-			press to maximize. Turning clockwise steps forward through the clockwise
-			arrangement; turning counter-clockwise steps the counter-clockwise
-			arrangement in reverse, so the window follows the dial.<br />
+			Rotate to move the frontmost window through the active arrangement —
+			clockwise steps forward, counter-clockwise retraces the same
+			arrangement in reverse. Tap the dial's touchscreen to switch between
+			Arrangement A and B (e.g. columns &harr; grid); press to maximize.<br />
 			<b>Requires:</b> Accessibility access for Stream Deck (it moves and
 			resizes windows).
 		</div>

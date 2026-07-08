@@ -53,7 +53,7 @@ end tell`;
 }
 
 /**
- * setFeedback payload for the custom `layouts/app-windows.json` layout — OWN
+ * setFeedback payload for the shared `layouts/mode-dial.json` layout — OWN
  * item keys, because the built-in $B1 layout's `title` item is bound to the
  * user-editable action title and silently ignores plugin pushes. `mode` names
  * what rotation moves through; `current` shows where you are — the window

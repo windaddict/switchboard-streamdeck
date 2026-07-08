@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+	paneDialFeedback,
+	PANE_STATUS_ARGS,
+	parsePaneStatus,
 	selectPaneArgs,
-	paneIsInMode,
-	PANE_IN_MODE_ARGS,
-	CANCEL_MODE_ARGS,
-	ZOOM_PANE_ARGS,
+	togglePaneDialMode,
 } from "../src/mac/tmux-pane.js";
 
 describe("selectPaneArgs", () => {
@@ -16,24 +16,57 @@ describe("selectPaneArgs", () => {
 	});
 });
 
-describe("copy-mode args", () => {
-	it("reads pane_in_mode", () => {
-		expect(PANE_IN_MODE_ARGS).toEqual(["display-message", "-p", "#{pane_in_mode}"]);
-	});
-	it("cancels copy-mode", () => {
-		expect(CANCEL_MODE_ARGS).toEqual(["send-keys", "-X", "cancel"]);
+describe("togglePaneDialMode", () => {
+	it("flips between panes and windows", () => {
+		expect(togglePaneDialMode("panes")).toBe("windows");
+		expect(togglePaneDialMode("windows")).toBe("panes");
 	});
 });
 
-describe("paneIsInMode", () => {
-	it("'1' => true", () => expect(paneIsInMode("1")).toBe(true));
-	it("trims whitespace/newline", () => expect(paneIsInMode(" 1 \n")).toBe(true));
-	it("'0' => false", () => expect(paneIsInMode("0")).toBe(false));
-	it("empty => false", () => expect(paneIsInMode("")).toBe(false));
+describe("parsePaneStatus", () => {
+	it("parses command|paneIndex|paneCount|windowName", () => {
+		expect(parsePaneStatus("vim|1|3|movingavg\n")).toEqual({
+			command: "vim",
+			paneIndex: 1,
+			paneCount: 3,
+			windowName: "movingavg",
+		});
+	});
+	it("keeps pipes inside the window name (it is the LAST field)", () => {
+		expect(parsePaneStatus("zsh|0|2|a|b").windowName).toBe("a|b");
+	});
+	it("degrades missing/garbage fields to defaults", () => {
+		expect(parsePaneStatus("")).toEqual({ command: "", paneIndex: 0, paneCount: 0, windowName: "" });
+		expect(parsePaneStatus("zsh|x|y")).toEqual({
+			command: "zsh",
+			paneIndex: 0,
+			paneCount: 0,
+			windowName: "",
+		});
+	});
+	it("PANE_STATUS_ARGS asks for exactly those fields, window name last", () => {
+		expect(PANE_STATUS_ARGS).toEqual([
+			"display-message",
+			"-p",
+			"#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
+		]);
+	});
 });
 
-describe("ZOOM_PANE_ARGS", () => {
-	it("toggles zoom via resize-pane -Z", () => {
-		expect(ZOOM_PANE_ARGS).toEqual(["resize-pane", "-Z"]);
+describe("paneDialFeedback", () => {
+	const status = { command: "vim", paneIndex: 1, paneCount: 3, windowName: "movingavg" };
+	it("panes mode: mode label + command with 1-based position", () => {
+		expect(paneDialFeedback("panes", status)).toEqual({ mode: "Panes ⇄", current: "vim · 2/3" });
+	});
+	it("windows mode: mode label + window name", () => {
+		expect(paneDialFeedback("windows", status)).toEqual({ mode: "Windows ⇄", current: "movingavg" });
+	});
+	it("omits the position when the pane count is unknown", () => {
+		expect(paneDialFeedback("panes", { ...status, paneCount: 0 }).current).toBe("vim");
+	});
+	it("falls back to placeholders when tmux reports nothing", () => {
+		const empty = { command: "", paneIndex: 0, paneCount: 0, windowName: "" };
+		expect(paneDialFeedback("panes", empty).current).toBe("—");
+		expect(paneDialFeedback("windows", empty).current).toBe("—");
 	});
 });

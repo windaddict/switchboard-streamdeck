@@ -8457,7 +8457,7 @@ function appCycleScript(direction) {
 end tell`;
 }
 /**
- * setFeedback payload for the custom `layouts/app-windows.json` layout — OWN
+ * setFeedback payload for the shared `layouts/mode-dial.json` layout — OWN
  * item keys, because the built-in $B1 layout's `title` item is bound to the
  * user-editable action title and silently ignores plugin pushes. `mode` names
  * what rotation moves through; `current` shows where you are — the window
@@ -10296,8 +10296,10 @@ let SwitchApp = (() => {
 
 /**
  * Pure geometry + ordering for the "Arrange Window" dial. The dial walks the
- * frontmost window through the cells of a grid; each rotation direction is
- * configured with its own scheme. All arrangements reduce to a (cols × rows)
+ * frontmost window through the cells of a grid; a touch-tap toggles between
+ * the button's two configured arrangements (e.g. columns ↔ grid), and rotation
+ * steps the ACTIVE arrangement forward (clockwise) or backward — so reversing
+ * the dial retraces the same style. All arrangements reduce to a (cols × rows)
  * grid, and cells are visited in serpentine order (row 0 left→right, row 1
  * right→left, …) so a 2-row grid is traversed clockwise — e.g. quarters go
  * TL → TR → BR → BL, matching how you'd lay windows around the screen.
@@ -10333,11 +10335,31 @@ const SCHEME_LABELS = {
     grid2x4: "2×4 grid",
 };
 const DEFAULT_SCHEME = "grid2x2";
+/** Default for the second arrangement — a columns style, so the out-of-the-box
+ * tap toggle is meaningfully "grid ↔ columns" rather than a no-op. */
+const ALT_DEFAULT_SCHEME = "halvesH";
 function isSchemeKey(s) {
     return s !== undefined && Object.prototype.hasOwnProperty.call(SCHEMES, s);
 }
 function resolveScheme(s) {
     return isSchemeKey(s) ? s : DEFAULT_SCHEME;
+}
+/** The button's two configured arrangements (settings keys kept from the old
+ * per-direction model, so existing buttons keep their chosen pair). */
+function tileSchemes(settings) {
+    return {
+        a: resolveScheme(settings.cwScheme),
+        b: isSchemeKey(settings.ccwScheme) ? settings.ccwScheme : ALT_DEFAULT_SCHEME,
+    };
+}
+/** The arrangement rotation currently walks (defaults to arrangement A). */
+function activeTileScheme(settings) {
+    return isSchemeKey(settings.activeScheme) ? settings.activeScheme : tileSchemes(settings).a;
+}
+/** The arrangement a touch-tap switches to: A ↔ B. */
+function toggledTileScheme(settings) {
+    const { a, b } = tileSchemes(settings);
+    return activeTileScheme(settings) === a ? b : a;
 }
 /**
  * The ordered cells of a scheme, in serpentine order. Even rows run
@@ -10364,19 +10386,16 @@ const FULL_CELL = { x: 0, y: 0, w: 1, h: 1 };
 /**
  * Advance the tiling cursor one detent so the window follows the dial.
  *
- * - Clockwise (`next`) uses the clockwise scheme and steps FORWARD through its
- *   order (thirds: left → middle → right; quarters: TL → TR → BR → BL).
- * - Counter-clockwise (`prev`) uses the counter-clockwise scheme and steps in
- *   REVERSE (thirds: right → middle → left; quarters: TL → BL → BR → TR).
- *
- * Entry points are chosen so a fresh clockwise turn starts at the first cell and
- * a fresh counter-clockwise turn starts at the last — and changing direction
- * across two different schemes re-enters the other scheme at its matching end.
+ * Both directions walk the ACTIVE arrangement (tap toggles which one that is):
+ * clockwise (`next`) steps FORWARD through its order (thirds: left → middle →
+ * right; quarters: TL → TR → BR → BL), counter-clockwise (`prev`) steps in
+ * REVERSE — so reversing the dial retraces the same style. A fresh clockwise
+ * turn enters at the first cell, a fresh counter-clockwise turn at the last.
  * The caller maps physical rotation to direction (and may invert it for
  * hardware that reports rotation the other way).
  */
 function nextTile(settings, direction) {
-    const scheme = direction === "next" ? resolveScheme(settings.cwScheme) : resolveScheme(settings.ccwScheme);
+    const scheme = activeTileScheme(settings);
     const order = cells(SCHEMES[scheme]);
     const n = order.length;
     const idx = settings.index ?? -1;
@@ -10428,10 +10447,11 @@ function runTile(cell, baseUrl, exec = execFile) {
 }
 
 /**
- * Dial action: rotate to walk the frontmost window through a grid of positions;
- * each rotation direction has its own configurable arrangement (halves, thirds,
- * quarters, or 2-row grids). Same scheme on both directions → CCW reverses CW.
- * Press maximizes the window within the screen's visible frame.
+ * Dial action: rotate to walk the frontmost window through the active
+ * arrangement — clockwise steps forward, counter-clockwise retraces the same
+ * style in reverse. Touch-tap toggles between the button's two configured
+ * arrangements (e.g. columns ↔ grid). Press maximizes the window within the
+ * screen's visible frame.
  */
 let ArrangeWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tile" })];
@@ -10486,17 +10506,26 @@ let ArrangeWindow = (() => {
                 this.warnUntrusted();
             await this.render(ev.action, updated, "max");
         }
+        /** Touch-tap: toggle between the two configured arrangements (A ↔ B). */
+        async onTouchTap(ev) {
+            const updated = {
+                ...ev.payload.settings,
+                activeScheme: toggledTileScheme(ev.payload.settings),
+                index: -1, // fresh entry: the next turn starts the new arrangement cleanly
+            };
+            await ev.action.setSettings(updated);
+            await this.render(ev.action, updated);
+        }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
             await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
-        /** Touchscreen readout: the active arrangement + position; never blocks. */
-        async render(dial, settings, value) {
-            const scheme = settings.activeScheme ?? settings.cwScheme ?? DEFAULT_SCHEME;
+        /** Touchscreen readout (shared mode-dial layout): arrangement + position. */
+        async render(dial, settings, position) {
             try {
                 await dial.setFeedback({
-                    title: "Arrange",
-                    value: value ?? SCHEME_LABELS[scheme],
+                    mode: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`,
+                    current: position ?? "—",
                 });
             }
             catch (err) {
@@ -10611,10 +10640,14 @@ let CycleTmuxWindow = (() => {
 })();
 
 /**
- * Pure logic for the tmux pane dial: rotate to switch panes, push to leave
- * copy-mode (return the cursor to the live prompt when scrolled up). All
+ * Pure logic for the tmux pane dial: rotate to switch panes — or, after a
+ * press/touch-tap toggles the mode, tmux windows — from one dial. All
  * functions are tmux-CLI-agnostic strings/args so they unit test without tmux.
  */
+/** Toggle between switching panes and switching windows (press or tap). */
+function togglePaneDialMode(mode) {
+    return mode === "panes" ? "windows" : "panes";
+}
 /**
  * tmux args to select the next/previous pane relative to the current one
  * (`-t +` / `-t -`). Wraps around within the current window.
@@ -10622,22 +10655,47 @@ let CycleTmuxWindow = (() => {
 function selectPaneArgs(direction) {
     return ["select-pane", "-t", direction === "next" ? "+" : "-"];
 }
-/** tmux args to read whether the current pane is in a mode (copy-mode/scrolled up). */
-const PANE_IN_MODE_ARGS = ["display-message", "-p", "#{pane_in_mode}"];
-/** tmux args to exit copy-mode — returns the cursor to the live prompt/bottom. */
-const CANCEL_MODE_ARGS = ["send-keys", "-X", "cancel"];
-/** Parse `#{pane_in_mode}` output: "1" means the pane is in copy-mode. */
-function paneIsInMode(output) {
-    return output.trim() === "1";
+/**
+ * tmux args reading the current pane/window status for the touchscreen:
+ * `command|paneIndex|paneCount|windowName` (window name LAST — it may itself
+ * contain `|`, the other fields never do).
+ */
+const PANE_STATUS_ARGS = [
+    "display-message",
+    "-p",
+    "#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
+];
+/** Parse {@link PANE_STATUS_ARGS} output; missing fields degrade to ""/0. */
+function parsePaneStatus(output) {
+    const fields = output.trim().split("|");
+    return {
+        command: fields[0] ?? "",
+        paneIndex: Number.parseInt(fields[1] ?? "", 10) || 0,
+        paneCount: Number.parseInt(fields[2] ?? "", 10) || 0,
+        windowName: fields.slice(3).join("|"),
+    };
 }
-/** tmux args to toggle zoom on the current pane (touch-tap = zoom in/out). */
-const ZOOM_PANE_ARGS = ["resize-pane", "-Z"];
+/**
+ * setFeedback payload for the shared `layouts/mode-dial.json` layout. `mode`
+ * names what rotation moves through (the ⇄ hints the press/tap toggle);
+ * `current` shows where you are — the pane's running command with its
+ * position, or the window name.
+ */
+function paneDialFeedback(mode, status) {
+    if (mode === "windows") {
+        return { mode: "Windows ⇄", current: status.windowName || "—" };
+    }
+    const position = status.paneCount > 0 ? `${status.paneIndex + 1}/${status.paneCount}` : "";
+    const current = [status.command, position].filter(Boolean).join(" · ");
+    return { mode: "Panes ⇄", current: current || "—" };
+}
 
 /**
- * Dial action: rotate to switch tmux panes (next/previous), push to exit
- * copy-mode so the cursor returns to the live prompt when the pane is scrolled
- * up, touch-tap to toggle pane zoom. Operates on tmux's current pane (no
- * per-button config needed).
+ * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
+ * toggles the mode, tmux windows — from one dial. Operates on tmux's current
+ * pane/window (no per-button config needed). The touchscreen shows the mode
+ * and the current pane command (or window name). The mode is transient
+ * per-dial memory, so every appearance starts in panes mode.
  */
 let TmuxPaneDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxpane" })];
@@ -10654,28 +10712,53 @@ let TmuxPaneDial = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
+        modes = new Map();
+        async onWillAppear(ev) {
+            if (ev.action.isDial()) {
+                await this.refresh(ev.action);
+            }
+        }
+        onWillDisappear(ev) {
+            this.modes.delete(ev.action.id);
+        }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
-            if (direction === "none")
+            if (direction !== "none") {
+                const args = this.mode(ev.action.id) === "windows"
+                    ? selectWindowDirArgs(direction)
+                    : selectPaneArgs(direction);
+                const result = await runTmux(args, findTmuxPath());
+                if (!result.ok) {
+                    streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+                }
+            }
+            await this.refresh(ev.action);
+        }
+        /** Press: toggle between switching panes and switching windows. */
+        async onDialDown(ev) {
+            await this.toggle(ev.action);
+        }
+        /** Touch-tap: same toggle as press. */
+        async onTouchTap(ev) {
+            await this.toggle(ev.action);
+        }
+        mode(id) {
+            return this.modes.get(id) ?? "panes";
+        }
+        async toggle(dial) {
+            this.modes.set(dial.id, togglePaneDialMode(this.mode(dial.id)));
+            await this.refresh(dial);
+        }
+        /** Query the current pane/window and repaint the touchscreen. */
+        async refresh(dial) {
+            const result = await runTmux(PANE_STATUS_ARGS, findTmuxPath());
+            if (!result.ok)
                 return;
-            const result = await runTmux(selectPaneArgs(direction), findTmuxPath());
-            if (!result.ok) {
-                streamDeck.logger.error(`tmux select-pane failed: ${result.stderr || "no server?"}`);
+            try {
+                await dial.setFeedback(paneDialFeedback(this.mode(dial.id), parsePaneStatus(result.stdout)));
             }
-        }
-        async onDialDown(_ev) {
-            const tmux = findTmuxPath();
-            const mode = await runTmux(PANE_IN_MODE_ARGS, tmux);
-            // Only cancel when actually scrolled up — send-keys -X errors outside a mode.
-            if (paneIsInMode(mode.stdout)) {
-                await runTmux(CANCEL_MODE_ARGS, tmux);
-            }
-        }
-        /** Touch-tap: zoom/unzoom the current pane. */
-        async onTouchTap(_ev) {
-            const result = await runTmux(ZOOM_PANE_ARGS, findTmuxPath());
-            if (!result.ok) {
-                streamDeck.logger.error(`tmux resize-pane -Z failed: ${result.stderr || "no server?"}`);
+            catch (err) {
+                streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
             }
         }
     });

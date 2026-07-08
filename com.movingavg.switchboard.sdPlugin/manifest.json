@@ -100,17 +100,17 @@
 			"Name": "Switch tmux Pane",
 			"UUID": "com.movingavg.switchboard.tmuxpane",
 			"Icon": "imgs/actions/tmuxpane/icon",
-			"Tooltip": "Dial: rotate to switch tmux panes; push to exit copy-mode; tap to zoom/unzoom the pane.",
+			"Tooltip": "Dial: rotate to switch tmux panes, or windows after a press/tap toggles the mode.",
 			"PropertyInspectorPath": "ui/tmux-pane.html",
 			"Controllers": [
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "$B1",
+				"layout": "layouts/mode-dial.json",
 				"TriggerDescription": {
-					"Rotate": "Previous / next pane",
-					"Push": "Exit copy-mode (scroll to bottom)",
-					"Touch": "Zoom / unzoom pane"
+					"Rotate": "Previous / next pane (or window)",
+					"Push": "Toggle panes / windows mode",
+					"Touch": "Toggle panes / windows mode"
 				}
 			},
 			"States": [
@@ -118,7 +118,8 @@
 					"Image": "imgs/actions/tmuxpane/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "Cycle tmux Window",
@@ -155,7 +156,7 @@
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "layouts/app-windows.json",
+				"layout": "layouts/mode-dial.json",
 				"TriggerDescription": {
 					"Rotate": "Previous / next window (or app)",
 					"Push": "Toggle windows / apps mode",
@@ -229,16 +230,17 @@
 			"Name": "Arrange Window",
 			"UUID": "com.movingavg.switchboard.tile",
 			"Icon": "imgs/actions/tile/icon",
-			"Tooltip": "Dial: rotate to tile the frontmost window through halves/thirds/quarters or a grid. Press to maximize.",
+			"Tooltip": "Dial: rotate to tile the frontmost window through the active arrangement (reverse retraces it). Tap: toggle arrangement A/B. Press: maximize.",
 			"PropertyInspectorPath": "ui/arrange-window.html",
 			"Controllers": [
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "$B1",
+				"layout": "layouts/mode-dial.json",
 				"TriggerDescription": {
-					"Rotate": "Tile clockwise / counter-clockwise",
-					"Push": "Maximize"
+					"Rotate": "Step the arrangement forward / back",
+					"Push": "Maximize",
+					"Touch": "Toggle arrangement A / B"
 				}
 			},
 			"States": [
@@ -246,7 +248,8 @@
 					"Image": "imgs/actions/tile/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		}
 	]
 }

@@ -1,7 +1,9 @@
 /**
  * Pure geometry + ordering for the "Arrange Window" dial. The dial walks the
- * frontmost window through the cells of a grid; each rotation direction is
- * configured with its own scheme. All arrangements reduce to a (cols × rows)
+ * frontmost window through the cells of a grid; a touch-tap toggles between
+ * the button's two configured arrangements (e.g. columns ↔ grid), and rotation
+ * steps the ACTIVE arrangement forward (clockwise) or backward — so reversing
+ * the dial retraces the same style. All arrangements reduce to a (cols × rows)
  * grid, and cells are visited in serpentine order (row 0 left→right, row 1
  * right→left, …) so a 2-row grid is traversed clockwise — e.g. quarters go
  * TL → TR → BR → BL, matching how you'd lay windows around the screen.
@@ -49,6 +51,9 @@ export const SCHEME_LABELS: Record<SchemeKey, string> = {
 };
 
 export const DEFAULT_SCHEME: SchemeKey = "grid2x2";
+/** Default for the second arrangement — a columns style, so the out-of-the-box
+ * tap toggle is meaningfully "grid ↔ columns" rather than a no-op. */
+export const ALT_DEFAULT_SCHEME: SchemeKey = "halvesH";
 
 export function isSchemeKey(s: string | undefined): s is SchemeKey {
 	return s !== undefined && Object.prototype.hasOwnProperty.call(SCHEMES, s);
@@ -56,6 +61,26 @@ export function isSchemeKey(s: string | undefined): s is SchemeKey {
 
 function resolveScheme(s: SchemeKey | undefined): SchemeKey {
 	return isSchemeKey(s) ? s : DEFAULT_SCHEME;
+}
+
+/** The button's two configured arrangements (settings keys kept from the old
+ * per-direction model, so existing buttons keep their chosen pair). */
+export function tileSchemes(settings: TileSettings): { a: SchemeKey; b: SchemeKey } {
+	return {
+		a: resolveScheme(settings.cwScheme),
+		b: isSchemeKey(settings.ccwScheme) ? settings.ccwScheme : ALT_DEFAULT_SCHEME,
+	};
+}
+
+/** The arrangement rotation currently walks (defaults to arrangement A). */
+export function activeTileScheme(settings: TileSettings): SchemeKey {
+	return isSchemeKey(settings.activeScheme) ? settings.activeScheme : tileSchemes(settings).a;
+}
+
+/** The arrangement a touch-tap switches to: A ↔ B. */
+export function toggledTileScheme(settings: TileSettings): SchemeKey {
+	const { a, b } = tileSchemes(settings);
+	return activeTileScheme(settings) === a ? b : a;
 }
 
 /**
@@ -82,9 +107,9 @@ export function cells(scheme: Scheme): Cell[] {
 export const FULL_CELL: Cell = { x: 0, y: 0, w: 1, h: 1 };
 
 export type TileSettings = {
-	/** Scheme used when the dial turns clockwise. */
+	/** Arrangement A (historical key: was the clockwise-turn scheme). */
 	cwScheme?: SchemeKey;
-	/** Scheme used when the dial turns counter-clockwise. */
+	/** Arrangement B — what a touch-tap toggles to (historical key). */
 	ccwScheme?: SchemeKey;
 	/** Flip the dial direction (for hardware that reports rotation inverted). */
 	invertDial?: boolean;
@@ -107,20 +132,16 @@ export type TileStep = {
 /**
  * Advance the tiling cursor one detent so the window follows the dial.
  *
- * - Clockwise (`next`) uses the clockwise scheme and steps FORWARD through its
- *   order (thirds: left → middle → right; quarters: TL → TR → BR → BL).
- * - Counter-clockwise (`prev`) uses the counter-clockwise scheme and steps in
- *   REVERSE (thirds: right → middle → left; quarters: TL → BL → BR → TR).
- *
- * Entry points are chosen so a fresh clockwise turn starts at the first cell and
- * a fresh counter-clockwise turn starts at the last — and changing direction
- * across two different schemes re-enters the other scheme at its matching end.
+ * Both directions walk the ACTIVE arrangement (tap toggles which one that is):
+ * clockwise (`next`) steps FORWARD through its order (thirds: left → middle →
+ * right; quarters: TL → TR → BR → BL), counter-clockwise (`prev`) steps in
+ * REVERSE — so reversing the dial retraces the same style. A fresh clockwise
+ * turn enters at the first cell, a fresh counter-clockwise turn at the last.
  * The caller maps physical rotation to direction (and may invert it for
  * hardware that reports rotation the other way).
  */
 export function nextTile(settings: TileSettings, direction: Direction): TileStep {
-	const scheme =
-		direction === "next" ? resolveScheme(settings.cwScheme) : resolveScheme(settings.ccwScheme);
+	const scheme = activeTileScheme(settings);
 	const order = cells(SCHEMES[scheme]);
 	const n = order.length;
 	const idx = settings.index ?? -1;

@@ -6,25 +6,28 @@ import streamDeck, {
 	type JsonValue,
 	type SendToPluginEvent,
 	SingletonAction,
+	type TouchTapEvent,
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
 import { rotationDirection } from "../mac/rotation.js";
 import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
-	DEFAULT_SCHEME,
+	activeTileScheme,
 	FULL_CELL,
 	nextTile,
 	SCHEME_LABELS,
 	type TileSettings,
+	toggledTileScheme,
 } from "../mac/tile.js";
 import { runTile } from "../mac/tile-runner.js";
 
 /**
- * Dial action: rotate to walk the frontmost window through a grid of positions;
- * each rotation direction has its own configurable arrangement (halves, thirds,
- * quarters, or 2-row grids). Same scheme on both directions → CCW reverses CW.
- * Press maximizes the window within the screen's visible frame.
+ * Dial action: rotate to walk the frontmost window through the active
+ * arrangement — clockwise steps forward, counter-clockwise retraces the same
+ * style in reverse. Touch-tap toggles between the button's two configured
+ * arrangements (e.g. columns ↔ grid). Press maximizes the window within the
+ * screen's visible frame.
  */
 @action({ UUID: "com.movingavg.switchboard.tile" })
 export class ArrangeWindow extends SingletonAction<TileSettings> {
@@ -68,22 +71,32 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 		await this.render(ev.action, updated, "max");
 	}
 
+	/** Touch-tap: toggle between the two configured arrangements (A ↔ B). */
+	override async onTouchTap(ev: TouchTapEvent<TileSettings>): Promise<void> {
+		const updated: TileSettings = {
+			...ev.payload.settings,
+			activeScheme: toggledTileScheme(ev.payload.settings),
+			index: -1, // fresh entry: the next turn starts the new arrangement cleanly
+		};
+		await ev.action.setSettings(updated);
+		await this.render(ev.action, updated);
+	}
+
 	/** Answer the property inspector's live Accessibility-permission check. */
 	override async onSendToPlugin(ev: SendToPluginEvent<JsonValue, TileSettings>): Promise<void> {
 		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
-	/** Touchscreen readout: the active arrangement + position; never blocks. */
+	/** Touchscreen readout (shared mode-dial layout): arrangement + position. */
 	private async render(
 		dial: DialAction<TileSettings>,
 		settings: TileSettings,
-		value?: string,
+		position?: string,
 	): Promise<void> {
-		const scheme = settings.activeScheme ?? settings.cwScheme ?? DEFAULT_SCHEME;
 		try {
 			await dial.setFeedback({
-				title: "Arrange",
-				value: value ?? SCHEME_LABELS[scheme],
+				mode: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`,
+				current: position ?? "—",
 			});
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);

@@ -4,7 +4,9 @@ import {
 	isSchemeKey,
 	nextTile,
 	SCHEMES,
+	tileSchemes,
 	type TileSettings,
+	toggledTileScheme,
 } from "../src/mac/tile.js";
 
 describe("cells — geometry", () => {
@@ -125,24 +127,46 @@ describe("nextTile — quarters orbit follows the dial", () => {
 	});
 });
 
-describe("nextTile — different schemes per direction", () => {
+describe("nextTile — both directions walk the ACTIVE arrangement", () => {
 	const mixed: TileSettings = { cwScheme: "thirdsH", ccwScheme: "grid2x2" };
 
-	it("clockwise uses the cw scheme forward from cell 0", () => {
+	it("rotation uses the active arrangement, not the direction", () => {
+		const cw = nextTile({ ...mixed, activeScheme: "grid2x2", index: 0 }, "next");
+		expect(cw.activeScheme).toBe("grid2x2");
+		expect(cw.index).toBe(1);
+		const ccw = nextTile({ ...mixed, activeScheme: "grid2x2", index: 1 }, "prev");
+		expect(ccw.activeScheme).toBe("grid2x2");
+		expect(ccw.index).toBe(0); // reverse retraces the SAME style
+	});
+
+	it("defaults to arrangement A when nothing is active yet", () => {
 		const step = nextTile(mixed, "next");
 		expect(step.activeScheme).toBe("thirdsH");
 		expect(step.index).toBe(0);
 	});
 
-	it("switching to counter-clockwise re-enters the ccw scheme at its last cell", () => {
-		const step = nextTile({ ...mixed, activeScheme: "thirdsH", index: 1 }, "prev");
+	it("a fresh counter-clockwise turn enters the active arrangement at its last cell", () => {
+		const step = nextTile({ ...mixed, activeScheme: "grid2x2" }, "prev");
 		expect(step.activeScheme).toBe("grid2x2");
-		expect(step.index).toBe(3); // reverse entry = last cell
+		expect(step.index).toBe(3);
 	});
+});
 
-	it("continuing counter-clockwise steps the ccw scheme in reverse", () => {
-		const step = nextTile({ ...mixed, activeScheme: "grid2x2", index: 3 }, "prev");
-		expect(step.index).toBe(2);
+describe("tap toggle — tileSchemes / activeTileScheme / toggledTileScheme", () => {
+	const mixed: TileSettings = { cwScheme: "thirdsH", ccwScheme: "grid2x2" };
+
+	it("A/B come from the two configured schemes", () => {
+		expect(tileSchemes(mixed)).toEqual({ a: "thirdsH", b: "grid2x2" });
+	});
+	it("out of the box the pair is grid ↔ columns (toggle is never a no-op)", () => {
+		expect(tileSchemes({})).toEqual({ a: "grid2x2", b: "halvesH" });
+	});
+	it("toggling flips A -> B -> A", () => {
+		expect(toggledTileScheme(mixed)).toBe("grid2x2"); // active defaults to A
+		expect(toggledTileScheme({ ...mixed, activeScheme: "grid2x2" })).toBe("thirdsH");
+	});
+	it("an active scheme no longer matching either dropdown toggles back to A", () => {
+		expect(toggledTileScheme({ ...mixed, activeScheme: "quartersV" })).toBe("thirdsH");
 	});
 });
 
@@ -156,6 +180,11 @@ describe("nextTile — defaults + guards", () => {
 	it("ignores a bogus scheme value and uses the default", () => {
 		const step = nextTile({ cwScheme: "nope" as never }, "next");
 		expect(step.activeScheme).toBe("grid2x2");
+	});
+
+	it("ignores a bogus ACTIVE scheme and falls back to arrangement A", () => {
+		const step = nextTile({ cwScheme: "thirdsH", activeScheme: "nope" as never }, "next");
+		expect(step.activeScheme).toBe("thirdsH");
 	});
 });
 

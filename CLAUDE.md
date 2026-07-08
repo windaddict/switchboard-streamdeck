@@ -47,8 +47,9 @@ those functions. Every action's hard part lives in a tested pure module.
 **Interaction grammar (keep it consistent):** rotate = browse a set; dial press
 = escape to a known place (top / maximize / last window / previous doc / exit
 copy-mode) or toggle the mode when there is no "known place"; touchscreen tap =
-flip the dial's mode/scope (speed, windows↔apps, pane zoom, session↔ALL) and
-the strip always shows the current mode; key long-press (500ms, `PressGate` in
+flip the dial's mode/scope (speed, windows↔apps, panes↔windows, session↔ALL,
+tile arrangement A↔B) and the strip always shows the current mode (shared
+`layouts/mode-dial.json` + a per-action `*Feedback()` pure fn); key long-press (500ms, `PressGate` in
 `src/mac/press-gate.ts`, fires AT the threshold) = capture the current context
 into the button ("teach the button": front tab / frontmost app / current tmux
 window; Window Ring's add/remove is the same gesture). Modes/scopes are
@@ -59,7 +60,7 @@ they intentionally reset to the default on appearance.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 299 tests today
+npm test              # vitest (pure modules) — 306 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain

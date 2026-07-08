@@ -29,12 +29,12 @@ Eleven actions, grouped by what they route your attention to.
 - **Open / Switch App** *(key)* — launch or switch to an app, optionally focusing a window whose title matches a pattern. Hold the key to capture the frontmost app into the button.
 - **Cycle App Windows** *(dial)* — rotate through the windows of the frontmost application; press or tap the touchscreen to flip the dial into cycling the visible apps themselves.
 - **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); push to jump to the top (or toggle speed); tap the touchscreen to toggle fast/slow.
-- **Arrange Window** *(dial)* — rotate to tile the frontmost window through a grid; each direction picks its own arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid). Same scheme both ways and counter-clockwise just reverses clockwise. Push to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
+- **Arrange Window** *(dial)* — rotate to tile the frontmost window through the active arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid); counter-clockwise retraces the same arrangement in reverse. Tap the touchscreen to toggle between the button's two configured arrangements (e.g. columns ↔ grid). Push to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
 - **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
 
 **tmux & iTerm2**
 - **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it. Hold the key to capture the current tmux window into the button.
-- **Switch tmux Pane** *(dial)* — rotate to move between tmux panes; push to exit copy-mode and return to the prompt; tap the touchscreen to zoom/unzoom the pane.
+- **Switch tmux Pane** *(dial)* — rotate to move between tmux panes — or, after a press/tap toggles the mode, tmux windows. The touchscreen shows the mode and the pane's running command (or the window name).
 - **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; push for the last window. Tap the touchscreen to widen the scope to ALL sessions — rotation then crosses session boundaries and push jumps to the last session. Renders the current session/window live on the touchscreen.
 
 **BBEdit**
@@ -134,7 +134,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 299 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 306 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install
