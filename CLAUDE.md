@@ -44,11 +44,22 @@ fastlane/                   # Developer ID signing + notarization (see Releasing
 unit-test them; keep `src/actions/*` as a thin shell that wires SDK events to
 those functions. Every action's hard part lives in a tested pure module.
 
+**Interaction grammar (keep it consistent):** rotate = browse a set; dial press
+= escape to a known place (top / maximize / last window / previous doc / exit
+copy-mode) or toggle the mode when there is no "known place"; touchscreen tap =
+flip the dial's mode/scope (speed, windows↔apps, pane zoom, session↔ALL) and
+the strip always shows the current mode; key long-press (500ms, `PressGate` in
+`src/mac/press-gate.ts`, fires AT the threshold) = capture the current context
+into the button ("teach the button": front tab / frontmost app / current tmux
+window; Window Ring's add/remove is the same gesture). Modes/scopes are
+transient per-dial memory (Map keyed by action id, cleared onWillDisappear) —
+they intentionally reset to the default on appearance.
+
 ## Dev loop
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 246 tests today
+npm test              # vitest (pure modules) — 296 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain

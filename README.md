@@ -23,22 +23,22 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 Eleven actions, grouped by what they route your attention to.
 
 **Safari**
-- **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards.
+- **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards. Hold the key to capture the current front tab into the button.
 
 **Windows & apps**
-- **Open / Switch App** *(key)* — launch or switch to an app, optionally focusing a window whose title matches a pattern.
-- **Cycle App Windows** *(dial)* — rotate through the windows of the frontmost application.
-- **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); push to jump to the top or toggle fast/slow.
+- **Open / Switch App** *(key)* — launch or switch to an app, optionally focusing a window whose title matches a pattern. Hold the key to capture the frontmost app into the button.
+- **Cycle App Windows** *(dial)* — rotate through the windows of the frontmost application; press or tap the touchscreen to flip the dial into cycling the visible apps themselves.
+- **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); push to jump to the top (or toggle speed); tap the touchscreen to toggle fast/slow.
 - **Arrange Window** *(dial)* — rotate to tile the frontmost window through a grid; each direction picks its own arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid). Same scheme both ways and counter-clockwise just reverses clockwise. Push to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
 - **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
 
 **tmux & iTerm2**
-- **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it.
-- **Switch tmux Pane** *(dial)* — rotate to move between tmux panes; push to exit copy-mode and return to the prompt.
-- **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; push for the last window. Renders the current session/window live on the touchscreen.
+- **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it. Hold the key to capture the current tmux window into the button.
+- **Switch tmux Pane** *(dial)* — rotate to move between tmux panes; push to exit copy-mode and return to the prompt; tap the touchscreen to zoom/unzoom the pane.
+- **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; push for the last window. Tap the touchscreen to widen the scope to ALL sessions — rotation then crosses session boundaries and push jumps to the last session. Renders the current session/window live on the touchscreen.
 
 **BBEdit**
-- **BBEdit Documents** *(dial)* — move between the open documents in BBEdit's front window, in your chosen order (open order, alphabetical, or by last-modified).
+- **BBEdit Documents** *(dial)* — move between the open documents in BBEdit's front window, in your chosen order (open order, alphabetical, or by last-modified); push to jump back to the previous document.
 
 **Files**
 - **Open File** *(key)* — open the newest, latest-modified, or pattern-matched file in a folder, with your default app / BBEdit / a chosen app, and a live ✓/✗ status badge.
@@ -52,6 +52,7 @@ Eleven actions, grouped by what they route your attention to.
 - **Open File** shows a live ✓/✗ status badge right on the key — you can see at a glance whether a matching file exists.
 - **Safari Tab Jump** ships multi-account Gmail and Calendar presets — pick the account number, and the URL and match pattern are built for you.
 - **Window Ring** flashes a green check on add and a red "−" on remove, with an optional sound, so long-press registration is unmistakable.
+- One interaction grammar everywhere: **rotate** browses, **press** escapes to a known place, **tap** flips the dial's mode or scope, and **holding** a go-to key teaches it whatever you're looking at.
 
 ---
 
@@ -133,7 +134,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 246 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 296 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install
