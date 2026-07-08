@@ -23,12 +23,6 @@ export interface BBEditDoc {
 	modSeconds: number;
 }
 
-/** AppleScript returning the front text window's active document name (or ""). */
-export const BBEDIT_CURRENT_DOC_SCRIPT = `tell application "BBEdit"
-	if (count of text windows) is 0 then return ""
-	return name of active document of text window 1
-end tell`;
-
 /**
  * AppleScript that lists the front window's text documents, one per line as
  * `id<tab>name<tab>modSeconds`, then a final `ACTIVE<tab>id` line for the active
@@ -108,6 +102,40 @@ export function nextDocId(
 	if (idx < 0) return ordered[0].id;
 	const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
 	return ordered[target].id;
+}
+
+/**
+ * Remembers the previously active document so a dial press can jump back to it.
+ * Feed every observed active id through {@link note}; `lastActive` is the id
+ * that was active before the most recent change (never the current one).
+ */
+export class ActiveDocTracker {
+	private current: number | null = null;
+	private previous: number | null = null;
+
+	note(activeId: number | null): void {
+		if (activeId === null || activeId === this.current) return;
+		this.previous = this.current;
+		this.current = activeId;
+	}
+
+	get lastActive(): number | null {
+		return this.previous;
+	}
+}
+
+/**
+ * The document a press should jump back to: the remembered id, provided it is
+ * not the active document and is still open. Returns null when there is no
+ * valid "previous" to go to (caller treats that as a no-op).
+ */
+export function lastDocTarget(
+	docs: BBEditDoc[],
+	activeId: number | null,
+	remembered: number | null,
+): number | null {
+	if (remembered === null || remembered === activeId) return null;
+	return docs.some((d) => d.id === remembered) ? remembered : null;
 }
 
 /** AppleScript that selects the front window's text document with the given id. */

@@ -1,18 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
-	BBEDIT_CURRENT_DOC_SCRIPT,
+	ActiveDocTracker,
 	BBEDIT_LIST_SCRIPT,
 	type BBEditDoc,
 	bbeditSelectScript,
+	lastDocTarget,
 	nextDocId,
 	orderedDocs,
 	parseBBEditDocs,
 } from "../src/mac/bbedit.js";
 
 describe("scripts", () => {
-	it("current-doc script reads the front text window's active document", () => {
-		expect(BBEDIT_CURRENT_DOC_SCRIPT).toContain("active document of text window 1");
-	});
 	it("list script uses text documents (skips non-editor items) and an ACTIVE marker", () => {
 		expect(BBEDIT_LIST_SCRIPT).toContain("text documents of w");
 		expect(BBEDIT_LIST_SCRIPT).not.toContain("set theDocs to documents of w");
@@ -115,5 +113,55 @@ describe("nextDocId", () => {
 	});
 	it("returns null for an empty list", () => {
 		expect(nextDocId([], 1, "next")).toBeNull();
+	});
+});
+
+describe("ActiveDocTracker", () => {
+	it("remembers the previously active id after a change", () => {
+		const t = new ActiveDocTracker();
+		t.note(45);
+		expect(t.lastActive).toBeNull(); // nothing before the first doc
+		t.note(12);
+		expect(t.lastActive).toBe(45);
+	});
+	it("ignores repeats of the current id (a refresh is not a change)", () => {
+		const t = new ActiveDocTracker();
+		t.note(45);
+		t.note(12);
+		t.note(12);
+		expect(t.lastActive).toBe(45);
+	});
+	it("ignores null (a failed read must not clobber history)", () => {
+		const t = new ActiveDocTracker();
+		t.note(45);
+		t.note(12);
+		t.note(null);
+		expect(t.lastActive).toBe(45);
+	});
+	it("A -> B -> A remembers B (back-and-forth toggling works)", () => {
+		const t = new ActiveDocTracker();
+		t.note(45);
+		t.note(12);
+		t.note(45);
+		expect(t.lastActive).toBe(12);
+	});
+});
+
+describe("lastDocTarget", () => {
+	const docs: BBEditDoc[] = [
+		{ id: 45, name: "a.md", modSeconds: 1 },
+		{ id: 12, name: "b.md", modSeconds: 2 },
+	];
+	it("returns the remembered id when it is open and not active", () => {
+		expect(lastDocTarget(docs, 45, 12)).toBe(12);
+	});
+	it("returns null when nothing is remembered", () => {
+		expect(lastDocTarget(docs, 45, null)).toBeNull();
+	});
+	it("returns null when the remembered doc is the active one", () => {
+		expect(lastDocTarget(docs, 12, 12)).toBeNull();
+	});
+	it("returns null when the remembered doc was closed", () => {
+		expect(lastDocTarget(docs, 45, 999)).toBeNull();
 	});
 });

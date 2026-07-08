@@ -8415,7 +8415,14 @@ function runAppleScript(script, exec = execFile) {
  * Pure logic for the "cycle windows of the active application" dial. Uses the
  * macOS "Move focus to next window" shortcut (Cmd+`, grave = key code 50),
  * which cycles the frontmost app's windows — no app-specific scripting needed.
+ *
+ * The dial is modal: "windows" cycles the frontmost app's windows, "apps"
+ * cycles the visible applications themselves. Press or touch-tap toggles.
  */
+/** Toggle between cycling windows and cycling applications. */
+function toggleAppWindowsMode(mode) {
+    return mode === "windows" ? "apps" : "windows";
+}
 /** AppleScript to cycle the frontmost app's windows forward/backward. */
 function appWindowCycleScript(direction) {
     const modifiers = direction === "next" ? "{command down}" : "{command down, shift down}";
@@ -8423,6 +8430,42 @@ function appWindowCycleScript(direction) {
 	key code 50 using ${modifiers}
 end tell
 return "ok"`;
+}
+/**
+ * AppleScript to activate the next/previous VISIBLE application. System Events
+ * lists visible processes in a stable order; we find the frontmost, step to its
+ * neighbour (wrapping), and raise it. Returns the activated app's name.
+ */
+function appCycleScript(direction) {
+    const step = direction === "next" ? "frontIdx + 1" : "frontIdx - 1";
+    return `tell application "System Events"
+	set procs to application processes whose visible is true
+	set n to count of procs
+	if n is 0 then return ""
+	set frontIdx to 1
+	repeat with i from 1 to n
+		if frontmost of item i of procs then
+			set frontIdx to i
+			exit repeat
+		end if
+	end repeat
+	set targetIdx to ${step}
+	if targetIdx > n then set targetIdx to 1
+	if targetIdx < 1 then set targetIdx to n
+	set frontmost of item targetIdx of procs to true
+	return name of item targetIdx of procs
+end tell`;
+}
+/**
+ * Touchscreen readout for the dial. Windows mode: front app on top, window
+ * title below (the historical rendering). Apps mode: a fixed "Apps" caption so
+ * the mode itself is always visible, with the frontmost app below.
+ */
+function appWindowsFeedback(mode, front) {
+    if (mode === "apps") {
+        return { title: "Apps ⇄", value: front.app || "—" };
+    }
+    return { title: front.app || "Windows", value: front.title || "—" };
 }
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */
 const FRONT_WINDOW_SCRIPT = `tell application "System Events"
@@ -8495,9 +8538,11 @@ async function respondToAccessibilityCheck(payload, baseUrl) {
 }
 
 /**
- * Dial action: cycle the windows of the frontmost application using the macOS
- * "Move focus to next window" shortcut. The touchscreen shows the front app and
- * its current window title, refreshed after each step.
+ * Dial action: cycle the windows of the frontmost application, or — after a
+ * press/touch-tap toggles the dial into "apps" mode — cycle the visible
+ * applications themselves. The touchscreen shows the current mode and the
+ * front app/window, refreshed after each step. The mode is transient (held in
+ * memory per dial), so every appearance starts in the familiar windows mode.
  */
 let CycleAppWindows = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.appwindows" })];
@@ -8514,15 +8559,21 @@ let CycleAppWindows = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
+        modes = new Map();
         async onWillAppear(ev) {
             if (ev.action.isDial()) {
                 await this.refresh(ev.action);
             }
         }
+        onWillDisappear(ev) {
+            this.modes.delete(ev.action.id);
+        }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
-                const result = await runAppleScript(appWindowCycleScript(direction));
+                const mode = this.mode(ev.action.id);
+                const script = mode === "apps" ? appCycleScript(direction) : appWindowCycleScript(direction);
+                const result = await runAppleScript(script);
                 if (!result.ok && result.code === "permission-denied") {
                     streamDeck.logger.error("Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
                         "Security > Accessibility > enable Stream Deck.");
@@ -8530,17 +8581,29 @@ let CycleAppWindows = (() => {
             }
             await this.refresh(ev.action);
         }
+        async onDialDown(ev) {
+            await this.toggle(ev.action);
+        }
+        async onTouchTap(ev) {
+            await this.toggle(ev.action);
+        }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
             await respondToAccessibilityCheck(ev.payload, import.meta.url);
+        }
+        mode(id) {
+            return this.modes.get(id) ?? "windows";
+        }
+        async toggle(dial) {
+            this.modes.set(dial.id, toggleAppWindowsMode(this.mode(dial.id)));
+            await this.refresh(dial);
         }
         async refresh(dial) {
             const result = await runAppleScript(FRONT_WINDOW_SCRIPT);
             if (!result.ok)
                 return;
-            const { app, title } = parseFrontWindow(result.stdout);
             try {
-                await dial.setFeedback({ title: app || "Windows", value: title || "—" });
+                await dial.setFeedback(appWindowsFeedback(this.mode(dial.id), parseFrontWindow(result.stdout)));
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
@@ -8562,11 +8625,6 @@ let CycleAppWindows = (() => {
  * (`bbeditSelectScript`). Scripts interpolate only numeric ids, so there is
  * nothing to escape.
  */
-/** AppleScript returning the front text window's active document name (or ""). */
-const BBEDIT_CURRENT_DOC_SCRIPT = `tell application "BBEdit"
-	if (count of text windows) is 0 then return ""
-	return name of active document of text window 1
-end tell`;
 /**
  * AppleScript that lists the front window's text documents, one per line as
  * `id<tab>name<tab>modSeconds`, then a final `ACTIVE<tab>id` line for the active
@@ -8643,6 +8701,34 @@ function nextDocId(ordered, activeId, direction) {
     const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
     return ordered[target].id;
 }
+/**
+ * Remembers the previously active document so a dial press can jump back to it.
+ * Feed every observed active id through {@link note}; `lastActive` is the id
+ * that was active before the most recent change (never the current one).
+ */
+class ActiveDocTracker {
+    current = null;
+    previous = null;
+    note(activeId) {
+        if (activeId === null || activeId === this.current)
+            return;
+        this.previous = this.current;
+        this.current = activeId;
+    }
+    get lastActive() {
+        return this.previous;
+    }
+}
+/**
+ * The document a press should jump back to: the remembered id, provided it is
+ * not the active document and is still open. Returns null when there is no
+ * valid "previous" to go to (caller treats that as a no-op).
+ */
+function lastDocTarget(docs, activeId, remembered) {
+    if (remembered === null || remembered === activeId)
+        return null;
+    return docs.some((d) => d.id === remembered) ? remembered : null;
+}
 /** AppleScript that selects the front window's text document with the given id. */
 function bbeditSelectScript(id) {
     return `tell application "BBEdit"
@@ -8659,8 +8745,9 @@ end tell`;
 
 /**
  * Dial action: move between the text documents open in BBEdit's front window,
- * in the order chosen in the property inspector. The touchscreen shows the
- * active document name.
+ * in the order chosen in the property inspector. Press jumps back to the
+ * previously active document (like tmux last-window). The touchscreen shows
+ * the active document name.
  */
 let BBEditDocDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.bbeditdoc" })];
@@ -8677,39 +8764,82 @@ let BBEditDocDial = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
+        trackers = new Map();
         async onWillAppear(ev) {
-            if (ev.action.isDial()) {
-                const result = await runAppleScript(BBEDIT_CURRENT_DOC_SCRIPT);
-                if (!result.ok) {
-                    streamDeck.logger.warn(`BBEdit read failed (${result.code}): ${result.stderr || "no stderr"}`);
-                }
-                await this.render(ev.action, result.ok ? result.stdout : this.hint(result.code));
-            }
+            if (!ev.action.isDial())
+                return;
+            const state = await this.readDocs(ev.action);
+            if (state === null)
+                return;
+            this.tracker(ev.action.id).note(state.activeId);
+            await this.render(ev.action, this.activeName(state.docs, state.activeId));
+        }
+        onWillDisappear(ev) {
+            this.trackers.delete(ev.action.id);
         }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
             if (direction === "none")
                 return;
-            const list = await runAppleScript(BBEDIT_LIST_SCRIPT);
-            if (!list.ok) {
-                this.logFailure("list", list.code, list.stderr);
-                await this.render(ev.action, this.hint(list.code));
+            const state = await this.readDocs(ev.action);
+            if (state === null)
                 return;
-            }
-            const { docs, activeId } = parseBBEditDocs(list.stdout);
-            const ordered = orderedDocs(docs, ev.payload.settings.order ?? "window");
-            const targetId = nextDocId(ordered, activeId, direction);
+            const tracker = this.tracker(ev.action.id);
+            tracker.note(state.activeId); // catch changes made in BBEdit itself
+            const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
+            const targetId = nextDocId(ordered, state.activeId, direction);
             if (targetId === null) {
                 await this.render(ev.action, "no docs");
                 return;
             }
+            await this.select(ev.action, targetId, tracker);
+        }
+        /** Press: jump back to the previously active document. */
+        async onDialDown(ev) {
+            const state = await this.readDocs(ev.action);
+            if (state === null)
+                return;
+            const tracker = this.tracker(ev.action.id);
+            tracker.note(state.activeId);
+            const targetId = lastDocTarget(state.docs, state.activeId, tracker.lastActive);
+            if (targetId === null) {
+                // Nothing to go back to yet — just confirm the current document.
+                await this.render(ev.action, this.activeName(state.docs, state.activeId));
+                return;
+            }
+            await this.select(ev.action, targetId, tracker);
+        }
+        /** Run the list script and parse it; null (already rendered) on failure. */
+        async readDocs(dial) {
+            const list = await runAppleScript(BBEDIT_LIST_SCRIPT);
+            if (!list.ok) {
+                this.logFailure("list", list.code, list.stderr);
+                await this.render(dial, this.hint(list.code));
+                return null;
+            }
+            return parseBBEditDocs(list.stdout);
+        }
+        /** Select a document by id, record it as active, and render the outcome. */
+        async select(dial, targetId, tracker) {
             const selected = await runAppleScript(bbeditSelectScript(targetId));
             if (!selected.ok) {
                 this.logFailure("select", selected.code, selected.stderr);
-                await this.render(ev.action, this.hint(selected.code));
+                await this.render(dial, this.hint(selected.code));
                 return;
             }
-            await this.render(ev.action, selected.stdout);
+            tracker.note(targetId);
+            await this.render(dial, selected.stdout);
+        }
+        tracker(id) {
+            let t = this.trackers.get(id);
+            if (t === undefined) {
+                t = new ActiveDocTracker();
+                this.trackers.set(id, t);
+            }
+            return t;
+        }
+        activeName(docs, activeId) {
+            return docs.find((d) => d.id === activeId)?.name ?? "";
         }
         async render(dial, docName) {
             try {

@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { rotationDirection } from "../src/mac/rotation.js";
 import {
+	appCycleScript,
 	appWindowCycleScript,
-	parseFrontWindow,
+	appWindowsFeedback,
 	FRONT_WINDOW_SCRIPT,
+	parseFrontWindow,
+	toggleAppWindowsMode,
 } from "../src/mac/app-windows.js";
 
 describe("rotationDirection", () => {
@@ -38,5 +41,48 @@ describe("parseFrontWindow", () => {
 	});
 	it("FRONT_WINDOW_SCRIPT targets the frontmost process", () => {
 		expect(FRONT_WINDOW_SCRIPT).toContain("frontmost is true");
+	});
+});
+
+describe("toggleAppWindowsMode", () => {
+	it("flips between windows and apps", () => {
+		expect(toggleAppWindowsMode("windows")).toBe("apps");
+		expect(toggleAppWindowsMode("apps")).toBe("windows");
+	});
+});
+
+describe("appCycleScript", () => {
+	it("cycles only VISIBLE application processes", () => {
+		expect(appCycleScript("next")).toContain("whose visible is true");
+	});
+	it("next steps forward and wraps past the end", () => {
+		const s = appCycleScript("next");
+		expect(s).toContain("set targetIdx to frontIdx + 1");
+		expect(s).toContain("if targetIdx > n then set targetIdx to 1");
+	});
+	it("prev steps backward and wraps past the start", () => {
+		const s = appCycleScript("prev");
+		expect(s).toContain("set targetIdx to frontIdx - 1");
+		expect(s).toContain("if targetIdx < 1 then set targetIdx to n");
+	});
+	it("raises the target instead of sending keystrokes (no Cmd+Tab emulation)", () => {
+		const s = appCycleScript("next");
+		expect(s).toContain("set frontmost of item targetIdx of procs to true");
+		expect(s).not.toContain("keystroke");
+		expect(s).not.toContain("key code");
+	});
+});
+
+describe("appWindowsFeedback", () => {
+	const front = { app: "Safari", title: "Inbox" };
+	it("windows mode shows app over window title (historical rendering)", () => {
+		expect(appWindowsFeedback("windows", front)).toEqual({ title: "Safari", value: "Inbox" });
+	});
+	it("apps mode shows a fixed mode caption over the front app", () => {
+		expect(appWindowsFeedback("apps", front)).toEqual({ title: "Apps \u21c4", value: "Safari" });
+	});
+	it("falls back to placeholders when nothing is frontmost", () => {
+		expect(appWindowsFeedback("windows", { app: "", title: "" })).toEqual({ title: "Windows", value: "\u2014" });
+		expect(appWindowsFeedback("apps", { app: "", title: "" }).value).toBe("\u2014");
 	});
 });

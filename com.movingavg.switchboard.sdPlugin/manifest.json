@@ -145,7 +145,7 @@
 			"Name": "Cycle App Windows",
 			"UUID": "com.movingavg.switchboard.appwindows",
 			"Icon": "imgs/actions/appwindows/icon",
-			"Tooltip": "Dial: cycle the windows of the frontmost application.",
+			"Tooltip": "Dial: cycle the frontmost app's windows. Press or tap: toggle to cycling apps instead.",
 			"PropertyInspectorPath": "ui/app-windows.html",
 			"Controllers": [
 				"Encoder"
@@ -153,7 +153,9 @@
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
-					"Rotate": "Previous / next window"
+					"Rotate": "Previous / next window (or app)",
+					"Push": "Toggle windows / apps mode",
+					"Touch": "Toggle windows / apps mode"
 				}
 			},
 			"States": [
@@ -167,7 +169,7 @@
 			"Name": "BBEdit Documents",
 			"UUID": "com.movingavg.switchboard.bbeditdoc",
 			"Icon": "imgs/actions/bbeditdoc/icon",
-			"Tooltip": "Dial: move between the open documents in BBEdit's front window.",
+			"Tooltip": "Dial: move between the open documents in BBEdit's front window. Press: back to the previous document.",
 			"PropertyInspectorPath": "ui/bbedit-doc.html",
 			"Controllers": [
 				"Encoder"
@@ -175,7 +177,8 @@
 			"Encoder": {
 				"layout": "$B1",
 				"TriggerDescription": {
-					"Rotate": "Previous / next document"
+					"Rotate": "Previous / next document",
+					"Push": "Back to previous document"
 				}
 			},
 			"States": [
