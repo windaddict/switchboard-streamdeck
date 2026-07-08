@@ -76,6 +76,13 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 
 **Reload semantics (important):**
 - **Code-only change** (rebuilt `bin/plugin.js`): `streamdeck restart` (above) reloads it live — no app restart.
+- **`streamdeck restart` can silently no-op**: the CLI prints ✔ and StreamDeck.log
+  shows the deep link "Handled", yet the old plugin process keeps running (bit us
+  after a manifest edit — new features "didn't work" because the deck was still on
+  a days-old bundle). ALWAYS verify the reload took:
+  `ps -o lstart -p $(pgrep -f switchboard.sdPlugin/bin/plugin.js)` — the start time
+  must be *now*. If stale: `killall "Stream Deck" && open -a "Elgato Stream Deck"`
+  (an osascript `quit` may be blocked with error -128).
 - **Manifest change that adds/renames an ACTION**: the Stream Deck app caches the
   action list — the user must **fully quit and relaunch Stream Deck** for new
   actions to appear. PI/code changes don't need this; new actions do.
