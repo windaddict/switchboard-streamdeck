@@ -24,3 +24,6 @@ export const CANCEL_MODE_ARGS = ["send-keys", "-X", "cancel"];
 export function paneIsInMode(output: string): boolean {
 	return output.trim() === "1";
 }
+
+/** tmux args to toggle zoom on the current pane (touch-tap = zoom in/out). */
+export const ZOOM_PANE_ARGS = ["resize-pane", "-Z"];

@@ -6,6 +6,7 @@ import streamDeck, {
 	type JsonValue,
 	type SendToPluginEvent,
 	SingletonAction,
+	type TouchTapEvent,
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
@@ -24,7 +25,8 @@ import { runScroll } from "../mac/scroll-runner.js";
 
 /**
  * Dial action: rotate to scroll the frontmost window; press to either jump to
- * the top of the document or toggle between fast and slow scrolling. Defaults
+ * the top of the document or toggle between fast and slow scrolling; touch-tap
+ * always toggles the speed (so both gestures are available at once). Defaults
  * are applied here (speed → slow, press → jump-to-top) so behaviour does not
  * depend on the property inspector persisting its dropdown defaults.
  */
@@ -57,16 +59,24 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		const settings = ev.payload.settings;
 
 		if (settings.pressAction === "toggleSpeed") {
-			const speed = nextSpeed(settings.speed ?? "slow");
-			const updated: ScrollSettings = { ...settings, speed };
-			await ev.action.setSettings(updated);
-			await this.render(ev.action, updated);
+			await this.toggleSpeed(ev.action, settings);
 			return;
 		}
 
 		// Default press behaviour: jump to the top of the document (⌘↑).
 		const result = await runAppleScript(buildKeystrokeScript(jumpTopPlan()));
 		if (!result.ok) this.warn(result.code);
+	}
+
+	/** Touch-tap: always toggle fast/slow, regardless of the press setting. */
+	override async onTouchTap(ev: TouchTapEvent<ScrollSettings>): Promise<void> {
+		await this.toggleSpeed(ev.action, ev.payload.settings);
+	}
+
+	private async toggleSpeed(dial: DialAction<ScrollSettings>, settings: ScrollSettings): Promise<void> {
+		const updated: ScrollSettings = { ...settings, speed: nextSpeed(settings.speed ?? "slow") };
+		await dial.setSettings(updated);
+		await this.render(dial, updated);
 	}
 
 	/** Answer the property inspector's live Accessibility-permission check. */

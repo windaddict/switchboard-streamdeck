@@ -9744,7 +9744,8 @@ function runScroll(lines, baseUrl, exec = execFile) {
 
 /**
  * Dial action: rotate to scroll the frontmost window; press to either jump to
- * the top of the document or toggle between fast and slow scrolling. Defaults
+ * the top of the document or toggle between fast and slow scrolling; touch-tap
+ * always toggles the speed (so both gestures are available at once). Defaults
  * are applied here (speed → slow, press → jump-to-top) so behaviour does not
  * depend on the property inspector persisting its dropdown defaults.
  */
@@ -9785,16 +9786,22 @@ let ScrollWindow = (() => {
         async onDialDown(ev) {
             const settings = ev.payload.settings;
             if (settings.pressAction === "toggleSpeed") {
-                const speed = nextSpeed(settings.speed ?? "slow");
-                const updated = { ...settings, speed };
-                await ev.action.setSettings(updated);
-                await this.render(ev.action, updated);
+                await this.toggleSpeed(ev.action, settings);
                 return;
             }
             // Default press behaviour: jump to the top of the document (⌘↑).
             const result = await runAppleScript(buildKeystrokeScript(jumpTopPlan()));
             if (!result.ok)
                 this.warn(result.code);
+        }
+        /** Touch-tap: always toggle fast/slow, regardless of the press setting. */
+        async onTouchTap(ev) {
+            await this.toggleSpeed(ev.action, ev.payload.settings);
+        }
+        async toggleSpeed(dial, settings) {
+            const updated = { ...settings, speed: nextSpeed(settings.speed ?? "slow") };
+            await dial.setSettings(updated);
+            await this.render(dial, updated);
         }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
@@ -10151,12 +10158,42 @@ let ArrangeWindow = (() => {
  * reflects the current session/window. All functions are pure (no tmux, no
  * Stream Deck) so they unit test in isolation.
  */
+/** Toggle the dial's scope (touch-tap). */
+function toggleScope(scope) {
+    return scope === "session" ? "all" : "session";
+}
 /** tmux args to move to the next/previous window in the current session. */
 function selectWindowDirArgs(direction) {
     return direction === "next" ? ["next-window"] : ["previous-window"];
 }
 /** tmux args to toggle to the previously active window (push = back-and-forth). */
 const LAST_WINDOW_ARGS = ["last-window"];
+/** tmux args to toggle to the previously active session (push in "all" scope). */
+const LAST_SESSION_ARGS = ["switch-client", "-l"];
+/**
+ * The window a rotation should land on in "all" scope: the neighbour of the
+ * current window in the flattened all-sessions list (wrapping across session
+ * boundaries). Falls back to the first window when the current one isn't in
+ * the list; null only for an empty list.
+ */
+function nextWindowAcross(windows, current, direction) {
+    const n = windows.length;
+    if (n === 0)
+        return null;
+    const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
+    if (idx < 0)
+        return windows[0];
+    const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
+    return windows[target];
+}
+/**
+ * tmux args that jump the attached client to a window in ANY session.
+ * `switch-client -t sess:idx` changes session and window in one step
+ * (`select-window` alone cannot leave the current session).
+ */
+function switchToWindowArgs(w) {
+    return ["switch-client", "-t", `${w.session}:${w.index}`];
+}
 /** tmux args reading the current window as `session|name|index`. */
 const CURRENT_WINDOW_ARGS = [
     "display-message",
@@ -10199,7 +10236,9 @@ function escapeXml(value) {
 function dotsSvg(count, activeIndex, hue) {
     if (count <= 0)
         return "";
-    const gap = 14;
+    // Shrink the gap when many windows must fit (all-sessions scope) so the
+    // row never overflows the 200px strip.
+    const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
     const startX = 100 - ((count - 1) * gap) / 2;
     const y = 86;
     let out = "";
@@ -10224,7 +10263,10 @@ function truncate(value, max = 16) {
  * of this lives in one full-area pixmap. User text is XML-escaped.
  */
 function buildBackgroundSvg(opts) {
-    const { hue, session, window, count, activeIndex } = opts;
+    const { hue, session, window, count, activeIndex, badge } = opts;
+    const badgeSvg = badge
+        ? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
+        : "";
     return (`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
         `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
         `<stop offset="0" stop-color="hsl(${hue},55%,24%)"/>` +
@@ -10236,6 +10278,7 @@ function buildBackgroundSvg(opts) {
         `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate(session.toUpperCase(), 20))}</text>` +
         `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
+        badgeSvg +
         `</svg>`);
 }
 /** Build the setFeedback payload for the current window + window flags. */
@@ -10249,11 +10292,29 @@ function buildWindowFeedback(current, flags) {
     });
     return { bg: svgToDataUri(svg) };
 }
+/**
+ * setFeedback payload for "all" scope: the dots span every window of every
+ * session (current window highlighted) and an ALL badge marks the scope.
+ */
+function buildAllWindowsFeedback(windows, current) {
+    const svg = buildBackgroundSvg({
+        hue: sessionHue(current.session),
+        session: current.session,
+        window: current.name,
+        count: windows.length,
+        activeIndex: windows.findIndex((w) => w.session === current.session && w.index === current.index),
+        badge: "ALL",
+    });
+    return { bg: svgToDataUri(svg) };
+}
 
 /**
- * Dial action: rotate to cycle tmux windows, push for last-window. The
- * touchscreen shows a session-tinted background with position dots plus the
- * current session and window name, refreshed after every change.
+ * Dial action: rotate to cycle tmux windows, push for last-window. Touch-tap
+ * toggles the scope between the current session and ALL sessions: in "all"
+ * scope rotation crosses session boundaries (switch-client) and push jumps to
+ * the last session. The touchscreen shows a session-tinted background with
+ * position dots (plus an ALL badge in all-sessions scope), refreshed after
+ * every change. The scope is transient per-dial memory.
  */
 let CycleTmuxWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxwindial" })];
@@ -10270,35 +10331,71 @@ let CycleTmuxWindow = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
+        scopes = new Map();
         async onWillAppear(ev) {
             if (ev.action.isDial()) {
                 await this.refresh(ev.action);
             }
         }
+        onWillDisappear(ev) {
+            this.scopes.delete(ev.action.id);
+        }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
-                const result = await runTmux(selectWindowDirArgs(direction), findTmuxPath());
-                if (!result.ok) {
-                    streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+                const tmux = findTmuxPath();
+                if (this.scope(ev.action.id) === "all") {
+                    const [list, current] = await Promise.all([
+                        runTmux(LIST_WINDOWS_ARGS, tmux),
+                        runTmux(CURRENT_WINDOW_ARGS, tmux),
+                    ]);
+                    const target = list.ok
+                        ? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
+                        : null;
+                    if (target !== null) {
+                        const result = await runTmux(switchToWindowArgs(target), tmux);
+                        if (!result.ok) {
+                            streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+                        }
+                    }
+                }
+                else {
+                    const result = await runTmux(selectWindowDirArgs(direction), tmux);
+                    if (!result.ok) {
+                        streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+                    }
                 }
             }
             await this.refresh(ev.action);
         }
+        /** Push: last window in session scope, last session in all scope. */
         async onDialDown(ev) {
-            await runTmux(LAST_WINDOW_ARGS, findTmuxPath());
+            const args = this.scope(ev.action.id) === "all" ? LAST_SESSION_ARGS : LAST_WINDOW_ARGS;
+            await runTmux(args, findTmuxPath());
             await this.refresh(ev.action);
         }
-        /** Query the current window + flags and repaint the touchscreen. */
+        /** Touch-tap: toggle between current-session and all-sessions scope. */
+        async onTouchTap(ev) {
+            this.scopes.set(ev.action.id, toggleScope(this.scope(ev.action.id)));
+            await this.refresh(ev.action);
+        }
+        scope(id) {
+            return this.scopes.get(id) ?? "session";
+        }
+        /** Query the current window + scope-appropriate set and repaint the touchscreen. */
         async refresh(dial) {
             const tmux = findTmuxPath();
-            const [current, flags] = await Promise.all([
+            const all = this.scope(dial.id) === "all";
+            const [current, set] = await Promise.all([
                 runTmux(CURRENT_WINDOW_ARGS, tmux),
-                runTmux(WINDOW_FLAGS_ARGS, tmux),
+                runTmux(all ? LIST_WINDOWS_ARGS : WINDOW_FLAGS_ARGS, tmux),
             ]);
             if (!current.ok)
                 return;
-            const feedback = buildWindowFeedback(parseCurrentWindow(current.stdout), parseActiveFlags(flags.stdout));
+            const parsed = parseCurrentWindow(current.stdout);
+            const feedback = all
+                ? buildAllWindowsFeedback(parseWindows(set.stdout), parsed)
+                : buildWindowFeedback(parsed, parseActiveFlags(set.stdout));
             try {
                 await dial.setFeedback(feedback);
             }
@@ -10330,11 +10427,14 @@ const CANCEL_MODE_ARGS = ["send-keys", "-X", "cancel"];
 function paneIsInMode(output) {
     return output.trim() === "1";
 }
+/** tmux args to toggle zoom on the current pane (touch-tap = zoom in/out). */
+const ZOOM_PANE_ARGS = ["resize-pane", "-Z"];
 
 /**
  * Dial action: rotate to switch tmux panes (next/previous), push to exit
  * copy-mode so the cursor returns to the live prompt when the pane is scrolled
- * up. Operates on tmux's current pane (no per-button config needed).
+ * up, touch-tap to toggle pane zoom. Operates on tmux's current pane (no
+ * per-button config needed).
  */
 let TmuxPaneDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxpane" })];
@@ -10366,6 +10466,13 @@ let TmuxPaneDial = (() => {
             // Only cancel when actually scrolled up — send-keys -X errors outside a mode.
             if (paneIsInMode(mode.stdout)) {
                 await runTmux(CANCEL_MODE_ARGS, tmux);
+            }
+        }
+        /** Touch-tap: zoom/unzoom the current pane. */
+        async onTouchTap(_ev) {
+            const result = await runTmux(ZOOM_PANE_ARGS, findTmuxPath());
+            if (!result.ok) {
+                streamDeck.logger.error(`tmux resize-pane -Z failed: ${result.stderr || "no server?"}`);
             }
         }
     });

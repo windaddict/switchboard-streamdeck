@@ -4,6 +4,7 @@ import {
 	paneIsInMode,
 	PANE_IN_MODE_ARGS,
 	CANCEL_MODE_ARGS,
+	ZOOM_PANE_ARGS,
 } from "../src/mac/tmux-pane.js";
 
 describe("selectPaneArgs", () => {
@@ -29,4 +30,10 @@ describe("paneIsInMode", () => {
 	it("trims whitespace/newline", () => expect(paneIsInMode(" 1 \n")).toBe(true));
 	it("'0' => false", () => expect(paneIsInMode("0")).toBe(false));
 	it("empty => false", () => expect(paneIsInMode("")).toBe(false));
+});
+
+describe("ZOOM_PANE_ARGS", () => {
+	it("toggles zoom via resize-pane -Z", () => {
+		expect(ZOOM_PANE_ARGS).toEqual(["resize-pane", "-Z"]);
+	});
 });

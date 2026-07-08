@@ -7,6 +7,15 @@
 
 import type { RotationDirection } from "./rotation.js";
 import { round, svgToDataUri } from "./svg.js";
+import type { TmuxWindow } from "./tmux.js";
+
+/** What the dial rotation moves through: the current session or every session. */
+export type TmuxScope = "session" | "all";
+
+/** Toggle the dial's scope (touch-tap). */
+export function toggleScope(scope: TmuxScope): TmuxScope {
+	return scope === "session" ? "all" : "session";
+}
 
 /** tmux args to move to the next/previous window in the current session. */
 export function selectWindowDirArgs(direction: Exclude<RotationDirection, "none">): string[] {
@@ -15,6 +24,37 @@ export function selectWindowDirArgs(direction: Exclude<RotationDirection, "none"
 
 /** tmux args to toggle to the previously active window (push = back-and-forth). */
 export const LAST_WINDOW_ARGS = ["last-window"];
+
+/** tmux args to toggle to the previously active session (push in "all" scope). */
+export const LAST_SESSION_ARGS = ["switch-client", "-l"];
+
+/**
+ * The window a rotation should land on in "all" scope: the neighbour of the
+ * current window in the flattened all-sessions list (wrapping across session
+ * boundaries). Falls back to the first window when the current one isn't in
+ * the list; null only for an empty list.
+ */
+export function nextWindowAcross(
+	windows: TmuxWindow[],
+	current: CurrentWindow,
+	direction: Exclude<RotationDirection, "none">,
+): TmuxWindow | null {
+	const n = windows.length;
+	if (n === 0) return null;
+	const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
+	if (idx < 0) return windows[0];
+	const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
+	return windows[target];
+}
+
+/**
+ * tmux args that jump the attached client to a window in ANY session.
+ * `switch-client -t sess:idx` changes session and window in one step
+ * (`select-window` alone cannot leave the current session).
+ */
+export function switchToWindowArgs(w: TmuxWindow): string[] {
+	return ["switch-client", "-t", `${w.session}:${w.index}`];
+}
 
 /** tmux args reading the current window as `session|name|index`. */
 export const CURRENT_WINDOW_ARGS = [
@@ -69,7 +109,9 @@ export function escapeXml(value: string): string {
 /** Row of position dots; the active window's dot is larger and brighter. */
 function dotsSvg(count: number, activeIndex: number, hue: number): string {
 	if (count <= 0) return "";
-	const gap = 14;
+	// Shrink the gap when many windows must fit (all-sessions scope) so the
+	// row never overflows the 200px strip.
+	const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
 	const startX = 100 - ((count - 1) * gap) / 2;
 	const y = 86;
 	let out = "";
@@ -94,6 +136,8 @@ export interface BackgroundOptions {
 	window: string;
 	count: number;
 	activeIndex: number;
+	/** Small top-right scope tag, e.g. "ALL" when cycling every session. */
+	badge?: string;
 }
 
 /**
@@ -104,7 +148,10 @@ export interface BackgroundOptions {
  * of this lives in one full-area pixmap. User text is XML-escaped.
  */
 export function buildBackgroundSvg(opts: BackgroundOptions): string {
-	const { hue, session, window, count, activeIndex } = opts;
+	const { hue, session, window, count, activeIndex, badge } = opts;
+	const badgeSvg = badge
+		? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
+		: "";
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
 		`<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
@@ -117,6 +164,7 @@ export function buildBackgroundSvg(opts: BackgroundOptions): string {
 		`<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate(session.toUpperCase(), 20))}</text>` +
 		`<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
 		dotsSvg(count, activeIndex, hue) +
+		badgeSvg +
 		`</svg>`
 	);
 }
@@ -132,6 +180,27 @@ export function buildWindowFeedback(current: CurrentWindow, flags: boolean[]): W
 		window: current.name,
 		count: flags.length,
 		activeIndex: flags.indexOf(true),
+	});
+	return { bg: svgToDataUri(svg) };
+}
+
+/**
+ * setFeedback payload for "all" scope: the dots span every window of every
+ * session (current window highlighted) and an ALL badge marks the scope.
+ */
+export function buildAllWindowsFeedback(
+	windows: TmuxWindow[],
+	current: CurrentWindow,
+): WindowFeedback {
+	const svg = buildBackgroundSvg({
+		hue: sessionHue(current.session),
+		session: current.session,
+		window: current.name,
+		count: windows.length,
+		activeIndex: windows.findIndex(
+			(w) => w.session === current.session && w.index === current.index,
+		),
+		badge: "ALL",
 	});
 	return { bg: svgToDataUri(svg) };
 }

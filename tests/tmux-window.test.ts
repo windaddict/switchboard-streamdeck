@@ -1,15 +1,21 @@
 import { describe, it, expect } from "vitest";
 import {
-	selectWindowDirArgs,
-	parseCurrentWindow,
-	parseActiveFlags,
-	sessionHue,
+	buildAllWindowsFeedback,
 	buildBackgroundSvg,
 	buildWindowFeedback,
-	LAST_WINDOW_ARGS,
 	CURRENT_WINDOW_ARGS,
+	LAST_SESSION_ARGS,
+	LAST_WINDOW_ARGS,
+	nextWindowAcross,
+	parseActiveFlags,
+	parseCurrentWindow,
+	selectWindowDirArgs,
+	sessionHue,
+	switchToWindowArgs,
+	toggleScope,
 	WINDOW_FLAGS_ARGS,
 } from "../src/mac/tmux-window.js";
+import type { TmuxWindow } from "../src/mac/tmux.js";
 
 describe("window dial args", () => {
 	it("selectWindowDirArgs maps to tmux next/previous-window", () => {
@@ -111,5 +117,82 @@ describe("buildWindowFeedback", () => {
 		expect(svg).toContain("DEV");
 		expect(svg).toContain("movingavg");
 		expect((svg.match(/<circle /g) ?? []).length).toBe(3);
+	});
+});
+
+describe("toggleScope", () => {
+	it("flips between session and all", () => {
+		expect(toggleScope("session")).toBe("all");
+		expect(toggleScope("all")).toBe("session");
+	});
+});
+
+const ALL_WINDOWS: TmuxWindow[] = [
+	{ session: "dev", index: 1, name: "vim", active: true },
+	{ session: "dev", index: 2, name: "logs", active: false },
+	{ session: "ops", index: 1, name: "deploy", active: true },
+];
+
+describe("nextWindowAcross", () => {
+	const current = { session: "dev", name: "logs", index: 2 };
+	it("steps forward across a session boundary", () => {
+		expect(nextWindowAcross(ALL_WINDOWS, current, "next")).toEqual(ALL_WINDOWS[2]);
+	});
+	it("steps backward within a session", () => {
+		expect(nextWindowAcross(ALL_WINDOWS, current, "prev")).toEqual(ALL_WINDOWS[0]);
+	});
+	it("wraps from the last window to the first", () => {
+		expect(nextWindowAcross(ALL_WINDOWS, { session: "ops", name: "deploy", index: 1 }, "next")).toEqual(
+			ALL_WINDOWS[0],
+		);
+	});
+	it("falls back to the first window when the current one is unknown", () => {
+		expect(nextWindowAcross(ALL_WINDOWS, { session: "gone", name: "?", index: 9 }, "next")).toEqual(
+			ALL_WINDOWS[0],
+		);
+	});
+	it("returns null for an empty list", () => {
+		expect(nextWindowAcross([], current, "next")).toBeNull();
+	});
+});
+
+describe("all-scope args", () => {
+	it("switchToWindowArgs uses switch-client (select-window cannot leave the session)", () => {
+		expect(switchToWindowArgs(ALL_WINDOWS[2])).toEqual(["switch-client", "-t", "ops:1"]);
+	});
+	it("LAST_SESSION_ARGS toggles the previous session", () => {
+		expect(LAST_SESSION_ARGS).toEqual(["switch-client", "-l"]);
+	});
+});
+
+describe("buildBackgroundSvg — badge + dense dots", () => {
+	const base = { hue: 200, session: "dev", window: "vim", count: 3, activeIndex: 0 };
+	it("renders the badge text when given", () => {
+		expect(buildBackgroundSvg({ ...base, badge: "ALL" })).toContain(">ALL</text>");
+	});
+	it("omits the badge by default", () => {
+		expect(buildBackgroundSvg(base)).not.toContain("ALL");
+	});
+	it("XML-escapes the badge", () => {
+		expect(buildBackgroundSvg({ ...base, badge: "<&>" })).toContain("&lt;&amp;&gt;");
+	});
+	it("keeps a dense dot row inside the 200px strip", () => {
+		const svg = buildBackgroundSvg({ ...base, count: 30, activeIndex: 29 });
+		const xs = [...svg.matchAll(/circle cx="([\d.]+)"/g)].map((m) => Number(m[1]));
+		expect(xs).toHaveLength(30);
+		expect(Math.min(...xs)).toBeGreaterThanOrEqual(5);
+		expect(Math.max(...xs)).toBeLessThanOrEqual(195);
+	});
+});
+
+describe("buildAllWindowsFeedback", () => {
+	it("marks the current window across the flattened all-sessions list", () => {
+		const fb = buildAllWindowsFeedback(ALL_WINDOWS, { session: "ops", name: "deploy", index: 1 });
+		expect(fb.bg.startsWith("data:image/svg+xml;base64,")).toBe(true);
+		const svg = Buffer.from(fb.bg.split(",")[1], "base64").toString();
+		expect(svg).toContain(">ALL</text>");
+		// three dots, third one active (r=4)
+		expect([...svg.matchAll(/<circle /g)]).toHaveLength(3);
+		expect(svg).toContain("OPS"); // session label uppercased
 	});
 });

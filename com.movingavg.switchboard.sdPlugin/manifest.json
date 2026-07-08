@@ -44,7 +44,7 @@
 			"Name": "Scroll Window",
 			"UUID": "com.movingavg.switchboard.scroll",
 			"Icon": "imgs/actions/scroll/icon",
-			"Tooltip": "Dial: scroll the frontmost window. Press to jump to top or toggle fast/slow.",
+			"Tooltip": "Dial: scroll the frontmost window. Press: jump to top (or toggle speed). Tap: toggle fast/slow.",
 			"PropertyInspectorPath": "ui/scroll-window.html",
 			"Controllers": [
 				"Encoder"
@@ -53,7 +53,8 @@
 				"layout": "$B1",
 				"TriggerDescription": {
 					"Rotate": "Scroll up / down",
-					"Push": "Jump to top / toggle speed"
+					"Push": "Jump to top (or toggle speed)",
+					"Touch": "Toggle fast / slow"
 				}
 			},
 			"States": [
@@ -99,7 +100,7 @@
 			"Name": "Switch tmux Pane",
 			"UUID": "com.movingavg.switchboard.tmuxpane",
 			"Icon": "imgs/actions/tmuxpane/icon",
-			"Tooltip": "Dial: rotate to switch tmux panes; push to exit copy-mode (back to the prompt).",
+			"Tooltip": "Dial: rotate to switch tmux panes; push to exit copy-mode; tap to zoom/unzoom the pane.",
 			"PropertyInspectorPath": "ui/tmux-pane.html",
 			"Controllers": [
 				"Encoder"
@@ -108,7 +109,8 @@
 				"layout": "$B1",
 				"TriggerDescription": {
 					"Rotate": "Previous / next pane",
-					"Push": "Exit copy-mode (scroll to bottom)"
+					"Push": "Exit copy-mode (scroll to bottom)",
+					"Touch": "Zoom / unzoom pane"
 				}
 			},
 			"States": [
@@ -122,7 +124,7 @@
 			"Name": "Cycle tmux Window",
 			"UUID": "com.movingavg.switchboard.tmuxwindial",
 			"Icon": "imgs/actions/tmuxwindial/icon",
-			"Tooltip": "Dial: rotate to cycle tmux windows; push for last window. Shows the current window on the touchscreen.",
+			"Tooltip": "Dial: rotate to cycle tmux windows; push for last window; tap to widen the scope to all sessions.",
 			"PropertyInspectorPath": "ui/tmux-window.html",
 			"Controllers": [
 				"Encoder"
@@ -131,7 +133,8 @@
 				"layout": "layouts/tmux-window.json",
 				"TriggerDescription": {
 					"Rotate": "Previous / next window",
-					"Push": "Last window"
+					"Push": "Last window / last session",
+					"Touch": "Toggle scope: session / all"
 				}
 			},
 			"States": [

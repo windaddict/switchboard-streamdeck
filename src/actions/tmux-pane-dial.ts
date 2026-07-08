@@ -3,6 +3,7 @@ import streamDeck, {
 	type DialDownEvent,
 	type DialRotateEvent,
 	SingletonAction,
+	type TouchTapEvent,
 } from "@elgato/streamdeck";
 
 import {
@@ -10,6 +11,7 @@ import {
 	PANE_IN_MODE_ARGS,
 	paneIsInMode,
 	selectPaneArgs,
+	ZOOM_PANE_ARGS,
 } from "../mac/tmux-pane.js";
 import { rotationDirection } from "../mac/rotation.js";
 import { findTmuxPath, runTmux } from "../mac/tmux-runner.js";
@@ -22,7 +24,8 @@ type TmuxPaneSettings = {
 /**
  * Dial action: rotate to switch tmux panes (next/previous), push to exit
  * copy-mode so the cursor returns to the live prompt when the pane is scrolled
- * up. Operates on tmux's current pane (no per-button config needed).
+ * up, touch-tap to toggle pane zoom. Operates on tmux's current pane (no
+ * per-button config needed).
  */
 @action({ UUID: "com.movingavg.switchboard.tmuxpane" })
 export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
@@ -42,6 +45,14 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 		// Only cancel when actually scrolled up — send-keys -X errors outside a mode.
 		if (paneIsInMode(mode.stdout)) {
 			await runTmux(CANCEL_MODE_ARGS, tmux);
+		}
+	}
+
+	/** Touch-tap: zoom/unzoom the current pane. */
+	override async onTouchTap(_ev: TouchTapEvent<TmuxPaneSettings>): Promise<void> {
+		const result = await runTmux(ZOOM_PANE_ARGS, findTmuxPath());
+		if (!result.ok) {
+			streamDeck.logger.error(`tmux resize-pane -Z failed: ${result.stderr || "no server?"}`);
 		}
 	}
 }
