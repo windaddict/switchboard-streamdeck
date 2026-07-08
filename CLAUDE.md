@@ -59,7 +59,7 @@ they intentionally reset to the default on appearance.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 298 tests today
+npm test              # vitest (pure modules) — 299 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -102,6 +102,12 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   left on the first shown option saves no value (bit us on Gmail service + the
   tmux window dropdown). Fix: default in the ACTION code (`x ?? "..."`) and/or
   have the PI persist the shown value on load.
+- **The built-in $B1 layout's `title` item ignores `setFeedback` pushes** — it is
+  bound to the user-editable action title, so a plugin cannot change it at
+  runtime (the `value` item updates fine; bit us on the App Windows mode label).
+  For any plugin-driven text above the value line, use a CUSTOM layout with your
+  own item keys (`layouts/app-windows.json`, painted via `appWindowsFeedback`).
+  A layout/manifest change needs a full Stream Deck quit + relaunch to take.
 - **Layout (touchscreen) items must NOT overlap.** You can't layer text over a
   full-area pixmap. To draw text on a background, render everything in ONE SVG
   pixmap (`buildBackgroundSvg`) — see `mac/tmux-window.ts` + `layouts/tmux-window.json`.

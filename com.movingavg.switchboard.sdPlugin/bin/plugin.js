@@ -8457,15 +8457,18 @@ function appCycleScript(direction) {
 end tell`;
 }
 /**
- * Touchscreen readout for the dial: the title names the MODE (what rotation
- * moves through), the value shows where you are — the window title (falling
- * back to the app name for title-less windows) or the frontmost app.
+ * setFeedback payload for the custom `layouts/app-windows.json` layout — OWN
+ * item keys, because the built-in $B1 layout's `title` item is bound to the
+ * user-editable action title and silently ignores plugin pushes. `mode` names
+ * what rotation moves through; `current` shows where you are — the window
+ * title (falling back to the app name for title-less windows) or the
+ * frontmost app.
  */
 function appWindowsFeedback(mode, front) {
     if (mode === "apps") {
-        return { title: "Apps", value: front.app || "—" };
+        return { mode: "Apps ⇄", current: front.app || "—" };
     }
-    return { title: "Windows", value: front.title || front.app || "—" };
+    return { mode: "Windows ⇄", current: front.title || front.app || "—" };
 }
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */
 const FRONT_WINDOW_SCRIPT = `tell application "System Events"

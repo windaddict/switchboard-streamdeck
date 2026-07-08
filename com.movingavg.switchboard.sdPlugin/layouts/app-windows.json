@@ -1,0 +1,20 @@
+{
+	"id": "app-windows",
+	"items": [
+		{
+			"key": "mode",
+			"type": "text",
+			"rect": [0, 8, 200, 24],
+			"alignment": "center",
+			"font": { "size": 12, "weight": 600 },
+			"color": "#a8a8a8"
+		},
+		{
+			"key": "current",
+			"type": "text",
+			"rect": [0, 40, 200, 36],
+			"alignment": "center",
+			"font": { "size": 20, "weight": 700 }
+		}
+	]
+}

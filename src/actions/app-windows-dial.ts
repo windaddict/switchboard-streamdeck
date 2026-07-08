@@ -103,7 +103,7 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 
 	private async paint(
 		dial: DialAction<AppWindowsSettings>,
-		feedback: { title: string; value: string },
+		feedback: { mode: string; current: string },
 	): Promise<void> {
 		try {
 			await dial.setFeedback(feedback);

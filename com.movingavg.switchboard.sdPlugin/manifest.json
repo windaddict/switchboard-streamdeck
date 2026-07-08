@@ -154,7 +154,7 @@
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "$B1",
+				"layout": "layouts/app-windows.json",
 				"TriggerDescription": {
 					"Rotate": "Previous / next window (or app)",
 					"Push": "Toggle windows / apps mode",

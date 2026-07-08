@@ -75,21 +75,24 @@ describe("appCycleScript", () => {
 
 describe("appWindowsFeedback", () => {
 	const front = { app: "Safari", title: "Inbox" };
-	it("the title names the MODE so a glance shows what rotation does", () => {
-		expect(appWindowsFeedback("windows", front).title).toBe("Windows");
-		expect(appWindowsFeedback("apps", front).title).toBe("Apps");
+	it("uses custom layout keys, NOT the $B1 title (which is user-title-bound and ignores pushes)", () => {
+		expect(Object.keys(appWindowsFeedback("windows", front)).sort()).toEqual(["current", "mode"]);
 	});
-	it("windows mode shows the window title as the value", () => {
-		expect(appWindowsFeedback("windows", front).value).toBe("Inbox");
+	it("the mode line names what rotation moves through, with the toggle hint", () => {
+		expect(appWindowsFeedback("windows", front).mode).toBe("Windows \u21c4");
+		expect(appWindowsFeedback("apps", front).mode).toBe("Apps \u21c4");
+	});
+	it("windows mode shows the window title as the current line", () => {
+		expect(appWindowsFeedback("windows", front).current).toBe("Inbox");
 	});
 	it("windows mode falls back to the app name for a title-less window", () => {
-		expect(appWindowsFeedback("windows", { app: "Finder", title: "" }).value).toBe("Finder");
+		expect(appWindowsFeedback("windows", { app: "Finder", title: "" }).current).toBe("Finder");
 	});
-	it("apps mode shows the front app as the value", () => {
-		expect(appWindowsFeedback("apps", front).value).toBe("Safari");
+	it("apps mode shows the front app as the current line", () => {
+		expect(appWindowsFeedback("apps", front).current).toBe("Safari");
 	});
 	it("falls back to placeholders when nothing is frontmost", () => {
-		expect(appWindowsFeedback("windows", { app: "", title: "" }).value).toBe("\u2014");
-		expect(appWindowsFeedback("apps", { app: "", title: "" }).value).toBe("\u2014");
+		expect(appWindowsFeedback("windows", { app: "", title: "" }).current).toBe("\u2014");
+		expect(appWindowsFeedback("apps", { app: "", title: "" }).current).toBe("\u2014");
 	});
 });
