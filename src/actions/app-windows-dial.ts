@@ -33,9 +33,13 @@ type AppWindowsSettings = Record<string, never>;
  * front app/window, refreshed after each step. The mode is transient (held in
  * memory per dial), so every appearance starts in the familiar windows mode.
  */
+/** Quiet time after the last tick before the strip readback runs. */
+const REFRESH_DEBOUNCE_MS = 250;
+
 @action({ UUID: "com.movingavg.switchboard.appwindows" })
 export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 	private readonly modes = new Map<string, AppWindowsMode>();
+	private readonly refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	override async onWillAppear(ev: WillAppearEvent<AppWindowsSettings>): Promise<void> {
 		if (ev.action.isDial()) {
@@ -45,6 +49,9 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 
 	override onWillDisappear(ev: WillDisappearEvent<AppWindowsSettings>): void {
 		this.modes.delete(ev.action.id);
+		const t = this.refreshTimers.get(ev.action.id);
+		if (t !== undefined) clearTimeout(t);
+		this.refreshTimers.delete(ev.action.id);
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<AppWindowsSettings>): Promise<void> {
@@ -70,7 +77,24 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 			await this.paint(ev.action, appWindowsFeedback("apps", { app: result.stdout.trim(), title: "" }));
 			return;
 		}
-		await this.refresh(ev.action);
+
+		// Windows mode: the title readback costs more than the keystroke itself
+		// (~200ms vs ~130ms), so don't pay it per tick — debounce it to after the
+		// rotation stops. You watch the windows change on screen, not the strip.
+		this.scheduleRefresh(ev.action);
+	}
+
+	/** Repaint once the dial has been quiet for a beat (cancels prior timers). */
+	private scheduleRefresh(dial: DialAction<AppWindowsSettings>): void {
+		const t = this.refreshTimers.get(dial.id);
+		if (t !== undefined) clearTimeout(t);
+		this.refreshTimers.set(
+			dial.id,
+			setTimeout(() => {
+				this.refreshTimers.delete(dial.id);
+				void this.refresh(dial);
+			}, REFRESH_DEBOUNCE_MS),
+		);
 	}
 
 	override async onDialDown(ev: DialDownEvent<AppWindowsSettings>): Promise<void> {

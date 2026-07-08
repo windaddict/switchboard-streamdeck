@@ -8547,6 +8547,8 @@ async function respondToAccessibilityCheck(payload, baseUrl) {
  * front app/window, refreshed after each step. The mode is transient (held in
  * memory per dial), so every appearance starts in the familiar windows mode.
  */
+/** Quiet time after the last tick before the strip readback runs. */
+const REFRESH_DEBOUNCE_MS = 250;
 let CycleAppWindows = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.appwindows" })];
     let _classDescriptor;
@@ -8563,6 +8565,7 @@ let CycleAppWindows = (() => {
             __runInitializers(_classThis, _classExtraInitializers);
         }
         modes = new Map();
+        refreshTimers = new Map();
         async onWillAppear(ev) {
             if (ev.action.isDial()) {
                 await this.refresh(ev.action);
@@ -8570,6 +8573,10 @@ let CycleAppWindows = (() => {
         }
         onWillDisappear(ev) {
             this.modes.delete(ev.action.id);
+            const t = this.refreshTimers.get(ev.action.id);
+            if (t !== undefined)
+                clearTimeout(t);
+            this.refreshTimers.delete(ev.action.id);
         }
         async onDialRotate(ev) {
             const direction = rotationDirection(ev.payload.ticks);
@@ -8590,7 +8597,20 @@ let CycleAppWindows = (() => {
                 await this.paint(ev.action, appWindowsFeedback("apps", { app: result.stdout.trim(), title: "" }));
                 return;
             }
-            await this.refresh(ev.action);
+            // Windows mode: the title readback costs more than the keystroke itself
+            // (~200ms vs ~130ms), so don't pay it per tick — debounce it to after the
+            // rotation stops. You watch the windows change on screen, not the strip.
+            this.scheduleRefresh(ev.action);
+        }
+        /** Repaint once the dial has been quiet for a beat (cancels prior timers). */
+        scheduleRefresh(dial) {
+            const t = this.refreshTimers.get(dial.id);
+            if (t !== undefined)
+                clearTimeout(t);
+            this.refreshTimers.set(dial.id, setTimeout(() => {
+                this.refreshTimers.delete(dial.id);
+                void this.refresh(dial);
+            }, REFRESH_DEBOUNCE_MS));
         }
         async onDialDown(ev) {
             await this.toggle(ev.action);
