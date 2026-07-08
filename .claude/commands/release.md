@@ -25,6 +25,9 @@ Follow these steps **in order**. Stop and report if any check fails.
 
 ## 2. Version bump + docs
 - Set `package.json` `version` to `X.Y.Z`.
+- Set the manifest `Version` to `X.Y.Z.0` (`com.movingavg.switchboard.sdPlugin/manifest.json`)
+  — this is the version the Stream Deck app displays. It drifted before (manifest
+  said 1.2.0.0 while v1.1.0/v1.1.1 shipped); keep the two in lockstep.
 - Update `README.md`: action count and test count if they changed.
 - Run `python3 scripts/make-hero.py` if actions were added/renamed; commit the hero.
 - Commit (`release: prep vX.Y.Z …`) and `git push origin main`.
