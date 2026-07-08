@@ -8907,6 +8907,52 @@ return "notfound"`;
 }
 
 /**
+ * Long-press detection for Keypad actions, factored out of Window Ring's
+ * proven pattern: the hold callback fires AT the threshold (immediate haptic
+ * of "something happened", no waiting for release), and a release before the
+ * threshold is reported as a short press for the caller to act on in onKeyUp.
+ * Pure timers, no SDK — unit-tested with fake timers.
+ */
+/** Press held this long (ms) registers as a long press. */
+const LONG_PRESS_MS$1 = 500;
+class PressGate {
+    holdMs;
+    timers = new Map();
+    constructor(holdMs = LONG_PRESS_MS$1) {
+        this.holdMs = holdMs;
+    }
+    /** Key went down: arm the hold callback. A second down re-arms. */
+    down(id, onHold) {
+        this.cancel(id);
+        const t = setTimeout(() => {
+            this.timers.delete(id);
+            onHold();
+        }, this.holdMs);
+        this.timers.set(id, t);
+    }
+    /**
+     * Key came up. Returns true for a short press (released before the
+     * threshold — the caller should run the normal action); false when the
+     * hold callback already fired or nothing was armed.
+     */
+    up(id) {
+        const t = this.timers.get(id);
+        if (t === undefined)
+            return false;
+        clearTimeout(t);
+        this.timers.delete(id);
+        return true;
+    }
+    /** Disarm without firing (e.g. the key disappeared mid-press). */
+    cancel(id) {
+        const t = this.timers.get(id);
+        if (t !== undefined)
+            clearTimeout(t);
+        this.timers.delete(id);
+    }
+}
+
+/**
  * Pure parsing + target-resolution helpers for driving tmux from the plugin.
  *
  * None of these functions shell out — they take the raw stdout of tmux
@@ -9073,11 +9119,188 @@ function runTmux(args, tmuxPath, exec = execFile) {
     });
 }
 
+/** Small shared SVG helpers used by the key/touchscreen image builders. */
+/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
+function svgToDataUri(svg) {
+    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+/** Round to one decimal place — keeps generated SVG coordinates compact. */
+function round(n) {
+    return Math.round(n * 10) / 10;
+}
+
+/**
+ * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
+ * push for last-window, and render a dynamic touchscreen background that
+ * reflects the current session/window. All functions are pure (no tmux, no
+ * Stream Deck) so they unit test in isolation.
+ */
+/** Toggle the dial's scope (touch-tap). */
+function toggleScope(scope) {
+    return scope === "session" ? "all" : "session";
+}
+/** tmux args to move to the next/previous window in the current session. */
+function selectWindowDirArgs(direction) {
+    return direction === "next" ? ["next-window"] : ["previous-window"];
+}
+/** tmux args to toggle to the previously active window (push = back-and-forth). */
+const LAST_WINDOW_ARGS = ["last-window"];
+/** tmux args to toggle to the previously active session (push in "all" scope). */
+const LAST_SESSION_ARGS = ["switch-client", "-l"];
+/**
+ * The window a rotation should land on in "all" scope: the neighbour of the
+ * current window in the flattened all-sessions list (wrapping across session
+ * boundaries). Falls back to the first window when the current one isn't in
+ * the list; null only for an empty list.
+ */
+function nextWindowAcross(windows, current, direction) {
+    const n = windows.length;
+    if (n === 0)
+        return null;
+    const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
+    if (idx < 0)
+        return windows[0];
+    const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
+    return windows[target];
+}
+/**
+ * tmux args that jump the attached client to a window in ANY session.
+ * `switch-client -t sess:idx` changes session and window in one step
+ * (`select-window` alone cannot leave the current session).
+ */
+function switchToWindowArgs(w) {
+    return ["switch-client", "-t", `${w.session}:${w.index}`];
+}
+/** tmux args reading the current window as `session|name|index`. */
+const CURRENT_WINDOW_ARGS = [
+    "display-message",
+    "-p",
+    "#{session_name}|#{window_name}|#{window_index}",
+];
+/** tmux args listing the active flag of each window in the current session. */
+const WINDOW_FLAGS_ARGS = ["list-windows", "-F", "#{window_active}"];
+/** Parse `session|name|index` into a {@link CurrentWindow}. */
+function parseCurrentWindow(output) {
+    const [session = "", name = "", index = "0"] = output.trim().split("|");
+    return { session, name, index: Number.parseInt(index, 10) || 0 };
+}
+/**
+ * "Teach the button": the Focus-tmux target string for a captured current
+ * window, in the same `session:name` form the dropdown persists. "" (nothing
+ * to save) when the session is blank — i.e. no tmux server was running.
+ */
+function captureTmuxTarget(current) {
+    if (current.session.trim() === "")
+        return "";
+    return `${current.session}:${current.name}`;
+}
+/** Parse the per-window active flags ("1" = active) preserving window order. */
+function parseActiveFlags(output) {
+    return output
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .map((line) => line === "1");
+}
+/** Deterministic 0–359 hue derived from a session name, so colours are stable. */
+function sessionHue(session) {
+    let h = 0;
+    for (let i = 0; i < session.length; i++) {
+        h = (h * 31 + session.charCodeAt(i)) % 360;
+    }
+    return h;
+}
+/** Escape text for safe embedding inside SVG/XML. */
+function escapeXml(value) {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+}
+/** Row of position dots; the active window's dot is larger and brighter. */
+function dotsSvg(count, activeIndex, hue) {
+    if (count <= 0)
+        return "";
+    // Shrink the gap when many windows must fit (all-sessions scope) so the
+    // row never overflows the 200px strip.
+    const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
+    const startX = 100 - ((count - 1) * gap) / 2;
+    const y = 86;
+    let out = "";
+    for (let i = 0; i < count; i++) {
+        const cx = round(startX + i * gap);
+        const active = i === activeIndex;
+        const r = active ? 4 : 2.5;
+        const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
+        out += `<circle cx="${cx}" cy="${y}" r="${r}" fill="${fill}"/>`;
+    }
+    return out;
+}
+/** Truncate a label so it fits the 200px touch strip. */
+function truncate(value, max = 16) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+/**
+ * Build the 200×100 touchscreen image as an SVG string: a session-tinted
+ * vertical gradient, faint left/right chevrons hinting the dial rotates, the
+ * session name (top) and current window name (centre), and a row of dots
+ * showing the window position. Stream Deck layout items may not overlap, so all
+ * of this lives in one full-area pixmap. User text is XML-escaped.
+ */
+function buildBackgroundSvg(opts) {
+    const { hue, session, window, count, activeIndex, badge } = opts;
+    const badgeSvg = badge
+        ? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
+        : "";
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
+        `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
+        `<stop offset="0" stop-color="hsl(${hue},55%,24%)"/>` +
+        `<stop offset="1" stop-color="hsl(${hue},60%,10%)"/>` +
+        `</linearGradient></defs>` +
+        `<rect width="200" height="100" fill="url(#g)"/>` +
+        `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
+        `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
+        dotsSvg(count, activeIndex, hue) +
+        badgeSvg +
+        `</svg>`);
+}
+/** Build the setFeedback payload for the current window + window flags. */
+function buildWindowFeedback(current, flags) {
+    const svg = buildBackgroundSvg({
+        hue: sessionHue(current.session),
+        session: current.session,
+        window: current.name,
+        count: flags.length,
+        activeIndex: flags.indexOf(true),
+    });
+    return { bg: svgToDataUri(svg) };
+}
+/**
+ * setFeedback payload for "all" scope: the dots span every window of every
+ * session (current window highlighted) and an ALL badge marks the scope.
+ */
+function buildAllWindowsFeedback(windows, current) {
+    const svg = buildBackgroundSvg({
+        hue: sessionHue(current.session),
+        session: current.session,
+        window: current.name,
+        count: windows.length,
+        activeIndex: windows.findIndex((w) => w.session === current.session && w.index === current.index),
+        badge: "ALL",
+    });
+    return { bg: svgToDataUri(svg) };
+}
+
 /**
  * Raise the iTerm2 window hosting a tmux session (matched by one of its window
  * names) and optionally switch tmux to that window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
- * survives tmux layout changes.
+ * survives tmux layout changes. Holding the key ("teach the button") captures
+ * the current tmux window as the new target.
  */
 let FocusTmuxWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmux" })];
@@ -9094,24 +9317,40 @@ let FocusTmuxWindow = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        async onKeyDown(ev) {
-            const target = (ev.payload.settings.target ?? "").trim();
+        gate = new PressGate();
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Focus tmux capture failed: ${String(err)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return; // long press already captured
+            await this.focus(ev.action);
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+        }
+        /** Short press: raise the iTerm2 window for the configured tmux window. */
+        async focus(key) {
+            const settings = (await key.getSettings()) ?? {};
+            const target = (settings.target ?? "").trim();
             if (!target) {
                 streamDeck.logger.warn("Focus tmux Window pressed with no target selected.");
-                await ev.action.showAlert();
+                await key.showAlert();
                 return;
             }
             const tmux = findTmuxPath();
             const windowsResult = await runTmux(LIST_WINDOWS_ARGS, tmux);
             if (!windowsResult.ok) {
                 streamDeck.logger.error(`tmux list-windows failed: ${windowsResult.stderr || "no server?"}`);
-                await ev.action.showAlert();
+                await key.showAlert();
                 return;
             }
             const match = resolveTarget$1(parseWindows(windowsResult.stdout), target);
             if (!match) {
                 streamDeck.logger.warn(`No tmux window matched "${target}".`);
-                await ev.action.showAlert();
+                await key.showAlert();
                 return;
             }
             // Map the session to the iTerm2 window via its attached client tty.
@@ -9126,10 +9365,24 @@ let FocusTmuxWindow = (() => {
                 streamDeck.logger.debug(`No iTerm session on tty ${tty ?? "?"}; activated iTerm only.`);
             }
             // Optionally switch tmux to the exact window (default on).
-            if (ev.payload.settings.switchWindow !== false) {
+            if (settings.switchWindow !== false) {
                 await runTmux(selectWindowArgs(match), tmux);
             }
-            await ev.action.showOk();
+            await key.showOk();
+        }
+        /** Long press: capture the current tmux window into this button. */
+        async capture(key) {
+            const result = await runTmux(CURRENT_WINDOW_ARGS, findTmuxPath());
+            const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
+            if (target === "") {
+                streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);
+                await key.showAlert();
+                return;
+            }
+            const settings = (await key.getSettings()) ?? {};
+            await key.setSettings({ ...settings, target });
+            streamDeck.logger.info(`Focus tmux captured ${target}.`);
+            await key.showOk();
         }
         /** Serve the live list of tmux windows to the property inspector dropdown. */
         async onSendToPlugin(ev) {
@@ -9294,6 +9547,17 @@ return "ok"`;
 function buildJumpScript(t) {
     return t.private ? buildPrivateScript(t) : buildNormalScript(t);
 }
+/**
+ * AppleScript returning the URL of Safari's current front tab, or "" when
+ * there is no window or the tab is unloaded (`URL of tab` yields
+ * `missing value` without erroring — see buildNormalScript).
+ */
+const FRONT_TAB_URL_SCRIPT = `tell application "Safari"
+	if (count of windows) is 0 then return ""
+	set u to URL of current tab of front window
+	if u is missing value then return ""
+	return u
+end tell`;
 
 /**
  * Target resolution: turn per-button settings into a concrete URL + match
@@ -9314,6 +9578,25 @@ function derivePattern(url) {
     catch {
         return url.trim();
     }
+}
+/**
+ * "Teach the button": rebuild the settings around a captured live URL. The
+ * button becomes a custom target for that URL (pattern derived from it); a
+ * stale titlePattern is dropped so it cannot match some other tab, and the
+ * private flag survives (capture changes WHERE the button goes, not HOW).
+ * Returns null for a blank URL — nothing worth saving.
+ */
+function captureTarget(url, prev) {
+    const trimmed = url.trim();
+    if (trimmed === "")
+        return null;
+    return {
+        ...prev,
+        service: "custom",
+        url: trimmed,
+        urlPattern: derivePattern(trimmed),
+        titlePattern: undefined,
+    };
 }
 function resolveTarget(settings) {
     const isPrivate = settings.private === true;
@@ -9353,7 +9636,8 @@ function resolveTarget(settings) {
 
 /**
  * Jump to (or open) a Safari tab. Settings are per-key, so there is no shared
- * target list to clobber — each button owns its own target.
+ * target list to clobber — each button owns its own target. Holding the key
+ * ("teach the button") captures Safari's current front tab as the new target.
  */
 let JumpToTab = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.jump" })];
@@ -9370,19 +9654,34 @@ let JumpToTab = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        async onKeyDown(ev) {
-            const target = resolveTarget(ev.payload.settings ?? {});
+        gate = new PressGate();
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Jump to Tab capture failed: ${String(err)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return; // long press already captured
+            await this.jump(ev.action);
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+        }
+        /** Short press: focus (or open) the configured tab. */
+        async jump(key) {
+            const target = resolveTarget((await key.getSettings()) ?? {});
             if (!target.url) {
                 streamDeck.logger.warn("Jump to Tab pressed with no URL configured.");
-                await ev.action.showAlert();
+                await key.showAlert();
                 return;
             }
             const result = await runAppleScript(buildJumpScript(target));
             if (result.ok) {
-                await ev.action.showOk();
+                await key.showOk();
                 return;
             }
-            await ev.action.showAlert();
+            await key.showAlert();
             if (result.code === "permission-denied") {
                 streamDeck.logger.error("Safari automation blocked. Grant access: System Settings > Privacy & Security > " +
                     "Automation > Stream Deck > enable Safari (and System Events for private windows).");
@@ -9390,6 +9689,19 @@ let JumpToTab = (() => {
             else {
                 streamDeck.logger.error(`Jump to Tab failed: ${result.stderr || "unknown error"}`);
             }
+        }
+        /** Long press: capture Safari's current front tab into this button. */
+        async capture(key) {
+            const result = await runAppleScript(FRONT_TAB_URL_SCRIPT);
+            const updated = result.ok ? captureTarget(result.stdout.trim(), await key.getSettings()) : null;
+            if (updated === null) {
+                streamDeck.logger.warn(`Jump to Tab capture: no front tab URL (${result.stderr || "empty"}).`);
+                await key.showAlert();
+                return;
+            }
+            await key.setSettings(updated);
+            streamDeck.logger.info(`Jump to Tab captured ${updated.url}.`);
+            await key.showOk();
         }
     });
     return _classThis;
@@ -9460,16 +9772,6 @@ function buildOpenArgs(filePath, opener, app) {
     if (opener === "app" && app && app.trim() !== "")
         return ["-a", app.trim(), filePath];
     return [filePath];
-}
-
-/** Small shared SVG helpers used by the key/touchscreen image builders. */
-/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
-function svgToDataUri(svg) {
-    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
-}
-/** Round to one decimal place — keeps generated SVG coordinates compact. */
-function round(n) {
-    return Math.round(n * 10) / 10;
 }
 
 /**
@@ -9846,6 +10148,18 @@ function resolveApp(s) {
     return { appName, titlePattern };
 }
 /**
+ * "Teach the button": point the settings at a captured frontmost app. The
+ * old titlePattern is dropped — it belonged to the previous app and would
+ * otherwise raise an arbitrary matching window of the new one. Returns null
+ * for a blank app name.
+ */
+function captureApp(appName, prev) {
+    const trimmed = appName.trim();
+    if (trimmed === "")
+        return null;
+    return { ...prev, appName: trimmed, titlePattern: undefined };
+}
+/**
  * Build the AppleScript that opens or switches to the given app, optionally
  * raising the first window whose title contains `titlePattern`.
  *
@@ -9888,7 +10202,8 @@ function buildAppScript(app) {
 /**
  * Open or switch to an app, optionally focusing a window whose title contains a
  * pattern. `activate` both launches (if needed) and switches; with a title
- * pattern, System Events raises the first matching window.
+ * pattern, System Events raises the first matching window. Holding the key
+ * ("teach the button") captures the frontmost app as the new target.
  */
 let SwitchApp = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.switchapp" })];
@@ -9905,20 +10220,35 @@ let SwitchApp = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        async onKeyDown(ev) {
-            const app = resolveApp(ev.payload.settings ?? {});
+        gate = new PressGate();
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Open/Switch App capture failed: ${String(err)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return; // long press already captured
+            await this.switchTo(ev.action);
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+        }
+        /** Short press: open or switch to the configured app. */
+        async switchTo(key) {
+            const app = resolveApp((await key.getSettings()) ?? {});
             const script = buildAppScript(app);
             if (!script) {
                 streamDeck.logger.warn("Open/Switch App pressed with no application configured.");
-                await ev.action.showAlert();
+                await key.showAlert();
                 return;
             }
             const result = await runAppleScript(script);
             if (result.ok) {
-                await ev.action.showOk();
+                await key.showOk();
                 return;
             }
-            await ev.action.showAlert();
+            await key.showAlert();
             if (result.code === "permission-denied") {
                 streamDeck.logger.error("App switch blocked. Grant access in System Settings > Privacy & Security: " +
                     "Automation (the target app) and, for title matching, Accessibility > Stream Deck.");
@@ -9926,6 +10256,21 @@ let SwitchApp = (() => {
             else {
                 streamDeck.logger.error(`Open/Switch App failed: ${result.stderr || result.code}`);
             }
+        }
+        /** Long press: capture the frontmost app into this button. */
+        async capture(key) {
+            const result = await runAppleScript(FRONT_WINDOW_SCRIPT);
+            const updated = result.ok
+                ? captureApp(parseFrontWindow(result.stdout).app, await key.getSettings())
+                : null;
+            if (updated === null) {
+                streamDeck.logger.warn(`Open/Switch App capture: no frontmost app (${result.stderr || "empty"}).`);
+                await key.showAlert();
+                return;
+            }
+            await key.setSettings(updated);
+            streamDeck.logger.info(`Open/Switch App captured ${updated.appName}.`);
+            await key.showOk();
         }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
@@ -10151,162 +10496,6 @@ let ArrangeWindow = (() => {
     });
     return _classThis;
 })();
-
-/**
- * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
- * push for last-window, and render a dynamic touchscreen background that
- * reflects the current session/window. All functions are pure (no tmux, no
- * Stream Deck) so they unit test in isolation.
- */
-/** Toggle the dial's scope (touch-tap). */
-function toggleScope(scope) {
-    return scope === "session" ? "all" : "session";
-}
-/** tmux args to move to the next/previous window in the current session. */
-function selectWindowDirArgs(direction) {
-    return direction === "next" ? ["next-window"] : ["previous-window"];
-}
-/** tmux args to toggle to the previously active window (push = back-and-forth). */
-const LAST_WINDOW_ARGS = ["last-window"];
-/** tmux args to toggle to the previously active session (push in "all" scope). */
-const LAST_SESSION_ARGS = ["switch-client", "-l"];
-/**
- * The window a rotation should land on in "all" scope: the neighbour of the
- * current window in the flattened all-sessions list (wrapping across session
- * boundaries). Falls back to the first window when the current one isn't in
- * the list; null only for an empty list.
- */
-function nextWindowAcross(windows, current, direction) {
-    const n = windows.length;
-    if (n === 0)
-        return null;
-    const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
-    if (idx < 0)
-        return windows[0];
-    const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
-    return windows[target];
-}
-/**
- * tmux args that jump the attached client to a window in ANY session.
- * `switch-client -t sess:idx` changes session and window in one step
- * (`select-window` alone cannot leave the current session).
- */
-function switchToWindowArgs(w) {
-    return ["switch-client", "-t", `${w.session}:${w.index}`];
-}
-/** tmux args reading the current window as `session|name|index`. */
-const CURRENT_WINDOW_ARGS = [
-    "display-message",
-    "-p",
-    "#{session_name}|#{window_name}|#{window_index}",
-];
-/** tmux args listing the active flag of each window in the current session. */
-const WINDOW_FLAGS_ARGS = ["list-windows", "-F", "#{window_active}"];
-/** Parse `session|name|index` into a {@link CurrentWindow}. */
-function parseCurrentWindow(output) {
-    const [session = "", name = "", index = "0"] = output.trim().split("|");
-    return { session, name, index: Number.parseInt(index, 10) || 0 };
-}
-/** Parse the per-window active flags ("1" = active) preserving window order. */
-function parseActiveFlags(output) {
-    return output
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "")
-        .map((line) => line === "1");
-}
-/** Deterministic 0–359 hue derived from a session name, so colours are stable. */
-function sessionHue(session) {
-    let h = 0;
-    for (let i = 0; i < session.length; i++) {
-        h = (h * 31 + session.charCodeAt(i)) % 360;
-    }
-    return h;
-}
-/** Escape text for safe embedding inside SVG/XML. */
-function escapeXml(value) {
-    return value
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&apos;");
-}
-/** Row of position dots; the active window's dot is larger and brighter. */
-function dotsSvg(count, activeIndex, hue) {
-    if (count <= 0)
-        return "";
-    // Shrink the gap when many windows must fit (all-sessions scope) so the
-    // row never overflows the 200px strip.
-    const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
-    const startX = 100 - ((count - 1) * gap) / 2;
-    const y = 86;
-    let out = "";
-    for (let i = 0; i < count; i++) {
-        const cx = round(startX + i * gap);
-        const active = i === activeIndex;
-        const r = active ? 4 : 2.5;
-        const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
-        out += `<circle cx="${cx}" cy="${y}" r="${r}" fill="${fill}"/>`;
-    }
-    return out;
-}
-/** Truncate a label so it fits the 200px touch strip. */
-function truncate(value, max = 16) {
-    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-/**
- * Build the 200×100 touchscreen image as an SVG string: a session-tinted
- * vertical gradient, faint left/right chevrons hinting the dial rotates, the
- * session name (top) and current window name (centre), and a row of dots
- * showing the window position. Stream Deck layout items may not overlap, so all
- * of this lives in one full-area pixmap. User text is XML-escaped.
- */
-function buildBackgroundSvg(opts) {
-    const { hue, session, window, count, activeIndex, badge } = opts;
-    const badgeSvg = badge
-        ? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
-        : "";
-    return (`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
-        `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
-        `<stop offset="0" stop-color="hsl(${hue},55%,24%)"/>` +
-        `<stop offset="1" stop-color="hsl(${hue},60%,10%)"/>` +
-        `</linearGradient></defs>` +
-        `<rect width="200" height="100" fill="url(#g)"/>` +
-        `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
-        dotsSvg(count, activeIndex, hue) +
-        badgeSvg +
-        `</svg>`);
-}
-/** Build the setFeedback payload for the current window + window flags. */
-function buildWindowFeedback(current, flags) {
-    const svg = buildBackgroundSvg({
-        hue: sessionHue(current.session),
-        session: current.session,
-        window: current.name,
-        count: flags.length,
-        activeIndex: flags.indexOf(true),
-    });
-    return { bg: svgToDataUri(svg) };
-}
-/**
- * setFeedback payload for "all" scope: the dots span every window of every
- * session (current window highlighted) and an ALL badge marks the scope.
- */
-function buildAllWindowsFeedback(windows, current) {
-    const svg = buildBackgroundSvg({
-        hue: sessionHue(current.session),
-        session: current.session,
-        window: current.name,
-        count: windows.length,
-        activeIndex: windows.findIndex((w) => w.session === current.session && w.index === current.index),
-        badge: "ALL",
-    });
-    return { bg: svgToDataUri(svg) };
-}
 
 /**
  * Dial action: rotate to cycle tmux windows, push for last-window. Touch-tap

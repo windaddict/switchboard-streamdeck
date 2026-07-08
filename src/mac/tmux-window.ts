@@ -78,6 +78,16 @@ export function parseCurrentWindow(output: string): CurrentWindow {
 	return { session, name, index: Number.parseInt(index, 10) || 0 };
 }
 
+/**
+ * "Teach the button": the Focus-tmux target string for a captured current
+ * window, in the same `session:name` form the dropdown persists. "" (nothing
+ * to save) when the session is blank — i.e. no tmux server was running.
+ */
+export function captureTmuxTarget(current: CurrentWindow): string {
+	if (current.session.trim() === "") return "";
+	return `${current.session}:${current.name}`;
+}
+
 /** Parse the per-window active flags ("1" = active) preserving window order. */
 export function parseActiveFlags(output: string): boolean[] {
 	return output

@@ -28,6 +28,18 @@ export function resolveApp(s: AppSettings): ResolvedApp {
 }
 
 /**
+ * "Teach the button": point the settings at a captured frontmost app. The
+ * old titlePattern is dropped — it belonged to the previous app and would
+ * otherwise raise an arbitrary matching window of the new one. Returns null
+ * for a blank app name.
+ */
+export function captureApp(appName: string, prev: AppSettings): AppSettings | null {
+	const trimmed = appName.trim();
+	if (trimmed === "") return null;
+	return { ...prev, appName: trimmed, titlePattern: undefined };
+}
+
+/**
  * Build the AppleScript that opens or switches to the given app, optionally
  * raising the first window whose title contains `titlePattern`.
  *

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	buildAllWindowsFeedback,
+	captureTmuxTarget,
 	buildBackgroundSvg,
 	buildWindowFeedback,
 	CURRENT_WINDOW_ARGS,
@@ -194,5 +195,15 @@ describe("buildAllWindowsFeedback", () => {
 		// three dots, third one active (r=4)
 		expect([...svg.matchAll(/<circle /g)]).toHaveLength(3);
 		expect(svg).toContain("OPS"); // session label uppercased
+	});
+});
+
+describe("captureTmuxTarget", () => {
+	it("formats session:name (the dropdown's persisted form)", () => {
+		expect(captureTmuxTarget({ session: "dev", name: "movingavg", index: 3 })).toBe("dev:movingavg");
+	});
+	it("returns \"\" when there is no session (no tmux server)", () => {
+		expect(captureTmuxTarget({ session: "", name: "", index: 0 })).toBe("");
+		expect(captureTmuxTarget({ session: "  ", name: "x", index: 0 })).toBe("");
 	});
 });

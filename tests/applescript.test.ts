@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildJumpScript, escapeForAppleScript, wildcardSegments } from "../src/safari/applescript.js";
+import { buildJumpScript, escapeForAppleScript, FRONT_TAB_URL_SCRIPT, wildcardSegments } from "../src/safari/applescript.js";
 import type { ResolvedTarget } from "../src/safari/targets.js";
 
 function target(over: Partial<ResolvedTarget> = {}): ResolvedTarget {
@@ -136,5 +136,17 @@ describe("buildJumpScript — wildcards", () => {
 	it("keeps a no-* pattern as a single-segment (substring) match", () => {
 		const script = buildJumpScript(target({ urlPattern: "mail.google.com/u/2" }));
 		expect(script).toContain('set segs to {"mail.google.com/u/2"}');
+	});
+});
+
+describe("FRONT_TAB_URL_SCRIPT", () => {
+	it("reads the current tab of the front window", () => {
+		expect(FRONT_TAB_URL_SCRIPT).toContain("current tab of front window");
+	});
+	it("guards missing value (unloaded tabs yield it without erroring)", () => {
+		expect(FRONT_TAB_URL_SCRIPT).toContain('if u is missing value then return ""');
+	});
+	it("guards the no-window case", () => {
+		expect(FRONT_TAB_URL_SCRIPT).toContain('if (count of windows) is 0 then return ""');
 	});
 });

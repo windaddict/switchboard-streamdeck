@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+	captureTarget,
 	resolveTarget,
 	normalizeIndex,
 	derivePattern,
@@ -113,5 +114,33 @@ describe("resolveTarget — shared behavior", () => {
 	it("infers Gmail account 0 from completely empty settings", () => {
 		const r = resolveTarget({});
 		expect(r.url).toBe("https://mail.google.com/mail/u/0/");
+	});
+});
+
+describe("captureTarget", () => {
+	it("builds a custom target with a derived pattern", () => {
+		const got = captureTarget("https://github.com/windaddict/switchboard-streamdeck/pulls", {});
+		expect(got).toEqual({
+			service: "custom",
+			url: "https://github.com/windaddict/switchboard-streamdeck/pulls",
+			urlPattern: "github.com/windaddict/switchboard-streamdeck/pulls",
+			titlePattern: undefined,
+		});
+	});
+	it("drops a stale titlePattern (it belonged to the old target)", () => {
+		const got = captureTarget("https://example.com/a", { titlePattern: "Inbox" });
+		expect(got?.titlePattern).toBeUndefined();
+	});
+	it("keeps the private flag (capture changes where, not how)", () => {
+		expect(captureTarget("https://example.com/a", { private: true })?.private).toBe(true);
+	});
+	it("overrides a previous service preset", () => {
+		const got = captureTarget("https://news.ycombinator.com/", { service: "gmail", accountIndex: 2 });
+		expect(got?.service).toBe("custom");
+		expect(got?.url).toBe("https://news.ycombinator.com/");
+	});
+	it("returns null for a blank URL (nothing worth saving)", () => {
+		expect(captureTarget("", {})).toBeNull();
+		expect(captureTarget("   ", { url: "https://keep.me" })).toBeNull();
 	});
 });

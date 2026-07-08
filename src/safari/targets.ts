@@ -49,6 +49,25 @@ export function derivePattern(url: string): string {
 	}
 }
 
+/**
+ * "Teach the button": rebuild the settings around a captured live URL. The
+ * button becomes a custom target for that URL (pattern derived from it); a
+ * stale titlePattern is dropped so it cannot match some other tab, and the
+ * private flag survives (capture changes WHERE the button goes, not HOW).
+ * Returns null for a blank URL — nothing worth saving.
+ */
+export function captureTarget(url: string, prev: TargetSettings): TargetSettings | null {
+	const trimmed = url.trim();
+	if (trimmed === "") return null;
+	return {
+		...prev,
+		service: "custom",
+		url: trimmed,
+		urlPattern: derivePattern(trimmed),
+		titlePattern: undefined,
+	};
+}
+
 export function resolveTarget(settings: TargetSettings): ResolvedTarget {
 	const isPrivate = settings.private === true;
 	const idx = normalizeIndex(settings.accountIndex);

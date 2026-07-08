@@ -28,7 +28,7 @@
 			"Name": "Safari Tab Jump",
 			"UUID": "com.movingavg.switchboard.jump",
 			"Icon": "imgs/actions/jump/icon",
-			"Tooltip": "Jump to an open Safari tab, or open it if missing.",
+			"Tooltip": "Jump to an open Safari tab, or open it if missing. Hold to capture the current tab.",
 			"PropertyInspectorPath": "ui/jump-to-tab.html",
 			"Controllers": [
 				"Keypad"
@@ -68,7 +68,7 @@
 			"Name": "Open / Switch App",
 			"UUID": "com.movingavg.switchboard.switchapp",
 			"Icon": "imgs/actions/switchapp/icon",
-			"Tooltip": "Open or switch to an app, optionally focusing a window by title pattern.",
+			"Tooltip": "Open or switch to an app, optionally focusing a window by title pattern. Hold to capture the frontmost app.",
 			"PropertyInspectorPath": "ui/switch-app.html",
 			"Controllers": [
 				"Keypad"
@@ -84,7 +84,7 @@
 			"Name": "Focus tmux Window",
 			"UUID": "com.movingavg.switchboard.tmux",
 			"Icon": "imgs/actions/tmux/icon",
-			"Tooltip": "Raise the iTerm2 window for a tmux window, and optionally switch to it.",
+			"Tooltip": "Raise the iTerm2 window for a tmux window, and optionally switch to it. Hold to capture the current tmux window.",
 			"PropertyInspectorPath": "ui/focus-tmux.html",
 			"Controllers": [
 				"Keypad"

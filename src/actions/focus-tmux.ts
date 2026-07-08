@@ -1,13 +1,17 @@
 import streamDeck, {
 	action,
 	type JsonValue,
+	type KeyAction,
 	type KeyDownEvent,
+	type KeyUpEvent,
 	type SendToPluginEvent,
 	SingletonAction,
+	type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
 import { buildITermRaiseScript } from "../mac/iterm.js";
+import { PressGate } from "../mac/press-gate.js";
 import {
 	parseClients,
 	parseWindows,
@@ -22,6 +26,7 @@ import {
 	LIST_WINDOWS_ARGS,
 	runTmux,
 } from "../mac/tmux-runner.js";
+import { captureTmuxTarget, CURRENT_WINDOW_ARGS, parseCurrentWindow } from "../mac/tmux-window.js";
 
 type FocusTmuxSettings = {
 	/** Target window as "session:name" (from the dropdown) or a bare name. */
@@ -34,15 +39,37 @@ type FocusTmuxSettings = {
  * Raise the iTerm2 window hosting a tmux session (matched by one of its window
  * names) and optionally switch tmux to that window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
- * survives tmux layout changes.
+ * survives tmux layout changes. Holding the key ("teach the button") captures
+ * the current tmux window as the new target.
  */
 @action({ UUID: "com.movingavg.switchboard.tmux" })
 export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
-	override async onKeyDown(ev: KeyDownEvent<FocusTmuxSettings>): Promise<void> {
-		const target = (ev.payload.settings.target ?? "").trim();
+	private readonly gate = new PressGate();
+
+	override onKeyDown(ev: KeyDownEvent<FocusTmuxSettings>): void {
+		this.gate.down(ev.action.id, () => {
+			void this.capture(ev.action).catch((err) =>
+				streamDeck.logger.error(`Focus tmux capture failed: ${String(err)}`),
+			);
+		});
+	}
+
+	override async onKeyUp(ev: KeyUpEvent<FocusTmuxSettings>): Promise<void> {
+		if (!this.gate.up(ev.action.id)) return; // long press already captured
+		await this.focus(ev.action);
+	}
+
+	override onWillDisappear(ev: WillDisappearEvent<FocusTmuxSettings>): void {
+		this.gate.cancel(ev.action.id);
+	}
+
+	/** Short press: raise the iTerm2 window for the configured tmux window. */
+	private async focus(key: KeyAction<FocusTmuxSettings>): Promise<void> {
+		const settings = (await key.getSettings()) ?? {};
+		const target = (settings.target ?? "").trim();
 		if (!target) {
 			streamDeck.logger.warn("Focus tmux Window pressed with no target selected.");
-			await ev.action.showAlert();
+			await key.showAlert();
 			return;
 		}
 
@@ -50,14 +77,14 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		const windowsResult = await runTmux(LIST_WINDOWS_ARGS, tmux);
 		if (!windowsResult.ok) {
 			streamDeck.logger.error(`tmux list-windows failed: ${windowsResult.stderr || "no server?"}`);
-			await ev.action.showAlert();
+			await key.showAlert();
 			return;
 		}
 
 		const match = resolveTarget(parseWindows(windowsResult.stdout), target);
 		if (!match) {
 			streamDeck.logger.warn(`No tmux window matched "${target}".`);
-			await ev.action.showAlert();
+			await key.showAlert();
 			return;
 		}
 
@@ -74,11 +101,26 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		}
 
 		// Optionally switch tmux to the exact window (default on).
-		if (ev.payload.settings.switchWindow !== false) {
+		if (settings.switchWindow !== false) {
 			await runTmux(selectWindowArgs(match), tmux);
 		}
 
-		await ev.action.showOk();
+		await key.showOk();
+	}
+
+	/** Long press: capture the current tmux window into this button. */
+	private async capture(key: KeyAction<FocusTmuxSettings>): Promise<void> {
+		const result = await runTmux(CURRENT_WINDOW_ARGS, findTmuxPath());
+		const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
+		if (target === "") {
+			streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);
+			await key.showAlert();
+			return;
+		}
+		const settings = (await key.getSettings()) ?? {};
+		await key.setSettings({ ...settings, target });
+		streamDeck.logger.info(`Focus tmux captured ${target}.`);
+		await key.showOk();
 	}
 
 	/** Serve the live list of tmux windows to the property inspector dropdown. */

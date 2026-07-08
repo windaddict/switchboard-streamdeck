@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveApp, buildAppScript } from "../src/mac/apps.js";
+import { buildAppScript, captureApp, resolveApp } from "../src/mac/apps.js";
 
 describe("resolveApp", () => {
 	it("trims appName and titlePattern", () => {
@@ -97,5 +97,21 @@ describe("buildAppScript — injection safety", () => {
 			resolveApp({ appName: "Safari", titlePattern: "a\\b" }),
 		);
 		expect(script).toContain("a\\\\b");
+	});
+});
+
+describe("captureApp", () => {
+	it("points the button at the captured app and drops the old titlePattern", () => {
+		expect(captureApp("BBEdit", { appName: "Safari", titlePattern: "Gmail" })).toEqual({
+			appName: "BBEdit",
+			titlePattern: undefined,
+		});
+	});
+	it("trims the app name", () => {
+		expect(captureApp("  iTerm2 ", {})?.appName).toBe("iTerm2");
+	});
+	it("returns null for a blank app name", () => {
+		expect(captureApp("", { appName: "Safari" })).toBeNull();
+		expect(captureApp("   ", {})).toBeNull();
 	});
 });

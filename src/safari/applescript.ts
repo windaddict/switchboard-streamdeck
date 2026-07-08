@@ -155,3 +155,15 @@ return "ok"`;
 export function buildJumpScript(t: ResolvedTarget): string {
 	return t.private ? buildPrivateScript(t) : buildNormalScript(t);
 }
+
+/**
+ * AppleScript returning the URL of Safari's current front tab, or "" when
+ * there is no window or the tab is unloaded (`URL of tab` yields
+ * `missing value` without erroring — see buildNormalScript).
+ */
+export const FRONT_TAB_URL_SCRIPT = `tell application "Safari"
+	if (count of windows) is 0 then return ""
+	set u to URL of current tab of front window
+	if u is missing value then return ""
+	return u
+end tell`;
