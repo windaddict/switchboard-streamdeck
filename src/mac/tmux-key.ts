@@ -1,0 +1,100 @@
+/**
+ * Live key face for Focus tmux Window: a miniature tmux pane whose bottom
+ * status bar lights up — with a block cursor — exactly when the button's tmux
+ * window would receive keyboard input (active window of its session, that
+ * session's client tty is iTerm's focused session, and iTerm is the frontmost
+ * app). Pure: state evaluation and SVG rendering only; the action supplies
+ * the queried inputs and turns the SVG into a data URI.
+ */
+
+import { resolveTarget, type TmuxWindow } from "./tmux.js";
+import { escapeXml, sessionHue } from "./tmux-window.js";
+
+/** hot = keystrokes land there now; cold = exists but unfocused; unknown = no match/server. */
+export type TmuxKeyState = "hot" | "cold" | "unknown";
+
+export interface TmuxKeyStatus {
+	state: TmuxKeyState;
+	session: string;
+	window: string;
+}
+
+/**
+ * Decide the key's state from the polled facts. The hot chain requires every
+ * link: the target resolves, it is the ACTIVE window of its session, that
+ * session has an attached client tty, iTerm is frontmost, and iTerm's focused
+ * session sits on that exact tty (an unfocused split pane fails this —
+ * correctly, since keystrokes would not go there).
+ */
+export function evaluateKeyStatus(args: {
+	windows: TmuxWindow[];
+	clients: Map<string, string>;
+	target: string;
+	iTermFrontmost: boolean;
+	/** tty of iTerm's focused session; "" when unknown or iTerm not frontmost. */
+	focusedTty: string;
+}): TmuxKeyStatus {
+	const match = resolveTarget(args.windows, args.target);
+	if (!match) {
+		return { state: "unknown", session: "", window: args.target.trim() };
+	}
+	const tty = args.clients.get(match.session) ?? "";
+	const hot =
+		match.active && args.iTermFrontmost && tty !== "" && tty === args.focusedTty;
+	return { state: hot ? "hot" : "cold", session: match.session, window: match.name };
+}
+
+const MONO = "Menlo, Monaco, monospace";
+
+function truncate(value: string, max: number): string {
+	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/**
+ * Render the 72×72 key SVG. The bottom strip is the tmux status bar: lit in
+ * the session's hue with a block cursor when hot, a hollow outline when cold,
+ * a gray dashed outline when the target can't be resolved. Session name is a
+ * small uppercase eyebrow, window name the mono centerpiece. User text is
+ * XML-escaped.
+ */
+export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
+	const hue = sessionHue(status.session);
+	const name = truncate(status.window || (status.state === "unknown" ? "no target" : "—"), 9);
+	const session = truncate(status.session.toUpperCase(), 12);
+
+	let bar: string;
+	let nameFill: string;
+	let sessionText = "";
+
+	if (status.state === "hot") {
+		bar =
+			`<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
+			`<stop offset="0" stop-color="hsl(${hue},62%,46%)"/>` +
+			`<stop offset="1" stop-color="hsl(${hue},66%,36%)"/>` +
+			`</linearGradient></defs>` +
+			`<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
+			`<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
+		nameFill = "#FFFFFF";
+		sessionText = `hsl(${hue},55%,72%)`;
+	} else if (status.state === "cold") {
+		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},25%,38%)" stroke-width="1.5"/>`;
+		nameFill = "#8B9490";
+		sessionText = `hsl(${hue},22%,52%)`;
+	} else {
+		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+		nameFill = "#6A716E";
+	}
+
+	const eyebrow = session
+		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
+		: "";
+
+	return (
+		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
+		`<rect width="72" height="72" fill="#0F1211"/>` +
+		eyebrow +
+		`<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+		bar +
+		`</svg>`
+	);
+}

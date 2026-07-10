@@ -8484,6 +8484,18 @@ function appWindowsFeedback(mode, front) {
     }
     return { mode: "Windows ⇄", current: front.title || front.app || "—" };
 }
+/**
+ * JXA (run via `runJxa`) returning the frontmost app's bundle identifier, or
+ * "". NSWorkspace answers in ~0.12s with no Accessibility grant — cheap
+ * enough to poll.
+ */
+const FRONT_APP_BUNDLE_JXA = `ObjC.import("AppKit");
+function run() {
+	const a = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+	if (!a || a.isNil()) return "";
+	const id = ObjC.unwrap(a.bundleIdentifier);
+	return id ? String(id) : "";
+}`;
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */
 const FRONT_WINDOW_SCRIPT = `tell application "System Events"
 	set p to first application process whose frontmost is true
@@ -8916,6 +8928,21 @@ function escapeForAppleScript(value) {
     return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/** iTerm2's bundle identifier (for frontmost-app checks). */
+const ITERM_BUNDLE_ID = "com.googlecode.iterm2";
+/**
+ * AppleScript returning the tty of iTerm's FOCUSED session — current session
+ * of the current tab of the current (front) window — or "" when there is no
+ * window. Only run this when iTerm is already frontmost: merely addressing an
+ * app via AppleScript launches it.
+ */
+const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
+	try
+		return tty of current session of current tab of current window
+	on error
+		return ""
+	end try
+end tell`;
 /**
  * Build AppleScript that activates iTerm and selects the window+tab+session
  * whose `tty` equals the given tty. The script returns "ok" if a match was
@@ -8999,6 +9026,16 @@ class PressGate {
             clearTimeout(t);
         this.timers.delete(id);
     }
+}
+
+/** Small shared SVG helpers used by the key/touchscreen image builders. */
+/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
+function svgToDataUri(svg) {
+    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+/** Round to one decimal place — keeps generated SVG coordinates compact. */
+function round(n) {
+    return Math.round(n * 10) / 10;
 }
 
 /**
@@ -9137,48 +9174,6 @@ function tmuxWindowValue(w) {
 }
 
 /**
- * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
- * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
- * are injectable for tests.
- */
-const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
-/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
-function findTmuxPath(exists = existsSync) {
-    return TMUX_CANDIDATES.find(exists) ?? "tmux";
-}
-/** tmux args that emit one window per line as `session|index|name|active`. */
-const LIST_WINDOWS_ARGS = [
-    "list-windows",
-    "-a",
-    "-F",
-    "#{session_name}|#{window_index}|#{window_name}|#{window_active}",
-];
-/** tmux args that emit one client per line as `tty|session`. */
-const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
-/** Run tmux with the given args and capture stdout/stderr. */
-function runTmux(args, tmuxPath, exec = execFile) {
-    return new Promise((resolve) => {
-        exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
-            resolve({
-                ok: !error,
-                stdout: String(stdout ?? ""),
-                stderr: String(stderr ?? ""),
-            });
-        });
-    });
-}
-
-/** Small shared SVG helpers used by the key/touchscreen image builders. */
-/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
-function svgToDataUri(svg) {
-    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
-}
-/** Round to one decimal place — keeps generated SVG coordinates compact. */
-function round(n) {
-    return Math.round(n * 10) / 10;
-}
-
-/**
  * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
  * push for last-window, and render a dynamic touchscreen background that
  * reflects the current session/window. All functions are pure (no tmux, no
@@ -9288,7 +9283,7 @@ function dotsSvg(count, activeIndex, hue) {
     return out;
 }
 /** Truncate a label so it fits the 200px touch strip. */
-function truncate(value, max = 16) {
+function truncate$1(value, max = 16) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /**
@@ -9311,8 +9306,8 @@ function buildBackgroundSvg(opts) {
         `<rect width="200" height="100" fill="url(#g)"/>` +
         `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
         `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate(window))}</text>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$1(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$1(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         badgeSvg +
         `</svg>`);
@@ -9345,11 +9340,120 @@ function buildAllWindowsFeedback(windows, current) {
 }
 
 /**
+ * Live key face for Focus tmux Window: a miniature tmux pane whose bottom
+ * status bar lights up — with a block cursor — exactly when the button's tmux
+ * window would receive keyboard input (active window of its session, that
+ * session's client tty is iTerm's focused session, and iTerm is the frontmost
+ * app). Pure: state evaluation and SVG rendering only; the action supplies
+ * the queried inputs and turns the SVG into a data URI.
+ */
+/**
+ * Decide the key's state from the polled facts. The hot chain requires every
+ * link: the target resolves, it is the ACTIVE window of its session, that
+ * session has an attached client tty, iTerm is frontmost, and iTerm's focused
+ * session sits on that exact tty (an unfocused split pane fails this —
+ * correctly, since keystrokes would not go there).
+ */
+function evaluateKeyStatus(args) {
+    const match = resolveTarget$1(args.windows, args.target);
+    if (!match) {
+        return { state: "unknown", session: "", window: args.target.trim() };
+    }
+    const tty = args.clients.get(match.session) ?? "";
+    const hot = match.active && args.iTermFrontmost && tty !== "" && tty === args.focusedTty;
+    return { state: hot ? "hot" : "cold", session: match.session, window: match.name };
+}
+const MONO = "Menlo, Monaco, monospace";
+function truncate(value, max) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+/**
+ * Render the 72×72 key SVG. The bottom strip is the tmux status bar: lit in
+ * the session's hue with a block cursor when hot, a hollow outline when cold,
+ * a gray dashed outline when the target can't be resolved. Session name is a
+ * small uppercase eyebrow, window name the mono centerpiece. User text is
+ * XML-escaped.
+ */
+function buildTmuxKeyImage(status) {
+    const hue = sessionHue(status.session);
+    const name = truncate(status.window || (status.state === "unknown" ? "no target" : "—"), 9);
+    const session = truncate(status.session.toUpperCase(), 12);
+    let bar;
+    let nameFill;
+    let sessionText = "";
+    if (status.state === "hot") {
+        bar =
+            `<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
+                `<stop offset="0" stop-color="hsl(${hue},62%,46%)"/>` +
+                `<stop offset="1" stop-color="hsl(${hue},66%,36%)"/>` +
+                `</linearGradient></defs>` +
+                `<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
+                `<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
+        nameFill = "#FFFFFF";
+        sessionText = `hsl(${hue},55%,72%)`;
+    }
+    else if (status.state === "cold") {
+        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},25%,38%)" stroke-width="1.5"/>`;
+        nameFill = "#8B9490";
+        sessionText = `hsl(${hue},22%,52%)`;
+    }
+    else {
+        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+        nameFill = "#6A716E";
+    }
+    const eyebrow = session
+        ? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
+        : "";
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
+        `<rect width="72" height="72" fill="#0F1211"/>` +
+        eyebrow +
+        `<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+        bar +
+        `</svg>`);
+}
+
+/**
+ * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
+ * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
+ * are injectable for tests.
+ */
+const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
+/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
+function findTmuxPath(exists = existsSync) {
+    return TMUX_CANDIDATES.find(exists) ?? "tmux";
+}
+/** tmux args that emit one window per line as `session|index|name|active`. */
+const LIST_WINDOWS_ARGS = [
+    "list-windows",
+    "-a",
+    "-F",
+    "#{session_name}|#{window_index}|#{window_name}|#{window_active}",
+];
+/** tmux args that emit one client per line as `tty|session`. */
+const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
+/** Run tmux with the given args and capture stdout/stderr. */
+function runTmux(args, tmuxPath, exec = execFile) {
+    return new Promise((resolve) => {
+        exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
+            resolve({
+                ok: !error,
+                stdout: String(stdout ?? ""),
+                stderr: String(stderr ?? ""),
+            });
+        });
+    });
+}
+
+/** How often the key faces re-check the live focus state. */
+const POLL_MS$2 = 2500;
+/**
  * Raise the iTerm2 window hosting a tmux session (matched by one of its window
  * names) and optionally switch tmux to that window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
  * survives tmux layout changes. Holding the key ("teach the button") captures
- * the current tmux window as the new target.
+ * the current tmux window as the new target. The key face renders live: a
+ * mini tmux pane whose status bar lights up (with a block cursor) when this
+ * window would receive keyboard input right now.
  */
 let FocusTmuxWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmux" })];
@@ -9367,6 +9471,18 @@ let FocusTmuxWindow = (() => {
             __runInitializers(_classThis, _classExtraInitializers);
         }
         gate = new PressGate();
+        visible = new Map();
+        timer;
+        refreshing = false;
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => void this.refreshAll(), POLL_MS$2);
+            }
+            await this.refreshAll();
+        }
         onKeyDown(ev) {
             this.gate.down(ev.action.id, () => {
                 void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Focus tmux capture failed: ${String(err)}`));
@@ -9379,6 +9495,56 @@ let FocusTmuxWindow = (() => {
         }
         onWillDisappear(ev) {
             this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        /**
+         * One query set per tick, evaluated for every visible key: frontmost app
+         * (fast NSWorkspace JXA, doubles as the gate — when iTerm isn't frontmost
+         * nothing is hot and the iTerm query is skipped), tmux windows + clients,
+         * and iTerm's focused-session tty.
+         */
+        async refreshAll() {
+            if (this.refreshing || this.visible.size === 0)
+                return;
+            this.refreshing = true;
+            try {
+                const tmux = findTmuxPath();
+                const [front, windowsRes, clientsRes] = await Promise.all([
+                    runJxa(FRONT_APP_BUNDLE_JXA),
+                    runTmux(LIST_WINDOWS_ARGS, tmux),
+                    runTmux(LIST_CLIENTS_ARGS, tmux),
+                ]);
+                const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
+                // Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
+                const focusedTty = iTermFrontmost
+                    ? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
+                    : "";
+                const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
+                const clients = parseClients(clientsRes.stdout);
+                for (const key of this.visible.values()) {
+                    const settings = await key.getSettings();
+                    const status = evaluateKeyStatus({
+                        windows,
+                        clients,
+                        target: (settings.target ?? "").trim(),
+                        iTermFrontmost,
+                        focusedTty,
+                    });
+                    try {
+                        await key.setImage(svgToDataUri(buildTmuxKeyImage(status)));
+                    }
+                    catch (err) {
+                        streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
+                    }
+                }
+            }
+            finally {
+                this.refreshing = false;
+            }
         }
         /** Short press: raise the iTerm2 window for the configured tmux window. */
         async focus(key) {
@@ -9418,6 +9584,7 @@ let FocusTmuxWindow = (() => {
                 await runTmux(selectWindowArgs(match), tmux);
             }
             await key.showOk();
+            await this.refreshAll(); // the press changed focus — flip the dots now
         }
         /** Long press: capture the current tmux window into this button. */
         async capture(key) {
@@ -9432,6 +9599,7 @@ let FocusTmuxWindow = (() => {
             await key.setSettings({ ...settings, target });
             streamDeck.logger.info(`Focus tmux captured ${target}.`);
             await key.showOk();
+            await this.refreshAll(); // repaint with the newly captured target
         }
         /** Serve the live list of tmux windows to the property inspector dropdown. */
         async onSendToPlugin(ev) {

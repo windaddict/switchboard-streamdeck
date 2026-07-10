@@ -6,12 +6,15 @@ import streamDeck, {
 	type KeyUpEvent,
 	type SendToPluginEvent,
 	SingletonAction,
+	type WillAppearEvent,
 	type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
-import { runAppleScript } from "../applescript/runner.js";
-import { buildITermRaiseScript } from "../mac/iterm.js";
+import { runAppleScript, runJxa } from "../applescript/runner.js";
+import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
+import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
+import { svgToDataUri } from "../mac/svg.js";
 import {
 	parseClients,
 	parseWindows,
@@ -20,6 +23,7 @@ import {
 	tmuxWindowLabel,
 	tmuxWindowValue,
 } from "../mac/tmux.js";
+import { buildTmuxKeyImage, evaluateKeyStatus } from "../mac/tmux-key.js";
 import {
 	findTmuxPath,
 	LIST_CLIENTS_ARGS,
@@ -35,16 +39,33 @@ type FocusTmuxSettings = {
 	switchWindow?: boolean;
 };
 
+/** How often the key faces re-check the live focus state. */
+const POLL_MS = 2500;
+
 /**
  * Raise the iTerm2 window hosting a tmux session (matched by one of its window
  * names) and optionally switch tmux to that window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
  * survives tmux layout changes. Holding the key ("teach the button") captures
- * the current tmux window as the new target.
+ * the current tmux window as the new target. The key face renders live: a
+ * mini tmux pane whose status bar lights up (with a block cursor) when this
+ * window would receive keyboard input right now.
  */
 @action({ UUID: "com.movingavg.switchboard.tmux" })
 export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	private readonly gate = new PressGate();
+	private readonly visible = new Map<string, KeyAction<FocusTmuxSettings>>();
+	private timer?: ReturnType<typeof setInterval>;
+	private refreshing = false;
+
+	override async onWillAppear(ev: WillAppearEvent<FocusTmuxSettings>): Promise<void> {
+		if (!ev.action.isKey()) return;
+		this.visible.set(ev.action.id, ev.action);
+		if (this.timer === undefined) {
+			this.timer = setInterval(() => void this.refreshAll(), POLL_MS);
+		}
+		await this.refreshAll();
+	}
 
 	override onKeyDown(ev: KeyDownEvent<FocusTmuxSettings>): void {
 		this.gate.down(ev.action.id, () => {
@@ -61,6 +82,55 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 	override onWillDisappear(ev: WillDisappearEvent<FocusTmuxSettings>): void {
 		this.gate.cancel(ev.action.id);
+		this.visible.delete(ev.action.id);
+		if (this.visible.size === 0 && this.timer !== undefined) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		}
+	}
+
+	/**
+	 * One query set per tick, evaluated for every visible key: frontmost app
+	 * (fast NSWorkspace JXA, doubles as the gate — when iTerm isn't frontmost
+	 * nothing is hot and the iTerm query is skipped), tmux windows + clients,
+	 * and iTerm's focused-session tty.
+	 */
+	private async refreshAll(): Promise<void> {
+		if (this.refreshing || this.visible.size === 0) return;
+		this.refreshing = true;
+		try {
+			const tmux = findTmuxPath();
+			const [front, windowsRes, clientsRes] = await Promise.all([
+				runJxa(FRONT_APP_BUNDLE_JXA),
+				runTmux(LIST_WINDOWS_ARGS, tmux),
+				runTmux(LIST_CLIENTS_ARGS, tmux),
+			]);
+			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
+			// Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
+			const focusedTty = iTermFrontmost
+				? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
+				: "";
+			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
+			const clients = parseClients(clientsRes.stdout);
+
+			for (const key of this.visible.values()) {
+				const settings = await key.getSettings();
+				const status = evaluateKeyStatus({
+					windows,
+					clients,
+					target: (settings.target ?? "").trim(),
+					iTermFrontmost,
+					focusedTty,
+				});
+				try {
+					await key.setImage(svgToDataUri(buildTmuxKeyImage(status)));
+				} catch (err) {
+					streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
+				}
+			}
+		} finally {
+			this.refreshing = false;
+		}
 	}
 
 	/** Short press: raise the iTerm2 window for the configured tmux window. */
@@ -106,6 +176,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		}
 
 		await key.showOk();
+		await this.refreshAll(); // the press changed focus — flip the dots now
 	}
 
 	/** Long press: capture the current tmux window into this button. */
@@ -121,6 +192,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		await key.setSettings({ ...settings, target });
 		streamDeck.logger.info(`Focus tmux captured ${target}.`);
 		await key.showOk();
+		await this.refreshAll(); // repaint with the newly captured target
 	}
 
 	/** Serve the live list of tmux windows to the property inspector dropdown. */

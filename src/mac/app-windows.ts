@@ -73,6 +73,19 @@ export function appWindowsFeedback(
 	return { mode: "Windows ⇄", current: front.title || front.app || "—" };
 }
 
+/**
+ * JXA (run via `runJxa`) returning the frontmost app's bundle identifier, or
+ * "". NSWorkspace answers in ~0.12s with no Accessibility grant — cheap
+ * enough to poll.
+ */
+export const FRONT_APP_BUNDLE_JXA = `ObjC.import("AppKit");
+function run() {
+	const a = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+	if (!a || a.isNil()) return "";
+	const id = ObjC.unwrap(a.bundleIdentifier);
+	return id ? String(id) : "";
+}`;
+
 /** AppleScript returning `appName|frontWindowTitle` for the frontmost app. */
 export const FRONT_WINDOW_SCRIPT = `tell application "System Events"
 	set p to first application process whose frontmost is true

@@ -4,6 +4,7 @@ import {
 	appCycleJxa,
 	appWindowCycleScript,
 	appWindowsFeedback,
+	FRONT_APP_BUNDLE_JXA,
 	FRONT_WINDOW_SCRIPT,
 	parseFrontWindow,
 	toggleAppWindowsMode,
@@ -97,5 +98,15 @@ describe("appWindowsFeedback", () => {
 	it("falls back to placeholders when nothing is frontmost", () => {
 		expect(appWindowsFeedback("windows", { app: "", title: "" }).current).toBe("\u2014");
 		expect(appWindowsFeedback("apps", { app: "", title: "" }).current).toBe("\u2014");
+	});
+});
+
+describe("FRONT_APP_BUNDLE_JXA", () => {
+	it("asks NSWorkspace for the frontmost app's bundle identifier", () => {
+		expect(FRONT_APP_BUNDLE_JXA).toContain("frontmostApplication");
+		expect(FRONT_APP_BUNDLE_JXA).toContain("bundleIdentifier");
+	});
+	it("degrades to \"\" when nothing is frontmost", () => {
+		expect(FRONT_APP_BUNDLE_JXA).toContain('return ""');
 	});
 });

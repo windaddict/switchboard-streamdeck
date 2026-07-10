@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildITermRaiseScript } from "../src/mac/iterm.js";
+import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../src/mac/iterm.js";
 
 describe("buildITermRaiseScript", () => {
 	it("builds a well-formed raise script for a normal tty", () => {
@@ -48,5 +48,17 @@ describe("buildITermRaiseScript", () => {
 
 		expect(script).toContain("/dev/ttys\\\\000");
 		expect(script).not.toContain("/dev/ttys\\000 then");
+	});
+});
+
+describe("focused-tty probe", () => {
+	it("reads the tty of iTerm's focused session (current window > tab > session)", () => {
+		expect(ITERM_FOCUSED_TTY_SCRIPT).toContain("tty of current session of current tab of current window");
+	});
+	it("degrades to \"\" instead of erroring when there is no window", () => {
+		expect(ITERM_FOCUSED_TTY_SCRIPT).toContain('return ""');
+	});
+	it("bundle id matches iTerm2", () => {
+		expect(ITERM_BUNDLE_ID).toBe("com.googlecode.iterm2");
 	});
 });
