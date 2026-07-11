@@ -92,7 +92,7 @@
 			"States": [
 				{
 					"Image": "imgs/actions/tmux/key",
-					"TitleAlignment": "bottom"
+					"ShowTitle": false
 				}
 			],
 			"UserTitleEnabled": false
