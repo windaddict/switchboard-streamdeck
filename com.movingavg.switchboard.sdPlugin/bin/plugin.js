@@ -9398,17 +9398,19 @@ function buildTmuxKeyImage(status) {
         bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},25%,38%)" stroke-width="1.5"/>`;
         nameFill = "#8B9490";
         sessionText = `hsl(${hue},22%,52%)`;
-        glyphStroke = `hsl(${hue},28%,48%)`;
+        glyphStroke = `hsl(${hue},45%,68%)`;
     }
     else {
         bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
         nameFill = "#6A716E";
-        glyphStroke = "#5A615E";
+        glyphStroke = "#8B9490";
     }
     // tmux identity mark: a tiny split-pane window at the bar's left end (where
     // tmux puts its session block) — present in every state so the key reads as
-    // a tmux button even when idle; on hot it bookends the cursor.
-    const glyph = `<g fill="none" stroke="${glyphStroke}" stroke-width="1.3" opacity="0.9">` +
+    // a tmux button even when idle; on hot it bookends the cursor. Idle strokes
+    // are deliberately brighter than the bar outline: at physical key size and
+    // hardware brightness, dim thin strokes vanish entirely.
+    const glyph = `<g fill="none" stroke="${glyphStroke}" stroke-width="1.6">` +
         `<rect x="5.5" y="60.5" width="9" height="8" rx="1"/>` +
         `<path d="M10 60.5v8"/>` +
         `</g>`;
