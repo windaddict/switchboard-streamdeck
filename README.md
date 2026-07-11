@@ -45,6 +45,20 @@ Eleven actions, grouped by what they route your attention to.
 
 ---
 
+## Live on the deck
+
+The **Focus tmux Window** keys render live: each is a miniature tmux pane whose status bar lights up in its session's color — with a block cursor — exactly when that window would receive your keystrokes. The spark in the corner tracks **Claude Code** inside the window: amber and turning while it works, still and white when it's finished and waiting for your next prompt.
+
+![Five states of a live tmux key: focused with Claude working, background with Claude working, background with Claude ready for input, background with no Claude, and a window that no longer exists](docs/tmux-live-keys.png)
+
+<img src="docs/claude-spark.gif" width="120" alt="Animated key face: the amber spark turns while Claude Code works" />
+
+The dial touchscreens speak the same color language — green drives tmux, blue drives macOS windows and apps, amber drives BBEdit — and the ⇄ mark appears exactly where a tap flips the dial's mode:
+
+![Four dial touchscreens: tmux Panes in green, App Windows in blue, the session-tinted Cycle tmux Window strip with an ALL badge, and Arrange Window](docs/dial-strips.png)
+
+---
+
 ## Highlights worth a line
 
 - The **Cycle tmux Window** dial draws dynamic touchscreen graphics — the current session/window renders live on the encoder display.
