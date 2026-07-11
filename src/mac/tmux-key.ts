@@ -7,6 +7,7 @@
  * the queried inputs and turns the SVG into a data URI.
  */
 
+import type { ClaudeState } from "./claude-state.js";
 import { hslToHex } from "./svg.js";
 import { resolveTarget, type TmuxWindow } from "./tmux.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
@@ -58,10 +59,16 @@ function truncate(value: string, max: number): string {
  * small uppercase eyebrow, window name the mono centerpiece. User text is
  * XML-escaped.
  */
-export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
+export function buildTmuxKeyImage(
+	status: TmuxKeyStatus,
+	claude: ClaudeState = "none",
+	/** Poll tick counter — the working spark rotates a step per tick. */
+	spin = 0,
+): string {
 	const hue = sessionHue(status.session);
 	const name = truncate(status.window || (status.state === "unknown" ? "no target" : "—"), 9);
-	const session = truncate(status.session.toUpperCase(), 12);
+	// 10 chars keeps the centered eyebrow clear of the Claude spark's corner.
+	const session = truncate(status.session.toUpperCase(), 10);
 
 	let bar: string;
 	let nameFill: string;
@@ -106,10 +113,24 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
 		: "";
 
+	// Claude Code spark (top-right): amber and slowly rotating while WORKING,
+	// still signal-white when finished and WAITING for input, absent when no
+	// claude runs in the window. Drawn as paths — no font-fallback risk.
+	let spark = "";
+	if (claude !== "none") {
+		const color = claude === "working" ? "#F0A63C" : "#F2FFF6";
+		const angle = claude === "working" ? (spin % 12) * 30 : 0;
+		spark =
+			`<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
+			`stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
+			`transform="rotate(${angle} 61 12)"/>`;
+	}
+
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
 		`<rect width="72" height="72" fill="#0F1211"/>` +
 		eyebrow +
+		spark +
 		`<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
 		bar +
 		glyph +

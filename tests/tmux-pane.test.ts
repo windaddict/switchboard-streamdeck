@@ -71,11 +71,17 @@ describe("parsePaneStatus", () => {
 
 describe("paneDialFeedback", () => {
 	const status = { command: "vim", paneIndex: 1, paneCount: 3, windowName: "movingavg" };
-	it("panes mode: mode label + command with 1-based position", () => {
-		expect(paneDialFeedback("panes", status)).toEqual({ mode: "Panes ⇄", current: "vim · 2/3" });
+	it("panes mode: tmux-prefixed phosphor mode label + command with 1-based position", () => {
+		expect(paneDialFeedback("panes", status)).toEqual({
+			mode: { value: "tmux Panes ⇄", color: "#3ECF6E" },
+			current: "vim · 2/3",
+		});
 	});
-	it("windows mode: mode label + window name", () => {
-		expect(paneDialFeedback("windows", status)).toEqual({ mode: "Windows ⇄", current: "movingavg" });
+	it("windows mode: tmux-prefixed label (never confusable with the App Windows dial)", () => {
+		expect(paneDialFeedback("windows", status)).toEqual({
+			mode: { value: "tmux Windows ⇄", color: "#3ECF6E" },
+			current: "movingavg",
+		});
 	});
 	it("omits the position when the pane count is unknown", () => {
 		expect(paneDialFeedback("panes", { ...status, paneCount: 0 }).current).toBe("vim");

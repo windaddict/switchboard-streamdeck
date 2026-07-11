@@ -95,7 +95,7 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 	): Promise<void> {
 		try {
 			await dial.setFeedback({
-				mode: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`,
+				mode: { value: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`, color: "#4E9CFF" },
 				current: position ?? "—",
 			});
 		} catch (err) {

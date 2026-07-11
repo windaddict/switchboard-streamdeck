@@ -83,8 +83,11 @@ describe("appWindowsFeedback", () => {
 		expect(Object.keys(appWindowsFeedback("windows", front)).sort()).toEqual(["current", "mode"]);
 	});
 	it("the mode line names what rotation moves through, with the toggle hint", () => {
-		expect(appWindowsFeedback("windows", front).mode).toBe("Windows \u21c4");
-		expect(appWindowsFeedback("apps", front).mode).toBe("Apps \u21c4");
+		expect(appWindowsFeedback("windows", front).mode.value).toBe("App Windows \u21c4");
+		expect(appWindowsFeedback("apps", front).mode.value).toBe("Apps \u21c4");
+	});
+	it("the mode line wears the azure family colour (distinguishes it from the tmux dial)", () => {
+		expect(appWindowsFeedback("windows", front).mode.color).toBe("#4E9CFF");
 	});
 	it("windows mode shows the window title as the current line", () => {
 		expect(appWindowsFeedback("windows", front).current).toBe("Inbox");

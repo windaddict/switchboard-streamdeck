@@ -8480,9 +8480,12 @@ function run() {
  */
 function appWindowsFeedback(mode, front) {
     if (mode === "apps") {
-        return { mode: "Apps ⇄", current: front.app || "—" };
+        return { mode: { value: "Apps ⇄", color: "#4E9CFF" }, current: front.app || "—" };
     }
-    return { mode: "Windows ⇄", current: front.title || front.app || "—" };
+    return {
+        mode: { value: "App Windows ⇄", color: "#4E9CFF" },
+        current: front.title || front.app || "—",
+    };
 }
 /**
  * JXA (run via `runJxa`) returning the frontmost app's bundle identifier, or
@@ -8905,7 +8908,7 @@ let BBEditDocDial = (() => {
         /** Shared mode-dial layout; no ⇄ — this dial has no tap gesture. */
         async render(dial, docName) {
             try {
-                await dial.setFeedback({ mode: "BBEdit", current: docName.trim() || "—" });
+                await dial.setFeedback({ mode: { value: "BBEdit", color: "#F0A63C" }, current: docName.trim() || "—" });
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
@@ -8923,6 +8926,67 @@ let BBEditDocDial = (() => {
     });
     return _classThis;
 })();
+
+/**
+ * Detect Claude Code inside tmux windows — and whether it is WORKING or
+ * WAITING for input — from signals tmux already captures. Claude Code sets
+ * the terminal title (OSC), which tmux stores as `pane_title`: while working
+ * the title starts with an animated braille spinner frame (U+2800–U+28FF);
+ * while idle at the prompt it starts with a static "✳". Presence is
+ * `pane_current_command == "claude"`. Pure parsing/decision only.
+ */
+/** tmux args listing every pane as `session|windowIndex|windowName|command|title`
+ * (title LAST — it is a task summary and may itself contain `|`). */
+const LIST_PANES_ARGS = [
+    "list-panes",
+    "-a",
+    "-F",
+    "#{session_name}|#{window_index}|#{window_name}|#{pane_current_command}|#{pane_title}",
+];
+/** Parse {@link LIST_PANES_ARGS} output; malformed lines are skipped. */
+function parsePanes(output) {
+    const panes = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split("|");
+        if (fields.length < 5)
+            continue;
+        panes.push({
+            session: fields[0],
+            windowIndex: Number.parseInt(fields[1], 10) || 0,
+            windowName: fields[2],
+            command: fields[3],
+            title: fields.slice(4).join("|"),
+        });
+    }
+    return panes;
+}
+/** True when the string starts with a braille pattern char — Claude Code's
+ * animated working-spinner frames all live in U+2800–U+28FF. */
+function startsWithSpinner(title) {
+    const cp = title.codePointAt(0);
+    return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+}
+/**
+ * Claude Code's state inside one tmux window (matched by session + window
+ * name, same as the key's target). Several claude panes in one window:
+ * WORKING wins — the key should read busy if anything is busy.
+ */
+function claudeStateForWindow(panes, session, windowName) {
+    let state = "none";
+    for (const p of panes) {
+        if (p.session !== session || p.windowName !== windowName)
+            continue;
+        if (p.command !== "claude")
+            continue;
+        if (startsWithSpinner(p.title))
+            return "working";
+        state = "waiting";
+    }
+    return state;
+}
 
 /** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
 function escapeForAppleScript(value) {
@@ -9427,10 +9491,13 @@ function truncate(value, max) {
  * small uppercase eyebrow, window name the mono centerpiece. User text is
  * XML-escaped.
  */
-function buildTmuxKeyImage(status) {
+function buildTmuxKeyImage(status, claude = "none", 
+/** Poll tick counter — the working spark rotates a step per tick. */
+spin = 0) {
     const hue = sessionHue(status.session);
     const name = truncate(status.window || (status.state === "unknown" ? "no target" : "—"), 9);
-    const session = truncate(status.session.toUpperCase(), 12);
+    // 10 chars keeps the centered eyebrow clear of the Claude spark's corner.
+    const session = truncate(status.session.toUpperCase(), 10);
     let bar;
     let nameFill;
     let sessionText = "";
@@ -9471,9 +9538,22 @@ function buildTmuxKeyImage(status) {
     const eyebrow = session
         ? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
         : "";
+    // Claude Code spark (top-right): amber and slowly rotating while WORKING,
+    // still signal-white when finished and WAITING for input, absent when no
+    // claude runs in the window. Drawn as paths — no font-fallback risk.
+    let spark = "";
+    if (claude !== "none") {
+        const color = claude === "working" ? "#F0A63C" : "#F2FFF6";
+        const angle = claude === "working" ? (spin % 12) * 30 : 0;
+        spark =
+            `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
+                `stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
+                `transform="rotate(${angle} 61 12)"/>`;
+    }
     return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
         `<rect width="72" height="72" fill="#0F1211"/>` +
         eyebrow +
+        spark +
         `<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
         bar +
         glyph +
@@ -9542,6 +9622,7 @@ let FocusTmuxWindow = (() => {
         visible = new Map();
         timer;
         refreshing = false;
+        spin = 0; // poll tick counter — rotates the working spark
         async onWillAppear(ev) {
             if (!ev.action.isKey())
                 return;
@@ -9581,10 +9662,12 @@ let FocusTmuxWindow = (() => {
             this.refreshing = true;
             try {
                 const tmux = findTmuxPath();
-                const [front, windowsRes, clientsRes] = await Promise.all([
+                this.spin++;
+                const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
                     runJxa(FRONT_APP_BUNDLE_JXA),
                     runTmux(LIST_WINDOWS_ARGS, tmux),
                     runTmux(LIST_CLIENTS_ARGS, tmux),
+                    runTmux(LIST_PANES_ARGS, tmux),
                 ]);
                 const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
                 // Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
@@ -9593,6 +9676,7 @@ let FocusTmuxWindow = (() => {
                     : "";
                 const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
                 const clients = parseClients(clientsRes.stdout);
+                const panes = panesRes.ok ? parsePanes(panesRes.stdout) : [];
                 for (const key of this.visible.values()) {
                     const settings = await key.getSettings();
                     const status = evaluateKeyStatus({
@@ -9602,8 +9686,11 @@ let FocusTmuxWindow = (() => {
                         iTermFrontmost,
                         focusedTty,
                     });
+                    const claude = status.state === "unknown"
+                        ? "none"
+                        : claudeStateForWindow(panes, status.session, status.window);
                     try {
-                        await key.setImage(svgToDataUri(buildTmuxKeyImage(status)));
+                        await key.setImage(svgToDataUri(buildTmuxKeyImage(status, claude, this.spin)));
                     }
                     catch (err) {
                         streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
@@ -10406,7 +10493,7 @@ let ScrollWindow = (() => {
             const speed = settings.speed ?? "slow";
             try {
                 await dial.setFeedback({
-                    mode: "Scroll ⇄",
+                    mode: { value: "Scroll ⇄", color: "#4E9CFF" },
                     current: speed === "fast" ? "Fast" : "Slow",
                 });
             }
@@ -10802,7 +10889,7 @@ let ArrangeWindow = (() => {
         async render(dial, settings, position) {
             try {
                 await dial.setFeedback({
-                    mode: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`,
+                    mode: { value: `${SCHEME_LABELS[activeTileScheme(settings)]} ⇄`, color: "#4E9CFF" },
                     current: position ?? "—",
                 });
             }
@@ -11014,17 +11101,21 @@ function parsePaneStatus(output) {
 }
 /**
  * setFeedback payload for the shared `layouts/mode-dial.json` layout. `mode`
- * names what rotation moves through (the ⇄ hints the press/tap toggle);
- * `current` shows where you are — the pane's running command with its
- * position, or the window name.
+ * names what rotation moves through (the ⇄ hints the press/tap toggle) in the
+ * tmux family's phosphor — the "tmux" prefix and colour distinguish this dial
+ * from the look-alike macOS App Windows dial. `current` shows where you are —
+ * the pane's running command with its position, or the window name.
  */
 function paneDialFeedback(mode, status) {
     if (mode === "windows") {
-        return { mode: "Windows ⇄", current: status.windowName || "—" };
+        return {
+            mode: { value: "tmux Windows ⇄", color: "#3ECF6E" },
+            current: status.windowName || "—",
+        };
     }
     const position = status.paneCount > 0 ? `${status.paneIndex + 1}/${status.paneCount}` : "";
     const current = [status.command, position].filter(Boolean).join(" · ");
-    return { mode: "Panes ⇄", current: current || "—" };
+    return { mode: { value: "tmux Panes ⇄", color: "#3ECF6E" }, current: current || "—" };
 }
 
 /**

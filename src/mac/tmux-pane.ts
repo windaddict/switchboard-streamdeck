@@ -62,18 +62,22 @@ export function parsePaneStatus(output: string): PaneStatus {
 
 /**
  * setFeedback payload for the shared `layouts/mode-dial.json` layout. `mode`
- * names what rotation moves through (the ⇄ hints the press/tap toggle);
- * `current` shows where you are — the pane's running command with its
- * position, or the window name.
+ * names what rotation moves through (the ⇄ hints the press/tap toggle) in the
+ * tmux family's phosphor — the "tmux" prefix and colour distinguish this dial
+ * from the look-alike macOS App Windows dial. `current` shows where you are —
+ * the pane's running command with its position, or the window name.
  */
 export function paneDialFeedback(
 	mode: PaneDialMode,
 	status: PaneStatus,
-): { mode: string; current: string } {
+): { mode: { value: string; color: string }; current: string } {
 	if (mode === "windows") {
-		return { mode: "Windows ⇄", current: status.windowName || "—" };
+		return {
+			mode: { value: "tmux Windows ⇄", color: "#3ECF6E" },
+			current: status.windowName || "—",
+		};
 	}
 	const position = status.paneCount > 0 ? `${status.paneIndex + 1}/${status.paneCount}` : "";
 	const current = [status.command, position].filter(Boolean).join(" · ");
-	return { mode: "Panes ⇄", current: current || "—" };
+	return { mode: { value: "tmux Panes ⇄", color: "#3ECF6E" }, current: current || "—" };
 }

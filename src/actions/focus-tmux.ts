@@ -12,6 +12,7 @@ import streamDeck, {
 
 import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
+import { claudeStateForWindow, LIST_PANES_ARGS, parsePanes } from "../mac/claude-state.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
@@ -57,6 +58,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	private readonly visible = new Map<string, KeyAction<FocusTmuxSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
 	private refreshing = false;
+	private spin = 0; // poll tick counter — rotates the working spark
 
 	override async onWillAppear(ev: WillAppearEvent<FocusTmuxSettings>): Promise<void> {
 		if (!ev.action.isKey()) return;
@@ -100,10 +102,12 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		this.refreshing = true;
 		try {
 			const tmux = findTmuxPath();
-			const [front, windowsRes, clientsRes] = await Promise.all([
+			this.spin++;
+			const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
 				runJxa(FRONT_APP_BUNDLE_JXA),
 				runTmux(LIST_WINDOWS_ARGS, tmux),
 				runTmux(LIST_CLIENTS_ARGS, tmux),
+				runTmux(LIST_PANES_ARGS, tmux),
 			]);
 			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
 			// Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
@@ -112,6 +116,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 				: "";
 			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
 			const clients = parseClients(clientsRes.stdout);
+			const panes = panesRes.ok ? parsePanes(panesRes.stdout) : [];
 
 			for (const key of this.visible.values()) {
 				const settings = await key.getSettings();
@@ -122,8 +127,12 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					iTermFrontmost,
 					focusedTty,
 				});
+				const claude =
+					status.state === "unknown"
+						? "none"
+						: claudeStateForWindow(panes, status.session, status.window);
 				try {
-					await key.setImage(svgToDataUri(buildTmuxKeyImage(status)));
+					await key.setImage(svgToDataUri(buildTmuxKeyImage(status, claude, this.spin)));
 				} catch (err) {
 					streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
 				}

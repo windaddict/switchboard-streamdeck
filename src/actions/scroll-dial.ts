@@ -90,7 +90,7 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		const speed = settings.speed ?? "slow";
 		try {
 			await dial.setFeedback({
-				mode: "Scroll ⇄",
+				mode: { value: "Scroll ⇄", color: "#4E9CFF" },
 				current: speed === "fast" ? "Fast" : "Slow",
 			});
 		} catch (err) {

@@ -101,3 +101,25 @@ describe("buildTmuxKeyImage", () => {
 		}
 	});
 });
+
+describe("buildTmuxKeyImage — Claude Code spark", () => {
+	const status = { state: "cold" as const, session: "dev", window: "movingavg" };
+	it("no spark when no claude runs in the window", () => {
+		expect(buildTmuxKeyImage(status, "none")).not.toContain("M56 12h10");
+		expect(buildTmuxKeyImage(status)).not.toContain("M56 12h10"); // default
+	});
+	it("working: amber spark rotated by the poll tick", () => {
+		const svg = buildTmuxKeyImage(status, "working", 3);
+		expect(svg).toContain('stroke="#F0A63C"');
+		expect(svg).toContain('transform="rotate(90 61 12)"');
+	});
+	it("waiting: still signal-white spark", () => {
+		const svg = buildTmuxKeyImage(status, "waiting", 3);
+		expect(svg).toContain('stroke="#F2FFF6"');
+		expect(svg).toContain('transform="rotate(0 61 12)"');
+	});
+	it("the spark rides every key state, including hot", () => {
+		const svg = buildTmuxKeyImage({ state: "hot", session: "dev", window: "movingavg" }, "working");
+		expect(svg).toContain("#F0A63C");
+	});
+});

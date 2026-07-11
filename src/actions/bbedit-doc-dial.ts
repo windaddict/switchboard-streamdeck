@@ -128,7 +128,7 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	/** Shared mode-dial layout; no ⇄ — this dial has no tap gesture. */
 	private async render(dial: DialAction<BBEditDocSettings>, docName: string): Promise<void> {
 		try {
-			await dial.setFeedback({ mode: "BBEdit", current: docName.trim() || "—" });
+			await dial.setFeedback({ mode: { value: "BBEdit", color: "#F0A63C" }, current: docName.trim() || "—" });
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}

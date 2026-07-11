@@ -66,11 +66,14 @@ function run() {
 export function appWindowsFeedback(
 	mode: AppWindowsMode,
 	front: FrontWindow,
-): { mode: string; current: string } {
+): { mode: { value: string; color: string }; current: string } {
 	if (mode === "apps") {
-		return { mode: "Apps ⇄", current: front.app || "—" };
+		return { mode: { value: "Apps ⇄", color: "#4E9CFF" }, current: front.app || "—" };
 	}
-	return { mode: "Windows ⇄", current: front.title || front.app || "—" };
+	return {
+		mode: { value: "App Windows ⇄", color: "#4E9CFF" },
+		current: front.title || front.app || "—",
+	};
 }
 
 /**
