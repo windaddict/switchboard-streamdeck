@@ -8,7 +8,7 @@ import streamDeck, {
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
-import { resolveFrontTmuxSession } from "../mac/front-tmux.js";
+import { resolveFrontTmux } from "../mac/front-tmux.js";
 import { rotationDirection } from "../mac/rotation.js";
 import {
 	type PaneDialMode,
@@ -29,11 +29,11 @@ type TmuxPaneSettings = {
 /**
  * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
  * toggles the mode, tmux windows. Every command is scoped to the tmux session
- * shown in the FRONTMOST macOS window (falling back to tmux's default when
- * that can't be determined), so the dial never drives a background terminal.
- * The mode is stored in the button's settings and survives Stream Deck
- * restarts. The touchscreen shows the mode and the current pane command (or
- * window name) of the controlled session.
+ * shown in the FRONTMOST macOS window; when iTerm isn't frontmost the dial
+ * does nothing (never a background terminal) and the strip shows a dash. The
+ * mode is stored in the button's settings and survives Stream Deck restarts.
+ * The touchscreen shows the mode and the current pane command (or window
+ * name) of the controlled session.
  */
 @action({ UUID: "com.movingavg.switchboard.tmuxpane" })
 export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
@@ -48,11 +48,15 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 		const direction = rotationDirection(ev.payload.ticks);
 		if (direction !== "none") {
 			const tmux = findTmuxPath();
-			const session = await resolveFrontTmuxSession(tmux);
+			const front = await resolveFrontTmux(tmux);
+			if (front === null) {
+				await this.refresh(ev.action, mode);
+				return; // no tmux in the frontmost window — do nothing
+			}
 			const args =
 				mode === "windows"
-					? selectWindowDirArgs(direction, session)
-					: selectPaneArgs(direction, session);
+					? selectWindowDirArgs(direction, front.session)
+					: selectPaneArgs(direction, front.session);
 			const result = await runTmux(args, tmux);
 			if (!result.ok) {
 				streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
@@ -80,14 +84,18 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 		await this.refresh(dial, mode);
 	}
 
-	/** Query the controlled session's pane/window and repaint the touchscreen. */
+	/** Repaint from the controlled session's state; a dash when there is none. */
 	private async refresh(dial: DialAction<TmuxPaneSettings>, mode: PaneDialMode): Promise<void> {
 		const tmux = findTmuxPath();
-		const session = await resolveFrontTmuxSession(tmux);
-		const result = await runTmux(paneStatusArgs(session), tmux);
-		if (!result.ok) return;
+		const front = await resolveFrontTmux(tmux);
+		let status = parsePaneStatus(""); // dash placeholders when nothing to control
+		if (front !== null) {
+			const result = await runTmux(paneStatusArgs(front.session), tmux);
+			if (!result.ok) return;
+			status = parsePaneStatus(result.stdout);
+		}
 		try {
-			await dial.setFeedback(paneDialFeedback(mode, parsePaneStatus(result.stdout)));
+			await dial.setFeedback(paneDialFeedback(mode, status));
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}

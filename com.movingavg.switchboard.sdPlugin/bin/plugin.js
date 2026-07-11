@@ -9223,10 +9223,16 @@ function selectWindowDirArgs(direction, session) {
     const base = direction === "next" ? ["next-window"] : ["previous-window"];
     return session ? [...base, "-t", session] : base;
 }
-/** tmux args to toggle to the previously active window (push = back-and-forth). */
-const LAST_WINDOW_ARGS = ["last-window"];
-/** tmux args to toggle to the previously active session (push in "all" scope). */
-const LAST_SESSION_ARGS = ["switch-client", "-l"];
+/** tmux args to toggle to the previously active window of `session`
+ * (push = back-and-forth). */
+function lastWindowArgs(session) {
+    return ["last-window", "-t", session];
+}
+/** tmux args to toggle the given CLIENT to its previously active session
+ * (push in "all" scope). Scoped with -c so a background client never moves. */
+function lastSessionArgs(clientTty) {
+    return ["switch-client", "-c", clientTty, "-l"];
+}
 /**
  * The window a rotation should land on in "all" scope: the neighbour of the
  * current window in the flattened all-sessions list (wrapping across session
@@ -9244,21 +9250,31 @@ function nextWindowAcross(windows, current, direction) {
     return windows[target];
 }
 /**
- * tmux args that jump the attached client to a window in ANY session.
+ * tmux args that jump a client to a window in ANY session.
  * `switch-client -t sess:idx` changes session and window in one step
- * (`select-window` alone cannot leave the current session).
+ * (`select-window` alone cannot leave the current session). Pass the front
+ * client's tty as `clientTty` — untargeted, tmux moves ITS "current client",
+ * which can be a background terminal.
  */
-function switchToWindowArgs(w) {
-    return ["switch-client", "-t", `${w.session}:${w.index}`];
+function switchToWindowArgs(w, clientTty) {
+    const target = ["-t", `${w.session}:${w.index}`];
+    return clientTty
+        ? ["switch-client", "-c", clientTty, ...target]
+        : ["switch-client", ...target];
 }
+const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_name}|#{window_index}";
 /** tmux args reading the current window as `session|name|index`. */
-const CURRENT_WINDOW_ARGS = [
-    "display-message",
-    "-p",
-    "#{session_name}|#{window_name}|#{window_index}",
-];
-/** tmux args listing the active flag of each window in the current session. */
-const WINDOW_FLAGS_ARGS = ["list-windows", "-F", "#{window_active}"];
+const CURRENT_WINDOW_ARGS = ["display-message", "-p", CURRENT_WINDOW_FORMAT];
+/** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
+function currentWindowArgs(session) {
+    return ["display-message", "-p", "-t", session, CURRENT_WINDOW_FORMAT];
+}
+/** tmux args listing the active flag of each window in the given session
+ * (untargeted when omitted — tmux's own "current" session). */
+function windowFlagsArgs(session) {
+    const base = ["list-windows", "-F", "#{window_active}"];
+    return session ? [...base, "-t", session] : base;
+}
 /** Parse `session|name|index` into a {@link CurrentWindow}. */
 function parseCurrentWindow(output) {
     const [session = "", name = "", index = "0"] = output.trim().split("|");
@@ -10795,12 +10811,50 @@ let ArrangeWindow = (() => {
 })();
 
 /**
+ * Which tmux client/session is in the frontmost macOS window? Chains the
+ * probes the live tmux key faces already use: frontmost app (NSWorkspace JXA)
+ * → iTerm's focused-session tty (only queried when iTerm IS frontmost —
+ * addressing a non-running app via AppleScript would launch it) → tmux
+ * list-clients tty → session. Null when indeterminate (iTerm not frontmost,
+ * focused pane isn't a tmux client, …); the tmux dials treat null as
+ * "nothing to control" and do nothing rather than drive a background terminal.
+ *
+ * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
+ * pays it once, and you don't change macOS windows mid-burst.
+ */
+const TTL_MS = 2000;
+let cached = null;
+async function resolveFrontTmux(tmuxPath) {
+    if (cached !== null && Date.now() - cached.at < TTL_MS) {
+        return cached.front;
+    }
+    let front = null;
+    const app = await runJxa(FRONT_APP_BUNDLE_JXA);
+    if (app.ok && app.stdout.trim() === ITERM_BUNDLE_ID) {
+        const [ttyRes, clientsRes] = await Promise.all([
+            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
+            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
+        ]);
+        const tty = ttyRes.stdout.trim();
+        const session = sessionForTty(parseClients(clientsRes.stdout), tty);
+        if (session !== null) {
+            front = { session, tty };
+        }
+    }
+    cached = { front, at: Date.now() };
+    return front;
+}
+
+/**
  * Dial action: rotate to cycle tmux windows, push for last-window. Touch-tap
  * toggles the scope between the current session and ALL sessions: in "all"
  * scope rotation crosses session boundaries (switch-client) and push jumps to
- * the last session. The touchscreen shows a session-tinted background with
- * position dots (plus an ALL badge in all-sessions scope), refreshed after
- * every change. The scope is transient per-dial memory.
+ * the last session. Every command drives the tmux client/session in the
+ * FRONTMOST macOS window; when iTerm isn't frontmost the dial does nothing
+ * (never a background terminal) and the strip shows a dash. The touchscreen
+ * shows a session-tinted background with position dots (plus an ALL badge in
+ * all-sessions scope), refreshed after every change. The scope is transient
+ * per-dial memory.
  */
 let CycleTmuxWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxwindial" })];
@@ -10830,23 +10884,28 @@ let CycleTmuxWindow = (() => {
             const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
                 const tmux = findTmuxPath();
+                const front = await resolveFrontTmux(tmux);
+                if (front === null) {
+                    await this.refresh(ev.action);
+                    return; // no tmux in the frontmost window — do nothing
+                }
                 if (this.scope(ev.action.id) === "all") {
                     const [list, current] = await Promise.all([
                         runTmux(LIST_WINDOWS_ARGS, tmux),
-                        runTmux(CURRENT_WINDOW_ARGS, tmux),
+                        runTmux(currentWindowArgs(front.session), tmux),
                     ]);
                     const target = list.ok
                         ? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
                         : null;
                     if (target !== null) {
-                        const result = await runTmux(switchToWindowArgs(target), tmux);
+                        const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
                         if (!result.ok) {
                             streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
                         }
                     }
                 }
                 else {
-                    const result = await runTmux(selectWindowDirArgs(direction), tmux);
+                    const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
                     if (!result.ok) {
                         streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
                     }
@@ -10856,8 +10915,12 @@ let CycleTmuxWindow = (() => {
         }
         /** Push: last window in session scope, last session in all scope. */
         async onDialDown(ev) {
-            const args = this.scope(ev.action.id) === "all" ? LAST_SESSION_ARGS : LAST_WINDOW_ARGS;
-            await runTmux(args, findTmuxPath());
+            const tmux = findTmuxPath();
+            const front = await resolveFrontTmux(tmux);
+            if (front !== null) {
+                const args = this.scope(ev.action.id) === "all" ? lastSessionArgs(front.tty) : lastWindowArgs(front.session);
+                await runTmux(args, tmux);
+            }
             await this.refresh(ev.action);
         }
         /** Touch-tap: toggle between current-session and all-sessions scope. */
@@ -10868,20 +10931,27 @@ let CycleTmuxWindow = (() => {
         scope(id) {
             return this.scopes.get(id) ?? "session";
         }
-        /** Query the current window + scope-appropriate set and repaint the touchscreen. */
+        /** Repaint from the front session's state; a dash when there is none. */
         async refresh(dial) {
             const tmux = findTmuxPath();
+            const front = await resolveFrontTmux(tmux);
             const all = this.scope(dial.id) === "all";
-            const [current, set] = await Promise.all([
-                runTmux(CURRENT_WINDOW_ARGS, tmux),
-                runTmux(all ? LIST_WINDOWS_ARGS : WINDOW_FLAGS_ARGS, tmux),
-            ]);
-            if (!current.ok)
-                return;
-            const parsed = parseCurrentWindow(current.stdout);
-            const feedback = all
-                ? buildAllWindowsFeedback(parseWindows(set.stdout), parsed)
-                : buildWindowFeedback(parsed, parseActiveFlags(set.stdout));
+            let feedback;
+            if (front === null) {
+                feedback = buildWindowFeedback({ session: "", name: "—"}, []);
+            }
+            else {
+                const [current, set] = await Promise.all([
+                    runTmux(currentWindowArgs(front.session), tmux),
+                    runTmux(all ? LIST_WINDOWS_ARGS : windowFlagsArgs(front.session), tmux),
+                ]);
+                if (!current.ok)
+                    return;
+                const parsed = parseCurrentWindow(current.stdout);
+                feedback = all
+                    ? buildAllWindowsFeedback(parseWindows(set.stdout), parsed)
+                    : buildWindowFeedback(parsed, parseActiveFlags(set.stdout));
+            }
             try {
                 await dial.setFeedback(feedback);
             }
@@ -10892,36 +10962,6 @@ let CycleTmuxWindow = (() => {
     });
     return _classThis;
 })();
-
-/**
- * Which tmux session is in the frontmost macOS window? Chains the probes the
- * live tmux key faces already use: frontmost app (NSWorkspace JXA) → iTerm's
- * focused-session tty (only queried when iTerm IS frontmost — addressing a
- * non-running app via AppleScript would launch it) → tmux list-clients tty →
- * session. Null when indeterminate (iTerm not frontmost, no tmux client on
- * that tty, …); callers fall back to tmux's untargeted default.
- *
- * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
- * pays it once, and you don't change macOS windows mid-burst.
- */
-const TTL_MS = 2000;
-let cached = null;
-async function resolveFrontTmuxSession(tmuxPath) {
-    if (cached !== null && Date.now() - cached.at < TTL_MS) {
-        return cached.session;
-    }
-    let session = null;
-    const front = await runJxa(FRONT_APP_BUNDLE_JXA);
-    if (front.ok && front.stdout.trim() === ITERM_BUNDLE_ID) {
-        const [ttyRes, clientsRes] = await Promise.all([
-            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
-            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
-        ]);
-        session = sessionForTty(parseClients(clientsRes.stdout), ttyRes.stdout.trim());
-    }
-    cached = { session, at: Date.now() };
-    return session;
-}
 
 /**
  * Pure logic for the tmux pane dial: rotate to switch panes — or, after a
@@ -10982,11 +11022,11 @@ function paneDialFeedback(mode, status) {
 /**
  * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
  * toggles the mode, tmux windows. Every command is scoped to the tmux session
- * shown in the FRONTMOST macOS window (falling back to tmux's default when
- * that can't be determined), so the dial never drives a background terminal.
- * The mode is stored in the button's settings and survives Stream Deck
- * restarts. The touchscreen shows the mode and the current pane command (or
- * window name) of the controlled session.
+ * shown in the FRONTMOST macOS window; when iTerm isn't frontmost the dial
+ * does nothing (never a background terminal) and the strip shows a dash. The
+ * mode is stored in the button's settings and survives Stream Deck restarts.
+ * The touchscreen shows the mode and the current pane command (or window
+ * name) of the controlled session.
  */
 let TmuxPaneDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxpane" })];
@@ -11013,10 +11053,14 @@ let TmuxPaneDial = (() => {
             const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
                 const tmux = findTmuxPath();
-                const session = await resolveFrontTmuxSession(tmux);
+                const front = await resolveFrontTmux(tmux);
+                if (front === null) {
+                    await this.refresh(ev.action, mode);
+                    return; // no tmux in the frontmost window — do nothing
+                }
                 const args = mode === "windows"
-                    ? selectWindowDirArgs(direction, session)
-                    : selectPaneArgs(direction, session);
+                    ? selectWindowDirArgs(direction, front.session)
+                    : selectPaneArgs(direction, front.session);
                 const result = await runTmux(args, tmux);
                 if (!result.ok) {
                     streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
@@ -11037,15 +11081,19 @@ let TmuxPaneDial = (() => {
             await dial.setSettings({ ...settings, mode });
             await this.refresh(dial, mode);
         }
-        /** Query the controlled session's pane/window and repaint the touchscreen. */
+        /** Repaint from the controlled session's state; a dash when there is none. */
         async refresh(dial, mode) {
             const tmux = findTmuxPath();
-            const session = await resolveFrontTmuxSession(tmux);
-            const result = await runTmux(paneStatusArgs(session), tmux);
-            if (!result.ok)
-                return;
+            const front = await resolveFrontTmux(tmux);
+            let status = parsePaneStatus(""); // dash placeholders when nothing to control
+            if (front !== null) {
+                const result = await runTmux(paneStatusArgs(front.session), tmux);
+                if (!result.ok)
+                    return;
+                status = parsePaneStatus(result.stdout);
+            }
             try {
-                await dial.setFeedback(paneDialFeedback(mode, parsePaneStatus(result.stdout)));
+                await dial.setFeedback(paneDialFeedback(mode, status));
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);

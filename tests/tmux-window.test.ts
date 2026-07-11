@@ -5,8 +5,9 @@ import {
 	buildBackgroundSvg,
 	buildWindowFeedback,
 	CURRENT_WINDOW_ARGS,
-	LAST_SESSION_ARGS,
-	LAST_WINDOW_ARGS,
+	currentWindowArgs,
+	lastSessionArgs,
+	lastWindowArgs,
 	nextWindowAcross,
 	parseActiveFlags,
 	parseCurrentWindow,
@@ -14,7 +15,7 @@ import {
 	sessionHue,
 	switchToWindowArgs,
 	toggleScope,
-	WINDOW_FLAGS_ARGS,
+	windowFlagsArgs,
 } from "../src/mac/tmux-window.js";
 import type { TmuxWindow } from "../src/mac/tmux.js";
 
@@ -28,13 +29,23 @@ describe("window dial args", () => {
 		expect(selectWindowDirArgs("prev", null)).toEqual(["previous-window"]);
 	});
 	it("constant args are correct", () => {
-		expect(LAST_WINDOW_ARGS).toEqual(["last-window"]);
 		expect(CURRENT_WINDOW_ARGS).toEqual([
 			"display-message",
 			"-p",
 			"#{session_name}|#{window_name}|#{window_index}",
 		]);
-		expect(WINDOW_FLAGS_ARGS).toEqual(["list-windows", "-F", "#{window_active}"]);
+		expect(windowFlagsArgs()).toEqual(["list-windows", "-F", "#{window_active}"]);
+	});
+	it("session-scoped args target the frontmost window's session", () => {
+		expect(lastWindowArgs("dev")).toEqual(["last-window", "-t", "dev"]);
+		expect(currentWindowArgs("dev")).toEqual([
+			"display-message",
+			"-p",
+			"-t",
+			"dev",
+			"#{session_name}|#{window_name}|#{window_index}",
+		]);
+		expect(windowFlagsArgs("dev")).toEqual(["list-windows", "-F", "#{window_active}", "-t", "dev"]);
 	});
 });
 
@@ -165,8 +176,17 @@ describe("all-scope args", () => {
 	it("switchToWindowArgs uses switch-client (select-window cannot leave the session)", () => {
 		expect(switchToWindowArgs(ALL_WINDOWS[2])).toEqual(["switch-client", "-t", "ops:1"]);
 	});
-	it("LAST_SESSION_ARGS toggles the previous session", () => {
-		expect(LAST_SESSION_ARGS).toEqual(["switch-client", "-l"]);
+	it("switchToWindowArgs pins the CLIENT with -c so a background client never moves", () => {
+		expect(switchToWindowArgs(ALL_WINDOWS[2], "/dev/ttys007")).toEqual([
+			"switch-client",
+			"-c",
+			"/dev/ttys007",
+			"-t",
+			"ops:1",
+		]);
+	});
+	it("lastSessionArgs toggles the given client's previous session", () => {
+		expect(lastSessionArgs("/dev/ttys007")).toEqual(["switch-client", "-c", "/dev/ttys007", "-l"]);
 	});
 });
 

@@ -30,11 +30,17 @@ export function selectWindowDirArgs(
 	return session ? [...base, "-t", session] : base;
 }
 
-/** tmux args to toggle to the previously active window (push = back-and-forth). */
-export const LAST_WINDOW_ARGS = ["last-window"];
+/** tmux args to toggle to the previously active window of `session`
+ * (push = back-and-forth). */
+export function lastWindowArgs(session: string): string[] {
+	return ["last-window", "-t", session];
+}
 
-/** tmux args to toggle to the previously active session (push in "all" scope). */
-export const LAST_SESSION_ARGS = ["switch-client", "-l"];
+/** tmux args to toggle the given CLIENT to its previously active session
+ * (push in "all" scope). Scoped with -c so a background client never moves. */
+export function lastSessionArgs(clientTty: string): string[] {
+	return ["switch-client", "-c", clientTty, "-l"];
+}
 
 /**
  * The window a rotation should land on in "all" scope: the neighbour of the
@@ -56,23 +62,35 @@ export function nextWindowAcross(
 }
 
 /**
- * tmux args that jump the attached client to a window in ANY session.
+ * tmux args that jump a client to a window in ANY session.
  * `switch-client -t sess:idx` changes session and window in one step
- * (`select-window` alone cannot leave the current session).
+ * (`select-window` alone cannot leave the current session). Pass the front
+ * client's tty as `clientTty` — untargeted, tmux moves ITS "current client",
+ * which can be a background terminal.
  */
-export function switchToWindowArgs(w: TmuxWindow): string[] {
-	return ["switch-client", "-t", `${w.session}:${w.index}`];
+export function switchToWindowArgs(w: TmuxWindow, clientTty?: string | null): string[] {
+	const target = ["-t", `${w.session}:${w.index}`];
+	return clientTty
+		? ["switch-client", "-c", clientTty, ...target]
+		: ["switch-client", ...target];
 }
 
-/** tmux args reading the current window as `session|name|index`. */
-export const CURRENT_WINDOW_ARGS = [
-	"display-message",
-	"-p",
-	"#{session_name}|#{window_name}|#{window_index}",
-];
+const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_name}|#{window_index}";
 
-/** tmux args listing the active flag of each window in the current session. */
-export const WINDOW_FLAGS_ARGS = ["list-windows", "-F", "#{window_active}"];
+/** tmux args reading the current window as `session|name|index`. */
+export const CURRENT_WINDOW_ARGS = ["display-message", "-p", CURRENT_WINDOW_FORMAT];
+
+/** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
+export function currentWindowArgs(session: string): string[] {
+	return ["display-message", "-p", "-t", session, CURRENT_WINDOW_FORMAT];
+}
+
+/** tmux args listing the active flag of each window in the given session
+ * (untargeted when omitted — tmux's own "current" session). */
+export function windowFlagsArgs(session?: string | null): string[] {
+	const base = ["list-windows", "-F", "#{window_active}"];
+	return session ? [...base, "-t", session] : base;
+}
 
 export interface CurrentWindow {
 	session: string;

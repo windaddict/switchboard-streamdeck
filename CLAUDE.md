@@ -55,17 +55,18 @@ into the button ("teach the button": front tab / frontmost app / current tmux
 window; Window Ring's add/remove is the same gesture). Modes/scopes are
 transient per-dial memory (Map keyed by action id, cleared onWillDisappear) —
 they intentionally reset to the default on appearance. EXCEPTION: the tmux
-pane dial's panes/windows mode persists in settings (user request). tmux dial
-commands are scoped to the session in the FRONTMOST macOS window via
-`resolveFrontTmuxSession` (`src/mac/front-tmux.ts`, ~0.3s probe cached 2s) —
-untargeted tmux commands act on tmux's own "current" session, which can be a
-background terminal.
+pane dial's panes/windows mode persists in settings (user request). BOTH tmux
+dials scope every command to the client/session in the FRONTMOST macOS window
+via `resolveFrontTmux` (`src/mac/front-tmux.ts`, ~0.3s probe cached 2s) and DO
+NOTHING when iTerm isn't frontmost (strip shows a dash) — untargeted tmux
+commands act on tmux's own "current" session/client, which can be a background
+terminal.
 
 ## Dev loop
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 340 tests today
+npm test              # vitest (pure modules) — 342 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
