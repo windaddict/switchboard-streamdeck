@@ -79,26 +79,25 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 		sessionText = `hsl(${hue},55%,72%)`;
 		glyphStroke = "#F2FFF6";
 	} else if (status.state === "cold") {
-		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},25%,38%)" stroke-width="1.5"/>`;
-		nameFill = "#8B9490";
-		sessionText = `hsl(${hue},22%,52%)`;
-		glyphStroke = `hsl(${hue},45%,68%)`;
+		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},35%,52%)" stroke-width="1.5"/>`;
+		nameFill = "#A6ADA9";
+		sessionText = `hsl(${hue},50%,70%)`;
+		glyphStroke = `hsl(${hue},50%,70%)`;
 	} else {
-		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
-		nameFill = "#6A716E";
+		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#6A716E" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+		nameFill = "#8B9490";
 		glyphStroke = "#8B9490";
 	}
 
 	// tmux identity mark: a tiny split-pane window at the bar's left end (where
 	// tmux puts its session block) — present in every state so the key reads as
-	// a tmux button even when idle; on hot it bookends the cursor. Idle strokes
-	// are deliberately brighter than the bar outline: at physical key size and
-	// hardware brightness, dim thin strokes vanish entirely.
+	// a tmux button even when idle; on hot it bookends the cursor. Attributes
+	// go DIRECTLY on each element: Stream Deck's SVG rasterizer does not
+	// reliably inherit presentation attributes from a <g> wrapper (the glyph
+	// rendered as an invisible black-filled rect when they lived on the group).
 	const glyph =
-		`<g fill="none" stroke="${glyphStroke}" stroke-width="1.6">` +
-		`<rect x="5.5" y="60.5" width="9" height="8" rx="1"/>` +
-		`<path d="M10 60.5v8"/>` +
-		`</g>`;
+		`<rect x="5.5" y="60.5" width="9" height="8" rx="1" fill="none" stroke="${glyphStroke}" stroke-width="1.6"/>` +
+		`<path d="M10 60.5v8" fill="none" stroke="${glyphStroke}" stroke-width="1.6"/>`;
 
 	const eyebrow = session
 		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`

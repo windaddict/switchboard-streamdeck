@@ -88,7 +88,11 @@ describe("buildTmuxKeyImage", () => {
 	});
 	it("carries the split-pane tmux mark in every state (identity even when idle)", () => {
 		for (const svg of [hot, cold, unknown]) {
-			expect(svg).toContain('<path d="M10 60.5v8"/>'); // the pane divider
+			expect(svg).toContain('<path d="M10 60.5v8"'); // the pane divider
 		}
+	});
+	it("glyph attributes sit on the elements themselves (SD's rasterizer does not inherit from <g>)", () => {
+		expect(hot).not.toContain("<g ");
+		expect(hot).toMatch(/<path d="M10 60\.5v8" fill="none" stroke="/);
 	});
 });
