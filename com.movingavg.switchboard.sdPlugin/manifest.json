@@ -50,7 +50,7 @@
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "$B1",
+				"layout": "layouts/mode-dial.json",
 				"TriggerDescription": {
 					"Rotate": "Scroll up / down",
 					"Push": "Jump to top (or toggle speed)",
@@ -62,7 +62,8 @@
 					"Image": "imgs/actions/scroll/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "Open / Switch App",
@@ -182,7 +183,7 @@
 				"Encoder"
 			],
 			"Encoder": {
-				"layout": "$B1",
+				"layout": "layouts/mode-dial.json",
 				"TriggerDescription": {
 					"Rotate": "Previous / next document",
 					"Push": "Back to previous document"
@@ -193,7 +194,8 @@
 					"Image": "imgs/actions/bbeditdoc/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "Open File",

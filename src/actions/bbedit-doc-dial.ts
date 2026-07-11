@@ -125,9 +125,10 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		return docs.find((d) => d.id === activeId)?.name ?? "";
 	}
 
+	/** Shared mode-dial layout; no ⇄ — this dial has no tap gesture. */
 	private async render(dial: DialAction<BBEditDocSettings>, docName: string): Promise<void> {
 		try {
-			await dial.setFeedback({ title: "BBEdit", value: docName.trim() || "—" });
+			await dial.setFeedback({ mode: "BBEdit", current: docName.trim() || "—" });
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}

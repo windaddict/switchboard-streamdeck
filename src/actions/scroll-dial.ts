@@ -84,13 +84,14 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		await respondToAccessibilityCheck(ev.payload, import.meta.url);
 	}
 
-	/** Best-effort touchscreen readout of the current speed; never blocks scrolling. */
+	/** Best-effort touchscreen readout of the current speed; never blocks
+	 * scrolling. Shared mode-dial layout; the ⇄ marks the tap-to-toggle. */
 	private async render(dial: DialAction<ScrollSettings>, settings: ScrollSettings): Promise<void> {
 		const speed = settings.speed ?? "slow";
 		try {
 			await dial.setFeedback({
-				title: "Scroll",
-				value: speed === "fast" ? "Fast" : "Slow",
+				mode: "Scroll ⇄",
+				current: speed === "fast" ? "Fast" : "Slow",
 			});
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);

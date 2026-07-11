@@ -8902,9 +8902,10 @@ let BBEditDocDial = (() => {
         activeName(docs, activeId) {
             return docs.find((d) => d.id === activeId)?.name ?? "";
         }
+        /** Shared mode-dial layout; no ⇄ — this dial has no tap gesture. */
         async render(dial, docName) {
             try {
-                await dial.setFeedback({ title: "BBEdit", value: docName.trim() || "—" });
+                await dial.setFeedback({ mode: "BBEdit", current: docName.trim() || "—" });
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
@@ -10399,13 +10400,14 @@ let ScrollWindow = (() => {
         async onSendToPlugin(ev) {
             await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
-        /** Best-effort touchscreen readout of the current speed; never blocks scrolling. */
+        /** Best-effort touchscreen readout of the current speed; never blocks
+         * scrolling. Shared mode-dial layout; the ⇄ marks the tap-to-toggle. */
         async render(dial, settings) {
             const speed = settings.speed ?? "slow";
             try {
                 await dial.setFeedback({
-                    title: "Scroll",
-                    value: speed === "fast" ? "Fast" : "Slow",
+                    mode: "Scroll ⇄",
+                    current: speed === "fast" ? "Fast" : "Slow",
                 });
             }
             catch (err) {

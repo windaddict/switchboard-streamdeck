@@ -66,10 +66,11 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 342 tests today
+npm test              # vitest (pure modules) — 343 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
+python3 scripts/make-icons.py  # regenerate ALL key faces + list icons from the design system
 python3 scripts/make-hero.py   # regenerate the README hero after adding/renaming actions
 npx @elgato/cli restart com.movingavg.switchboard   # reload the plugin live
 ```
@@ -174,8 +175,13 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 - **PI file pickers:** the SD webview exposes a chosen file's absolute path on
   `file.path` (what `<sdpi-file>` relies on). Folders use `<input webkitdirectory>`
   + deriving the path (see `ui/open-file.html`).
-- **Icons** are rasterized from SVGs with `inkscape --export-type=png` at
-  20/40/72/144; loop quoting in bash is finicky — invoke inkscape per size.
+- **Icons come from ONE generator** — `scripts/make-icons.py` renders every key
+  face and list icon (20/40/72/144 via inkscape) from a shared token system:
+  ink ground #0F1211 (matches the live key faces), 3px strokes on a 72 grid,
+  family colours (phosphor=tmux, azure=windows/apps/web, amber=BBEdit,
+  teal=files), and the "jack-line" strip at each key's foot. Add new actions by
+  adding a glyph fn there — don't hand-draw one-off icons. Live faces
+  (tmux-key.ts, window-ring.ts, key-image.ts) use the same tokens in hex.
 
 ## Adding a new action
 
