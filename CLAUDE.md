@@ -120,6 +120,11 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 - **SVG data URIs work** as `setImage` (keys) and pixmap (`setFeedback`) values:
   `data:image/svg+xml;base64,<b64>`. Lets you render dynamic graphics with no
   rasterizer at runtime. XML-escape any user text in the SVG.
+- **The KEY rasterizer paints `hsl()` colors as BLACK** (the touchscreen pixmap
+  pipeline renders them fine). Cost three debugging rounds on the tmux key face:
+  every hex element showed, every hsl() element was "invisible" black-on-black.
+  Key-face SVGs must emit hex only — convert with `hslToHex` (`src/mac/svg.ts`);
+  a tmux-key test asserts no `hsl(` literal survives.
 - **Synthetic keystrokes coalesce.** Sending N arrow keys back-to-back via System
   Events drops most of them, so "lines per tick" didn't scale. The scroll dial now
   posts ONE proportional `CGScrollWheel` event via the native `bin/macos/scroll`
