@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svgToDataUri, round } from "../src/mac/svg.js";
+import { hslToHex, round, svgToDataUri } from "../src/mac/svg.js";
 
 describe("svgToDataUri", () => {
 	it("round-trips an svg as a base64 data uri", () => {
@@ -14,5 +14,17 @@ describe("round", () => {
 	it("rounds to one decimal place", () => {
 		expect(round(1.23)).toBe(1.2);
 		expect(round(60)).toBe(60);
+	});
+});
+
+describe("hslToHex", () => {
+	it("converts primaries", () => {
+		expect(hslToHex(0, 100, 50)).toBe("#ff0000");
+		expect(hslToHex(120, 100, 25)).toBe("#008000");
+		expect(hslToHex(240, 100, 50)).toBe("#0000ff");
+	});
+	it("handles the achromatic ends", () => {
+		expect(hslToHex(0, 0, 100)).toBe("#ffffff");
+		expect(hslToHex(200, 50, 0)).toBe("#000000");
 	});
 });

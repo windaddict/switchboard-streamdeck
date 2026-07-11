@@ -9037,6 +9037,24 @@ function svgToDataUri(svg) {
 function round(n) {
     return Math.round(n * 10) / 10;
 }
+/**
+ * Convert HSL (h 0–360, s/l 0–100) to a #rrggbb hex string. Key-face SVGs must
+ * not use `hsl()` literals: Stream Deck's KEY rasterizer silently paints them
+ * as black (the touchscreen pipeline accepts them; keys do not).
+ */
+function hslToHex(h, s, l) {
+    const sn = s / 100;
+    const ln = l / 100;
+    const a = sn * Math.min(ln, 1 - ln);
+    const channel = (n) => {
+        const k = (n + h / 30) % 12;
+        const c = ln - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+        return Math.round(255 * c)
+            .toString(16)
+            .padStart(2, "0");
+    };
+    return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
 
 /**
  * Pure parsing + target-resolution helpers for driving tmux from the plugin.
@@ -9382,23 +9400,25 @@ function buildTmuxKeyImage(status) {
     let nameFill;
     let sessionText = "";
     let glyphStroke;
+    // Stream Deck's KEY rasterizer paints hsl() literals as BLACK (the
+    // touchscreen pipeline accepts them) — every colour here must be hex.
     if (status.state === "hot") {
         bar =
             `<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
-                `<stop offset="0" stop-color="hsl(${hue},62%,46%)"/>` +
-                `<stop offset="1" stop-color="hsl(${hue},66%,36%)"/>` +
+                `<stop offset="0" stop-color="${hslToHex(hue, 62, 46)}"/>` +
+                `<stop offset="1" stop-color="${hslToHex(hue, 66, 36)}"/>` +
                 `</linearGradient></defs>` +
                 `<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
                 `<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
         nameFill = "#FFFFFF";
-        sessionText = `hsl(${hue},55%,72%)`;
+        sessionText = hslToHex(hue, 55, 72);
         glyphStroke = "#F2FFF6";
     }
     else if (status.state === "cold") {
-        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},35%,52%)" stroke-width="1.5"/>`;
+        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
         nameFill = "#A6ADA9";
-        sessionText = `hsl(${hue},50%,70%)`;
-        glyphStroke = `hsl(${hue},50%,70%)`;
+        sessionText = hslToHex(hue, 50, 70);
+        glyphStroke = hslToHex(hue, 50, 70);
     }
     else {
         bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#6A716E" stroke-width="1.5" stroke-dasharray="3 3"/>`;

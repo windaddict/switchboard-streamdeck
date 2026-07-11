@@ -7,6 +7,7 @@
  * the queried inputs and turns the SVG into a data URI.
  */
 
+import { hslToHex } from "./svg.js";
 import { resolveTarget, type TmuxWindow } from "./tmux.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
 
@@ -67,22 +68,24 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 	let sessionText = "";
 	let glyphStroke: string;
 
+	// Stream Deck's KEY rasterizer paints hsl() literals as BLACK (the
+	// touchscreen pipeline accepts them) — every colour here must be hex.
 	if (status.state === "hot") {
 		bar =
 			`<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
-			`<stop offset="0" stop-color="hsl(${hue},62%,46%)"/>` +
-			`<stop offset="1" stop-color="hsl(${hue},66%,36%)"/>` +
+			`<stop offset="0" stop-color="${hslToHex(hue, 62, 46)}"/>` +
+			`<stop offset="1" stop-color="${hslToHex(hue, 66, 36)}"/>` +
 			`</linearGradient></defs>` +
 			`<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
 			`<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
 		nameFill = "#FFFFFF";
-		sessionText = `hsl(${hue},55%,72%)`;
+		sessionText = hslToHex(hue, 55, 72);
 		glyphStroke = "#F2FFF6";
 	} else if (status.state === "cold") {
-		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},35%,52%)" stroke-width="1.5"/>`;
+		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
 		nameFill = "#A6ADA9";
-		sessionText = `hsl(${hue},50%,70%)`;
-		glyphStroke = `hsl(${hue},50%,70%)`;
+		sessionText = hslToHex(hue, 50, 70);
+		glyphStroke = hslToHex(hue, 50, 70);
 	} else {
 		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#6A716E" stroke-width="1.5" stroke-dasharray="3 3"/>`;
 		nameFill = "#8B9490";

@@ -95,4 +95,9 @@ describe("buildTmuxKeyImage", () => {
 		expect(hot).not.toContain("<g ");
 		expect(hot).toMatch(/<path d="M10 60\.5v8" fill="none" stroke="/);
 	});
+	it("emits NO hsl() literals — SD's key rasterizer paints them black", () => {
+		for (const svg of [hot, cold, unknown]) {
+			expect(svg).not.toContain("hsl(");
+		}
+	});
 });
