@@ -86,4 +86,9 @@ describe("buildTmuxKeyImage", () => {
 			">no target</text>",
 		);
 	});
+	it("carries the split-pane tmux mark in every state (identity even when idle)", () => {
+		for (const svg of [hot, cold, unknown]) {
+			expect(svg).toContain('<path d="M10 60.5v8"/>'); // the pane divider
+		}
+	});
 });

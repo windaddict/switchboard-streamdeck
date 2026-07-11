@@ -65,6 +65,7 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 	let bar: string;
 	let nameFill: string;
 	let sessionText = "";
+	let glyphStroke: string;
 
 	if (status.state === "hot") {
 		bar =
@@ -76,14 +77,26 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 			`<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
 		nameFill = "#FFFFFF";
 		sessionText = `hsl(${hue},55%,72%)`;
+		glyphStroke = "#F2FFF6";
 	} else if (status.state === "cold") {
 		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="hsl(${hue},25%,38%)" stroke-width="1.5"/>`;
 		nameFill = "#8B9490";
 		sessionText = `hsl(${hue},22%,52%)`;
+		glyphStroke = `hsl(${hue},28%,48%)`;
 	} else {
 		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
 		nameFill = "#6A716E";
+		glyphStroke = "#5A615E";
 	}
+
+	// tmux identity mark: a tiny split-pane window at the bar's left end (where
+	// tmux puts its session block) — present in every state so the key reads as
+	// a tmux button even when idle; on hot it bookends the cursor.
+	const glyph =
+		`<g fill="none" stroke="${glyphStroke}" stroke-width="1.3" opacity="0.9">` +
+		`<rect x="5.5" y="60.5" width="9" height="8" rx="1"/>` +
+		`<path d="M10 60.5v8"/>` +
+		`</g>`;
 
 	const eyebrow = session
 		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
@@ -95,6 +108,7 @@ export function buildTmuxKeyImage(status: TmuxKeyStatus): string {
 		eyebrow +
 		`<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
 		bar +
+		glyph +
 		`</svg>`
 	);
 }

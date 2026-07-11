@@ -60,7 +60,7 @@ they intentionally reset to the default on appearance.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 328 tests today
+npm test              # vitest (pure modules) — 329 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
