@@ -4,13 +4,13 @@ import { buildOpenFileImage, svgToDataUri } from "../src/mac/key-image.js";
 describe("buildOpenFileImage", () => {
 	it("match shows a green check badge", () => {
 		const svg = buildOpenFileImage("match");
-		expect(svg).toContain("#2ecc71");
+		expect(svg).toContain("#46C46E");
 		expect(svg).toContain("<circle");
-		expect(svg).not.toContain("#e74c3c");
+		expect(svg).not.toContain("#E5484D");
 	});
 	it("none shows a red X badge", () => {
 		const svg = buildOpenFileImage("none");
-		expect(svg).toContain("#e74c3c");
+		expect(svg).toContain("#E5484D");
 		expect(svg).toContain("<circle");
 	});
 	it("plain has no badge circle", () => {

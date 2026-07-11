@@ -71,31 +71,37 @@ export function nextIndex(len: number, cursor: number): number {
 }
 
 /**
- * Build the 72×72 key image: a stacked-windows glyph, the window count, and a
- * ring that turns green when the current frontmost window is in the list. Pass
- * `badge: "removed"` to overlay a transient red "−" used as removal feedback.
+ * Build the 72×72 key image on the shared design system (ink ground, azure
+ * family, jack-line): the ring itself carries the state — a solid azure
+ * circle when the frontmost window is in the list, a muted dotted one when
+ * not (matching the action's static icon) — with the window pair and count
+ * inside. Pass `badge: "removed"` to overlay a transient red "−" used as
+ * removal feedback. Hex colours only: the key rasterizer paints hsl() black.
  */
 export function buildRingImage(
 	count: number,
 	currentInList: boolean,
 	badge?: "removed",
 ): string {
-	const ring = currentInList ? "#2ecc71" : "#5a5a5e";
+	const ring = currentInList
+		? `stroke="#4E9CFF"`
+		: `stroke="#5A615E" stroke-dasharray="1 6" stroke-linecap="round"`;
 	const label = String(count);
-	const fontSize = label.length > 1 ? 24 : 28;
+	const fontSize = label.length > 1 ? 17 : 20;
 	const removed =
 		badge === "removed"
-			? `<circle cx="54" cy="19" r="13" fill="#e74c3c" stroke="#1d1d1f" stroke-width="2"/>` +
-				`<path d="M47 19h14" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>`
+			? `<circle cx="54" cy="18" r="12" fill="#E5484D" stroke="#0F1211" stroke-width="2"/>` +
+				`<path d="M48 18h12" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/>`
 			: "";
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
-		`<rect width="72" height="72" rx="12" fill="#1d1d1f"/>` +
-		`<rect x="4" y="4" width="64" height="64" rx="10" fill="none" stroke="${ring}" stroke-width="4"/>` +
-		`<rect x="20" y="14" width="24" height="18" rx="3" fill="#3a3a3c" stroke="#7a7a7e" stroke-width="2"/>` +
-		`<rect x="28" y="22" width="24" height="18" rx="3" fill="#0a84ff" stroke="#3aa0ff" stroke-width="2"/>` +
-		`<text x="36" y="${round(60)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
-		`font-size="${fontSize}" font-weight="700" fill="#ffffff">${label}</text>` +
+		`<rect width="72" height="72" fill="#0F1211"/>` +
+		`<rect x="8" y="62.5" width="56" height="3.5" rx="1.75" fill="#4E9CFF" opacity="0.95"/>` +
+		`<circle cx="36" cy="31" r="23" fill="none" stroke-width="3" ${ring}/>` +
+		`<rect x="24" y="16" width="20" height="14" rx="2" fill="#0F1211" stroke="#8B9490" stroke-width="2.5"/>` +
+		`<rect x="30" y="23" width="20" height="14" rx="2" fill="#4E9CFF"/>` +
+		`<text x="36" y="${round(53)}" text-anchor="middle" font-family="Menlo, Monaco, monospace" ` +
+		`font-size="${fontSize}" font-weight="700" fill="#F2FFF6">${label}</text>` +
 		removed +
 		`</svg>`
 	);

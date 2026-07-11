@@ -94,27 +94,30 @@ describe("nextIndex", () => {
 });
 
 describe("buildRingImage", () => {
-	it("shows the count and a green ring when the current window is in the list", () => {
+	it("shows the count and a solid azure ring when the current window is in the list", () => {
 		const svg = buildRingImage(3, true);
 		expect(svg).toContain(">3<");
-		expect(svg).toContain("#2ecc71");
+		expect(svg).toContain('stroke="#4E9CFF"');
+		expect(svg).not.toContain("stroke-dasharray");
 	});
-	it("uses a grey ring when the current window is not in the list", () => {
+	it("uses a muted dotted ring when the current window is not in the list", () => {
 		const svg = buildRingImage(0, false);
 		expect(svg).toContain(">0<");
-		expect(svg).toContain("#5a5a5e");
-		expect(svg).not.toContain("#2ecc71");
+		expect(svg).toContain('stroke="#5A615E" stroke-dasharray');
 	});
 	it("overlays a red minus for the 'removed' badge", () => {
 		const svg = buildRingImage(2, false, "removed");
-		expect(svg).toContain("#e74c3c"); // red badge
+		expect(svg).toContain("#E5484D"); // red badge
 		expect(svg).toContain(">2<"); // shows the new count
 	});
 	it("has no red badge in the normal image", () => {
-		expect(buildRingImage(2, true)).not.toContain("#e74c3c");
+		expect(buildRingImage(2, true)).not.toContain("#E5484D");
+	});
+	it("emits no hsl() literal (the key rasterizer paints hsl black)", () => {
+		expect(buildRingImage(3, true)).not.toContain("hsl(");
 	});
 	it("uses a smaller font for two-digit counts", () => {
-		expect(buildRingImage(12, true)).toContain('font-size="24"');
-		expect(buildRingImage(3, true)).toContain('font-size="28"');
+		expect(buildRingImage(12, true)).toContain('font-size="17"');
+		expect(buildRingImage(3, true)).toContain('font-size="20"');
 	});
 });
