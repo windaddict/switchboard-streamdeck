@@ -107,8 +107,13 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   bound to the user-editable action title, so a plugin cannot change it at
   runtime (the `value` item updates fine; bit us on the App Windows mode label).
   For any plugin-driven text above the value line, use a CUSTOM layout with your
-  own item keys (`layouts/app-windows.json`, painted via `appWindowsFeedback`).
+  own item keys (`layouts/mode-dial.json`, painted via `*Feedback()` fns).
   A layout/manifest change needs a full Stream Deck quit + relaunch to take.
+- **`UserTitleEnabled: false` hides the Title FIELD but not a stored title.** A
+  title the user already typed keeps rendering over the key image (bit us on the
+  live tmux key face — it overlapped the status-bar cursor). To stop the title
+  being DRAWN, set `"ShowTitle": false` on the action's manifest State. Use both
+  for a fully plugin-owned key face.
 - **Layout (touchscreen) items must NOT overlap.** You can't layer text over a
   full-area pixmap. To draw text on a background, render everything in ONE SVG
   pixmap (`buildBackgroundSvg`) — see `mac/tmux-window.ts` + `layouts/tmux-window.json`.
