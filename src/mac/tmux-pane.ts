@@ -15,23 +15,32 @@ export function togglePaneDialMode(mode: PaneDialMode): PaneDialMode {
 }
 
 /**
- * tmux args to select the next/previous pane relative to the current one
- * (`-t +` / `-t -`). Wraps around within the current window.
+ * tmux args to select the next/previous pane. Untargeted (`-t +`) tmux acts on
+ * ITS notion of the current session — which may not be the one in the
+ * frontmost macOS window. Pass `session` to scope the move to that session's
+ * current window (`-t "sess:.+"`). Wraps around within the window.
  */
-export function selectPaneArgs(direction: Exclude<RotationDirection, "none">): string[] {
-	return ["select-pane", "-t", direction === "next" ? "+" : "-"];
+export function selectPaneArgs(
+	direction: Exclude<RotationDirection, "none">,
+	session?: string | null,
+): string[] {
+	const sign = direction === "next" ? "+" : "-";
+	return ["select-pane", "-t", session ? `${session}:.${sign}` : sign];
 }
 
+const PANE_STATUS_FORMAT = "#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}";
+
 /**
- * tmux args reading the current pane/window status for the touchscreen:
+ * tmux args reading the pane/window status for the touchscreen:
  * `command|paneIndex|paneCount|windowName` (window name LAST — it may itself
- * contain `|`, the other fields never do).
+ * contain `|`, the other fields never do). Scoped to `session` when given, for
+ * the same reason as {@link selectPaneArgs}.
  */
-export const PANE_STATUS_ARGS = [
-	"display-message",
-	"-p",
-	"#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
-];
+export function paneStatusArgs(session?: string | null): string[] {
+	return session
+		? ["display-message", "-p", "-t", session, PANE_STATUS_FORMAT]
+		: ["display-message", "-p", PANE_STATUS_FORMAT];
+}
 
 export type PaneStatus = {
 	command: string;

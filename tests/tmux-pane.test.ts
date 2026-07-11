@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	paneDialFeedback,
-	PANE_STATUS_ARGS,
+	paneStatusArgs,
 	parsePaneStatus,
 	selectPaneArgs,
 	togglePaneDialMode,
@@ -13,6 +13,13 @@ describe("selectPaneArgs", () => {
 	});
 	it("prev => select-pane -t -", () => {
 		expect(selectPaneArgs("prev")).toEqual(["select-pane", "-t", "-"]);
+	});
+	it("scopes to a session's current window when given (frontmost-window fix)", () => {
+		expect(selectPaneArgs("next", "dev")).toEqual(["select-pane", "-t", "dev:.+"]);
+		expect(selectPaneArgs("prev", "dev")).toEqual(["select-pane", "-t", "dev:.-"]);
+	});
+	it("null session falls back to the untargeted form", () => {
+		expect(selectPaneArgs("next", null)).toEqual(["select-pane", "-t", "+"]);
 	});
 });
 
@@ -44,10 +51,19 @@ describe("parsePaneStatus", () => {
 			windowName: "",
 		});
 	});
-	it("PANE_STATUS_ARGS asks for exactly those fields, window name last", () => {
-		expect(PANE_STATUS_ARGS).toEqual([
+	it("paneStatusArgs asks for exactly those fields, window name last", () => {
+		expect(paneStatusArgs()).toEqual([
 			"display-message",
 			"-p",
+			"#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
+		]);
+	});
+	it("paneStatusArgs scopes to a session when given", () => {
+		expect(paneStatusArgs("dev")).toEqual([
+			"display-message",
+			"-p",
+			"-t",
+			"dev",
 			"#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
 		]);
 	});

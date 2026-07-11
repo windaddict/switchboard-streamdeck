@@ -17,9 +17,17 @@ export function toggleScope(scope: TmuxScope): TmuxScope {
 	return scope === "session" ? "all" : "session";
 }
 
-/** tmux args to move to the next/previous window in the current session. */
-export function selectWindowDirArgs(direction: Exclude<RotationDirection, "none">): string[] {
-	return direction === "next" ? ["next-window"] : ["previous-window"];
+/**
+ * tmux args to move to the next/previous window. Untargeted, tmux acts on its
+ * own "current" session; pass `session` to scope to the session actually in
+ * the frontmost macOS window.
+ */
+export function selectWindowDirArgs(
+	direction: Exclude<RotationDirection, "none">,
+	session?: string | null,
+): string[] {
+	const base = direction === "next" ? ["next-window"] : ["previous-window"];
+	return session ? [...base, "-t", session] : base;
 }
 
 /** tmux args to toggle to the previously active window (push = back-and-forth). */

@@ -9121,6 +9121,19 @@ function parseClients(output) {
     return clients;
 }
 /**
+ * Reverse lookup on {@link parseClients}: which session is attached to the
+ * given client tty? Null for "" or an unknown tty.
+ */
+function sessionForTty(clients, tty) {
+    if (tty === "")
+        return null;
+    for (const [session, clientTty] of clients) {
+        if (clientTty === tty)
+            return session;
+    }
+    return null;
+}
+/**
  * Resolve a user-supplied target string to a single {@link TmuxWindow}.
  *
  * The target is trimmed first; an empty/whitespace-only target returns `null`.
@@ -9201,9 +9214,14 @@ function tmuxWindowValue(w) {
 function toggleScope(scope) {
     return scope === "session" ? "all" : "session";
 }
-/** tmux args to move to the next/previous window in the current session. */
-function selectWindowDirArgs(direction) {
-    return direction === "next" ? ["next-window"] : ["previous-window"];
+/**
+ * tmux args to move to the next/previous window. Untargeted, tmux acts on its
+ * own "current" session; pass `session` to scope to the session actually in
+ * the frontmost macOS window.
+ */
+function selectWindowDirArgs(direction, session) {
+    const base = direction === "next" ? ["next-window"] : ["previous-window"];
+    return session ? [...base, "-t", session] : base;
 }
 /** tmux args to toggle to the previously active window (push = back-and-forth). */
 const LAST_WINDOW_ARGS = ["last-window"];
@@ -10876,6 +10894,36 @@ let CycleTmuxWindow = (() => {
 })();
 
 /**
+ * Which tmux session is in the frontmost macOS window? Chains the probes the
+ * live tmux key faces already use: frontmost app (NSWorkspace JXA) → iTerm's
+ * focused-session tty (only queried when iTerm IS frontmost — addressing a
+ * non-running app via AppleScript would launch it) → tmux list-clients tty →
+ * session. Null when indeterminate (iTerm not frontmost, no tmux client on
+ * that tty, …); callers fall back to tmux's untargeted default.
+ *
+ * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
+ * pays it once, and you don't change macOS windows mid-burst.
+ */
+const TTL_MS = 2000;
+let cached = null;
+async function resolveFrontTmuxSession(tmuxPath) {
+    if (cached !== null && Date.now() - cached.at < TTL_MS) {
+        return cached.session;
+    }
+    let session = null;
+    const front = await runJxa(FRONT_APP_BUNDLE_JXA);
+    if (front.ok && front.stdout.trim() === ITERM_BUNDLE_ID) {
+        const [ttyRes, clientsRes] = await Promise.all([
+            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
+            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
+        ]);
+        session = sessionForTty(parseClients(clientsRes.stdout), ttyRes.stdout.trim());
+    }
+    cached = { session, at: Date.now() };
+    return session;
+}
+
+/**
  * Pure logic for the tmux pane dial: rotate to switch panes — or, after a
  * press/touch-tap toggles the mode, tmux windows — from one dial. All
  * functions are tmux-CLI-agnostic strings/args so they unit test without tmux.
@@ -10885,22 +10933,27 @@ function togglePaneDialMode(mode) {
     return mode === "panes" ? "windows" : "panes";
 }
 /**
- * tmux args to select the next/previous pane relative to the current one
- * (`-t +` / `-t -`). Wraps around within the current window.
+ * tmux args to select the next/previous pane. Untargeted (`-t +`) tmux acts on
+ * ITS notion of the current session — which may not be the one in the
+ * frontmost macOS window. Pass `session` to scope the move to that session's
+ * current window (`-t "sess:.+"`). Wraps around within the window.
  */
-function selectPaneArgs(direction) {
-    return ["select-pane", "-t", direction === "next" ? "+" : "-"];
+function selectPaneArgs(direction, session) {
+    const sign = direction === "next" ? "+" : "-";
+    return ["select-pane", "-t", session ? `${session}:.${sign}` : sign];
 }
+const PANE_STATUS_FORMAT = "#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}";
 /**
- * tmux args reading the current pane/window status for the touchscreen:
+ * tmux args reading the pane/window status for the touchscreen:
  * `command|paneIndex|paneCount|windowName` (window name LAST — it may itself
- * contain `|`, the other fields never do).
+ * contain `|`, the other fields never do). Scoped to `session` when given, for
+ * the same reason as {@link selectPaneArgs}.
  */
-const PANE_STATUS_ARGS = [
-    "display-message",
-    "-p",
-    "#{pane_current_command}|#{pane_index}|#{window_panes}|#{window_name}",
-];
+function paneStatusArgs(session) {
+    return session
+        ? ["display-message", "-p", "-t", session, PANE_STATUS_FORMAT]
+        : ["display-message", "-p", PANE_STATUS_FORMAT];
+}
 /** Parse {@link PANE_STATUS_ARGS} output; missing fields degrade to ""/0. */
 function parsePaneStatus(output) {
     const fields = output.trim().split("|");
@@ -10928,10 +10981,12 @@ function paneDialFeedback(mode, status) {
 
 /**
  * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
- * toggles the mode, tmux windows — from one dial. Operates on tmux's current
- * pane/window (no per-button config needed). The touchscreen shows the mode
- * and the current pane command (or window name). The mode is transient
- * per-dial memory, so every appearance starts in panes mode.
+ * toggles the mode, tmux windows. Every command is scoped to the tmux session
+ * shown in the FRONTMOST macOS window (falling back to tmux's default when
+ * that can't be determined), so the dial never drives a background terminal.
+ * The mode is stored in the button's settings and survives Stream Deck
+ * restarts. The touchscreen shows the mode and the current pane command (or
+ * window name) of the controlled session.
  */
 let TmuxPaneDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tmuxpane" })];
@@ -10948,50 +11003,49 @@ let TmuxPaneDial = (() => {
             if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
             __runInitializers(_classThis, _classExtraInitializers);
         }
-        modes = new Map();
         async onWillAppear(ev) {
             if (ev.action.isDial()) {
-                await this.refresh(ev.action);
+                await this.refresh(ev.action, ev.payload.settings.mode ?? "panes");
             }
         }
-        onWillDisappear(ev) {
-            this.modes.delete(ev.action.id);
-        }
         async onDialRotate(ev) {
+            const mode = ev.payload.settings.mode ?? "panes";
             const direction = rotationDirection(ev.payload.ticks);
             if (direction !== "none") {
-                const args = this.mode(ev.action.id) === "windows"
-                    ? selectWindowDirArgs(direction)
-                    : selectPaneArgs(direction);
-                const result = await runTmux(args, findTmuxPath());
+                const tmux = findTmuxPath();
+                const session = await resolveFrontTmuxSession(tmux);
+                const args = mode === "windows"
+                    ? selectWindowDirArgs(direction, session)
+                    : selectPaneArgs(direction, session);
+                const result = await runTmux(args, tmux);
                 if (!result.ok) {
                     streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
                 }
             }
-            await this.refresh(ev.action);
+            await this.refresh(ev.action, mode);
         }
         /** Press: toggle between switching panes and switching windows. */
         async onDialDown(ev) {
-            await this.toggle(ev.action);
+            await this.toggle(ev.action, ev.payload.settings);
         }
         /** Touch-tap: same toggle as press. */
         async onTouchTap(ev) {
-            await this.toggle(ev.action);
+            await this.toggle(ev.action, ev.payload.settings);
         }
-        mode(id) {
-            return this.modes.get(id) ?? "panes";
+        async toggle(dial, settings) {
+            const mode = togglePaneDialMode(settings.mode ?? "panes");
+            await dial.setSettings({ ...settings, mode });
+            await this.refresh(dial, mode);
         }
-        async toggle(dial) {
-            this.modes.set(dial.id, togglePaneDialMode(this.mode(dial.id)));
-            await this.refresh(dial);
-        }
-        /** Query the current pane/window and repaint the touchscreen. */
-        async refresh(dial) {
-            const result = await runTmux(PANE_STATUS_ARGS, findTmuxPath());
+        /** Query the controlled session's pane/window and repaint the touchscreen. */
+        async refresh(dial, mode) {
+            const tmux = findTmuxPath();
+            const session = await resolveFrontTmuxSession(tmux);
+            const result = await runTmux(paneStatusArgs(session), tmux);
             if (!result.ok)
                 return;
             try {
-                await dial.setFeedback(paneDialFeedback(this.mode(dial.id), parsePaneStatus(result.stdout)));
+                await dial.setFeedback(paneDialFeedback(mode, parsePaneStatus(result.stdout)));
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);

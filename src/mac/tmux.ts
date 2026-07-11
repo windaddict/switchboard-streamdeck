@@ -86,6 +86,18 @@ export function parseClients(output: string): Map<string, string> {
 }
 
 /**
+ * Reverse lookup on {@link parseClients}: which session is attached to the
+ * given client tty? Null for "" or an unknown tty.
+ */
+export function sessionForTty(clients: Map<string, string>, tty: string): string | null {
+	if (tty === "") return null;
+	for (const [session, clientTty] of clients) {
+		if (clientTty === tty) return session;
+	}
+	return null;
+}
+
+/**
  * Resolve a user-supplied target string to a single {@link TmuxWindow}.
  *
  * The target is trimmed first; an empty/whitespace-only target returns `null`.

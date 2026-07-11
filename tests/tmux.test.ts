@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
 	parseWindows,
 	parseClients,
+	sessionForTty,
 	resolveTarget,
 	selectWindowArgs,
 	tmuxWindowLabel,
@@ -171,5 +172,21 @@ describe("selectWindowArgs / labels / values", () => {
 
 	it("tmuxWindowValue formats a stable value", () => {
 		expect(tmuxWindowValue(window)).toBe("dev:movingavg");
+	});
+});
+
+describe("sessionForTty", () => {
+	const clients = new Map([
+		["dev", "/dev/ttys007"],
+		["ops", "/dev/ttys011"],
+	]);
+	it("finds the session attached to a tty", () => {
+		expect(sessionForTty(clients, "/dev/ttys011")).toBe("ops");
+	});
+	it("null for an unknown tty", () => {
+		expect(sessionForTty(clients, "/dev/ttys099")).toBeNull();
+	});
+	it("null for an empty tty (never match a session with no client)", () => {
+		expect(sessionForTty(clients, "")).toBeNull();
 	});
 });

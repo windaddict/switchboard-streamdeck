@@ -23,6 +23,10 @@ describe("window dial args", () => {
 		expect(selectWindowDirArgs("next")).toEqual(["next-window"]);
 		expect(selectWindowDirArgs("prev")).toEqual(["previous-window"]);
 	});
+	it("selectWindowDirArgs scopes to a session when given (frontmost-window fix)", () => {
+		expect(selectWindowDirArgs("next", "dev")).toEqual(["next-window", "-t", "dev"]);
+		expect(selectWindowDirArgs("prev", null)).toEqual(["previous-window"]);
+	});
 	it("constant args are correct", () => {
 		expect(LAST_WINDOW_ARGS).toEqual(["last-window"]);
 		expect(CURRENT_WINDOW_ARGS).toEqual([
