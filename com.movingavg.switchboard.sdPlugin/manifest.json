@@ -1,7 +1,7 @@
 {
 	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
 	"Name": "Switchboard",
-	"Version": "1.2.0.0",
+	"Version": "1.2.1.0",
 	"Author": "Moving Average Labs",
 	"Description": "Switchboard — an operator's control surface for macOS: jump to Safari tabs (multi-account Gmail/Calendar, custom, private), scroll and switch windows and apps, drive tmux windows/panes, cycle BBEdit documents, and open the right file from a folder.",
 	"Category": "Switchboard",
