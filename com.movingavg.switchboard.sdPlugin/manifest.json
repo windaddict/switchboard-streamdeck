@@ -94,7 +94,8 @@
 					"Image": "imgs/actions/tmux/key",
 					"TitleAlignment": "bottom"
 				}
-			]
+			],
+			"UserTitleEnabled": false
 		},
 		{
 			"Name": "Switch tmux Pane",
