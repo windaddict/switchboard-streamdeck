@@ -31,7 +31,8 @@ import {
 	LIST_WINDOWS_ARGS,
 	runTmux,
 } from "../mac/tmux-runner.js";
-import { captureTmuxTarget, CURRENT_WINDOW_ARGS, parseCurrentWindow } from "../mac/tmux-window.js";
+import { invalidateFrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
+import { captureTmuxTarget, currentWindowArgs, parseCurrentWindow } from "../mac/tmux-window.js";
 
 type FocusTmuxSettings = {
 	/** Target window as "session:name" (from the dropdown) or a bare name. */
@@ -59,6 +60,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	private timer?: ReturnType<typeof setInterval>;
 	private refreshing = false;
 	private spin = 0; // poll tick counter — rotates the working spark
+	private readonly lastImage = new Map<string, string>(); // skip identical repaints
 
 	override async onWillAppear(ev: WillAppearEvent<FocusTmuxSettings>): Promise<void> {
 		if (!ev.action.isKey()) return;
@@ -85,6 +87,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	override onWillDisappear(ev: WillDisappearEvent<FocusTmuxSettings>): void {
 		this.gate.cancel(ev.action.id);
 		this.visible.delete(ev.action.id);
+		this.lastImage.delete(ev.action.id);
 		if (this.visible.size === 0 && this.timer !== undefined) {
 			clearInterval(this.timer);
 			this.timer = undefined;
@@ -131,8 +134,11 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					status.state === "unknown"
 						? "none"
 						: claudeStateForWindow(panes, status.session, status.window);
+				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
+				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip
 				try {
-					await key.setImage(svgToDataUri(buildTmuxKeyImage(status, claude, this.spin)));
+					await key.setImage(image);
+					this.lastImage.set(key.id, image);
 				} catch (err) {
 					streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
 				}
@@ -174,23 +180,49 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		const raiseScript = tty ? buildITermRaiseScript(tty) : 'tell application "iTerm" to activate';
 		const raise = await runAppleScript(raiseScript);
 		if (!raise.ok) {
+			// A hard failure (permission denied, script error) must not paint ✓.
 			streamDeck.logger.error(`iTerm raise failed (${raise.code}): ${raise.stderr}`);
-		} else if (raise.stdout.includes("notfound")) {
+			await key.showAlert();
+			return;
+		}
+		if (raise.stdout.includes("notfound")) {
+			// Documented fallback: no iTerm session on that tty — iTerm was
+			// activated, which is the best available outcome, so still ✓.
 			streamDeck.logger.debug(`No iTerm session on tty ${tty ?? "?"}; activated iTerm only.`);
 		}
 
 		// Optionally switch tmux to the exact window (default on).
 		if (settings.switchWindow !== false) {
-			await runTmux(selectWindowArgs(match), tmux);
+			const selected = await runTmux(selectWindowArgs(match), tmux);
+			if (!selected.ok) {
+				streamDeck.logger.error(`tmux select-window failed: ${selected.stderr || "no server?"}`);
+				await key.showAlert();
+				return;
+			}
 		}
 
 		await key.showOk();
 		await this.refreshAll(); // the press changed focus — flip the dots now
 	}
 
-	/** Long press: capture the current tmux window into this button. */
+	/**
+	 * Long press: capture the current tmux window into this button — the window
+	 * of the session in the FRONTMOST macOS window (an untargeted query asks
+	 * tmux for ITS current window, which can belong to a background terminal —
+	 * the same wrong-session trap the dials had).
+	 */
 	private async capture(key: KeyAction<FocusTmuxSettings>): Promise<void> {
-		const result = await runTmux(CURRENT_WINDOW_ARGS, findTmuxPath());
+		const tmux = findTmuxPath();
+		// Capture is an explicit "what is front RIGHT NOW" — a poll-aged cache
+		// entry (up to 2s old) could name the previous session. Probe fresh.
+		invalidateFrontTmux();
+		const front = await resolveFrontTmux(tmux);
+		if (front === null) {
+			streamDeck.logger.warn("Focus tmux capture: iTerm/tmux is not the frontmost window.");
+			await key.showAlert();
+			return;
+		}
+		const result = await runTmux(currentWindowArgs(front.session), tmux);
 		const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
 		if (target === "") {
 			streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);

@@ -11,7 +11,7 @@ import {
 } from "../src/mac/tmux.js";
 
 const WINDOWS_FIXTURE =
-	"apps|1|copybug|0\napps|2|metronome|1\napps|3|passages|0\ndev|1|ea-system|1\ndev|2|movingavg|0\ndev|3|medtech|0\n";
+	"apps|1|0|copybug\napps|2|1|metronome\napps|3|0|passages\ndev|1|1|ea-system\ndev|2|0|movingavg\ndev|3|0|medtech\n";
 
 const CLIENTS_FIXTURE = "/dev/ttys000|dev\n/dev/ttys007|apps\n";
 
@@ -42,9 +42,13 @@ describe("parseWindows", () => {
 		expect(windows[0].index).toBe(1);
 	});
 
+	it("keeps a pipe in the window name (name is the LAST field, joined)", () => {
+		const windows = parseWindows("dev|4|1|api|logs\n");
+		expect(windows).toEqual([{ session: "dev", index: 4, name: "api|logs", active: true }]);
+	});
 	it("skips blank and short (<4 field) lines", () => {
 		const input =
-			"apps|1|copybug|0\n\n   \nbad|line\ndev|2|movingavg|0\n";
+			"apps|1|0|copybug\n\n   \nbad|line\ndev|2|0|movingavg\n";
 		const windows = parseWindows(input);
 		expect(windows).toHaveLength(2);
 		expect(windows.map((w) => w.name)).toEqual(["copybug", "movingavg"]);

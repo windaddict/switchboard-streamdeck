@@ -32,7 +32,7 @@ describe("window dial args", () => {
 		expect(CURRENT_WINDOW_ARGS).toEqual([
 			"display-message",
 			"-p",
-			"#{session_name}|#{window_name}|#{window_index}",
+			"#{session_name}|#{window_index}|#{window_name}",
 		]);
 		expect(windowFlagsArgs()).toEqual(["list-windows", "-F", "#{window_active}"]);
 	});
@@ -43,19 +43,22 @@ describe("window dial args", () => {
 			"-p",
 			"-t",
 			"dev",
-			"#{session_name}|#{window_name}|#{window_index}",
+			"#{session_name}|#{window_index}|#{window_name}",
 		]);
 		expect(windowFlagsArgs("dev")).toEqual(["list-windows", "-F", "#{window_active}", "-t", "dev"]);
 	});
 });
 
 describe("parseCurrentWindow", () => {
-	it("parses session|name|index", () => {
-		expect(parseCurrentWindow("dev|movingavg|2\n")).toEqual({
+	it("parses session|index|name (name last)", () => {
+		expect(parseCurrentWindow("dev|2|movingavg\n")).toEqual({
 			session: "dev",
 			name: "movingavg",
 			index: 2,
 		});
+	});
+	it("keeps a pipe in the window name (joined tail)", () => {
+		expect(parseCurrentWindow("dev|4|api|logs").name).toBe("api|logs");
 	});
 	it("defaults a missing/invalid index to 0", () => {
 		expect(parseCurrentWindow("dev|w").index).toBe(0);

@@ -113,42 +113,36 @@ return "ok"`;
  *
  * Safety: rather than a fixed `delay` then blindly writing `front document`
  * (which, if the private window opened slowly, would navigate the user's CURRENT
- * tab), we record the front document's URL first, then poll until it changes —
- * meaning a new window actually became frontmost. We only set the URL once a new
- * window appears (or when there was nothing to protect), so a slow ⌘⇧N can never
- * clobber an existing tab.
+ * tab), we count windows first and poll until the count INCREASES — the only
+ * reliable sign the new window exists (a URL-change proxy fails when the new
+ * window's start page has the same URL as the previous front tab). Only then is
+ * the URL set, on the now-frontmost new window. A timeout RAISES an
+ * AppleScript error — osascript then exits non-zero, which is the only signal
+ * runAppleScript's ok/callers actually honour (a returned "error:…" string
+ * would be treated as success).
  */
 function buildPrivateScript(t: ResolvedTarget): string {
 	const url = escapeForAppleScript(t.url);
 	return `tell application "Safari"
 	activate
-	try
-		set prevURL to (URL of front document)
-	on error
-		set prevURL to ""
-	end try
+	set prevCount to (count of windows)
 end tell
 tell application "System Events"
 	keystroke "n" using {command down, shift down}
 end tell
 tell application "Safari"
 	set waited to 0
-	set newURL to prevURL
-	repeat until (newURL is not prevURL) or (waited > 40)
+	repeat until ((count of windows) > prevCount) or (waited > 40)
 		delay 0.05
 		set waited to waited + 1
-		try
-			set newURL to (URL of front document)
-		on error
-			set newURL to prevURL
-		end try
 	end repeat
-	if (newURL is not prevURL) or (prevURL is "") then
+	if (count of windows) > prevCount then
 		set URL of front document to "${url}"
 		activate
+		return "ok"
 	end if
 end tell
-return "ok"`;
+error "private window did not open"`;
 }
 
 /** Build the AppleScript for a resolved target (private or normal). */

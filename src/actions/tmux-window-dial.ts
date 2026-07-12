@@ -10,7 +10,8 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { type FrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
-import { rotationDirection } from "../mac/rotation.js";
+import { rotationSteps } from "../mac/rotation.js";
+import { serialize } from "../mac/serialize.js";
 import { parseWindows } from "../mac/tmux.js";
 import { findTmuxPath, LIST_WINDOWS_ARGS, runTmux } from "../mac/tmux-runner.js";
 import {
@@ -60,34 +61,37 @@ export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<TmuxWindowDialSettings>): Promise<void> {
-		const direction = rotationDirection(ev.payload.ticks);
+		const { direction, steps } = rotationSteps(ev.payload.ticks);
 		if (direction !== "none") {
-			const tmux = findTmuxPath();
-			const front = await resolveFrontTmux(tmux);
-			if (front === null) {
-				await this.refresh(ev.action);
-				return; // no tmux in the frontmost window — do nothing
-			}
-			if (this.scope(ev.action.id) === "all") {
-				const [list, current] = await Promise.all([
-					runTmux(LIST_WINDOWS_ARGS, tmux),
-					runTmux(currentWindowArgs(front.session), tmux),
-				]);
-				const target = list.ok
-					? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
-					: null;
-				if (target !== null) {
-					const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
-					if (!result.ok) {
-						streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+			// Serialized per dial, consuming the full tick count (see pane dial).
+			await serialize(ev.action.id, async () => {
+				const tmux = findTmuxPath();
+				const front = await resolveFrontTmux(tmux);
+				if (front === null) return; // no tmux in the frontmost window
+				for (let i = 0; i < steps; i++) {
+					if (this.scope(ev.action.id) === "all") {
+						const [list, current] = await Promise.all([
+							runTmux(LIST_WINDOWS_ARGS, tmux),
+							runTmux(currentWindowArgs(front.session), tmux),
+						]);
+						const target = list.ok
+							? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
+							: null;
+						if (target === null) return;
+						const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
+						if (!result.ok) {
+							streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+							return;
+						}
+					} else {
+						const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
+						if (!result.ok) {
+							streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+							return;
+						}
 					}
 				}
-			} else {
-				const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
-				if (!result.ok) {
-					streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
-				}
-			}
+			});
 		}
 		await this.refresh(ev.action);
 	}
@@ -128,7 +132,9 @@ export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 				runTmux(currentWindowArgs(front.session), tmux),
 				runTmux(all ? LIST_WINDOWS_ARGS : windowFlagsArgs(front.session), tmux),
 			]);
-			if (!current.ok) return;
+			// Keep the last good strip rather than painting a half-true one
+			// (e.g. dots missing) from a failed query.
+			if (!current.ok || !set.ok) return;
 			const parsed = parseCurrentWindow(current.stdout);
 			feedback = all
 				? buildAllWindowsFeedback(parseWindows(set.stdout), parsed)

@@ -27,17 +27,39 @@ export interface FrontTmux {
 const TTL_MS = 2000;
 
 let cached: { front: FrontTmux | null; at: number } | null = null;
+let inFlight: Promise<FrontTmux | null> | null = null;
+/** Bumped by invalidation; a probe may only publish to the cache if the
+ * generation it started under is still current — a stale probe finishing
+ * AFTER an invalidation must not resurrect pre-invalidation state. */
+let generation = 0;
 
-/** Drop the cache (tests / after actions that change focus themselves). */
+/** Drop the cache and orphan any in-flight probe (its result won't publish). */
 export function invalidateFrontTmux(): void {
+	generation++;
 	cached = null;
+	inFlight = null;
 }
 
-export async function resolveFrontTmux(tmuxPath: string): Promise<FrontTmux | null> {
+export function resolveFrontTmux(tmuxPath: string): Promise<FrontTmux | null> {
 	if (cached !== null && Date.now() - cached.at < TTL_MS) {
-		return cached.front;
+		return Promise.resolve(cached.front);
 	}
+	// Share one probe among concurrent callers (several dials rotating at
+	// once must not each launch their own JXA + AppleScript + tmux trio).
+	if (inFlight !== null) {
+		return inFlight;
+	}
+	const p = probe(tmuxPath, generation);
+	inFlight = p;
+	void p.finally(() => {
+		// Only clear our own reference — an orphaned probe's cleanup must not
+		// drop a NEWER in-flight probe and trigger duplicate probing.
+		if (inFlight === p) inFlight = null;
+	});
+	return p;
+}
 
+async function probe(tmuxPath: string, startedGeneration: number): Promise<FrontTmux | null> {
 	let front: FrontTmux | null = null;
 	const app = await runJxa(FRONT_APP_BUNDLE_JXA);
 	if (app.ok && app.stdout.trim() === ITERM_BUNDLE_ID) {
@@ -51,7 +73,8 @@ export async function resolveFrontTmux(tmuxPath: string): Promise<FrontTmux | nu
 			front = { session, tty };
 		}
 	}
-
-	cached = { front, at: Date.now() };
+	if (startedGeneration === generation) {
+		cached = { front, at: Date.now() };
+	}
 	return front;
 }

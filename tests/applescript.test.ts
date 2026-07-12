@@ -72,10 +72,16 @@ describe("buildJumpScript — private", () => {
 	it("does NOT contain the open location fallback", () => {
 		expect(script).not.toContain("open location");
 	});
-	it("guards against clobbering the current tab (records prevURL, polls, conditional set)", () => {
-		expect(script).toContain("set prevURL to (URL of front document)");
-		expect(script).toContain("repeat until (newURL is not prevURL)");
-		expect(script).toContain("if (newURL is not prevURL) or (prevURL is \"\") then");
+	it("guards against clobbering the current tab (counts windows, sets URL only after a NEW one exists)", () => {
+		// A URL-change proxy fails when the new window's start page matches the
+		// old front tab — the window COUNT increasing is the reliable signal.
+		expect(script).toContain("set prevCount to (count of windows)");
+		expect(script).toContain("repeat until ((count of windows) > prevCount)");
+		expect(script).toContain('if (count of windows) > prevCount then');
+	});
+	it("RAISES on timeout — osascript must exit non-zero (a returned string reads as success)", () => {
+		expect(script).toContain('error "private window did not open"');
+		expect(script).not.toContain('return "error');
 	});
 });
 

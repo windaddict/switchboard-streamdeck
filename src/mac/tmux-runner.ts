@@ -14,12 +14,14 @@ export function findTmuxPath(exists: (p: string) => boolean = nodeExistsSync): s
 	return TMUX_CANDIDATES.find(exists) ?? "tmux";
 }
 
-/** tmux args that emit one window per line as `session|index|name|active`. */
+/** tmux args that emit one window per line as `session|index|active|name`.
+ * The NAME is last: window names may legally contain `|`, so every fixed-width
+ * field comes first and the parser joins the remainder back into the name. */
 export const LIST_WINDOWS_ARGS = [
 	"list-windows",
 	"-a",
 	"-F",
-	"#{session_name}|#{window_index}|#{window_name}|#{window_active}",
+	"#{session_name}|#{window_index}|#{window_active}|#{window_name}",
 ];
 
 /** tmux args that emit one client per line as `tty|session`. */

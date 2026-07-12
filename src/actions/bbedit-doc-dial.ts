@@ -20,7 +20,8 @@ import {
 	orderedDocs,
 	parseBBEditDocs,
 } from "../mac/bbedit.js";
-import { rotationDirection } from "../mac/rotation.js";
+import { rotationSteps } from "../mac/rotation.js";
+import { serialize } from "../mac/serialize.js";
 
 type BBEditDocSettings = {
 	/** How the dial traverses documents. Defaults to "window" (natural order). */
@@ -50,21 +51,29 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<BBEditDocSettings>): Promise<void> {
-		const direction = rotationDirection(ev.payload.ticks);
+		const { direction, steps } = rotationSteps(ev.payload.ticks);
 		if (direction === "none") return;
 
-		const state = await this.readDocs(ev.action);
-		if (state === null) return;
-		const tracker = this.tracker(ev.action.id);
-		tracker.note(state.activeId); // catch changes made in BBEdit itself
+		// Serialized per dial: two overlapping list→select sequences would both
+		// read the same active doc and collapse two detents into one move.
+		await serialize(ev.action.id, async () => {
+			const state = await this.readDocs(ev.action);
+			if (state === null) return;
+			const tracker = this.tracker(ev.action.id);
+			tracker.note(state.activeId); // catch changes made in BBEdit itself
 
-		const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
-		const targetId = nextDocId(ordered, state.activeId, direction);
-		if (targetId === null) {
-			await this.render(ev.action, "no docs");
-			return;
-		}
-		await this.select(ev.action, targetId, tracker);
+			const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
+			let activeId = state.activeId;
+			for (let i = 0; i < steps; i++) {
+				const targetId = nextDocId(ordered, activeId, direction);
+				if (targetId === null) {
+					await this.render(ev.action, "no docs");
+					return;
+				}
+				await this.select(ev.action, targetId, tracker);
+				activeId = targetId;
+			}
+		});
 	}
 
 	/** Press: jump back to the previously active document. */

@@ -9,7 +9,8 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { resolveFrontTmux } from "../mac/front-tmux.js";
-import { rotationDirection } from "../mac/rotation.js";
+import { rotationSteps } from "../mac/rotation.js";
+import { serialize } from "../mac/serialize.js";
 import {
 	type PaneDialMode,
 	paneDialFeedback,
@@ -44,26 +45,33 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<TmuxPaneSettings>): Promise<void> {
-		const mode = ev.payload.settings.mode ?? "panes";
-		const direction = rotationDirection(ev.payload.ticks);
-		if (direction !== "none") {
+		const { direction, steps } = rotationSteps(ev.payload.ticks);
+		let mode: PaneDialMode = "panes";
+		// Serialized per dial and consuming the full tick count: fast spins
+		// arrive as one event with |ticks| > 1 and overlapping handlers would
+		// otherwise reorder the moves. The mode is read FRESH inside the
+		// critical section — the event snapshot could predate a queued toggle.
+		await serialize(ev.action.id, async () => {
+			mode = (await ev.action.getSettings()).mode ?? "panes";
+			if (direction === "none") return;
 			const tmux = findTmuxPath();
 			const front = await resolveFrontTmux(tmux);
-			if (front === null) {
-				await this.refresh(ev.action, mode);
-				return; // no tmux in the frontmost window — do nothing
-			}
+			if (front === null) return; // no tmux in the frontmost window
 			const args =
 				mode === "windows"
 					? selectWindowDirArgs(direction, front.session)
 					: selectPaneArgs(direction, front.session);
-			const result = await runTmux(args, tmux);
-			if (!result.ok) {
-				streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+			for (let i = 0; i < steps; i++) {
+				const result = await runTmux(args, tmux);
+				if (!result.ok) {
+					streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+					return;
+				}
 			}
-		}
+		});
 		await this.refresh(ev.action, mode);
 	}
+
 
 	/** Press: toggle between switching panes and switching windows. */
 	override async onDialDown(ev: DialDownEvent<TmuxPaneSettings>): Promise<void> {
@@ -77,11 +85,16 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 
 	private async toggle(
 		dial: DialAction<TmuxPaneSettings>,
-		settings: TmuxPaneSettings,
+		_settings: TmuxPaneSettings,
 	): Promise<void> {
-		const mode = togglePaneDialMode(settings.mode ?? "panes");
-		await dial.setSettings({ ...settings, mode });
-		await this.refresh(dial, mode);
+		// Serialized with rotations, reading fresh settings — an event-snapshot
+		// read-modify-write could race a queued rotation's view of the mode.
+		await serialize(dial.id, async () => {
+			const settings = await dial.getSettings();
+			const mode = togglePaneDialMode(settings.mode ?? "panes");
+			await dial.setSettings({ ...settings, mode });
+			await this.refresh(dial, mode);
+		});
 	}
 
 	/** Repaint from the controlled session's state; a dash when there is none. */

@@ -21,6 +21,7 @@ export function axcheckHelperPath(baseUrl: string): string {
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
+	options: { timeout?: number },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
 
@@ -31,7 +32,7 @@ export function checkAccessibility(
 ): Promise<boolean> {
 	const bin = axcheckHelperPath(baseUrl);
 	return new Promise((resolve) => {
-		exec(bin, [], (_error, stdout) => {
+		exec(bin, [], { timeout: 4000 }, (_error, stdout) => {
 			// Only a definitive "untrusted" raises the warning; anything else
 			// (trusted, error, missing helper) is treated as granted to avoid
 			// false positives on installs without the helper.

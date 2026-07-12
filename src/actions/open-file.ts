@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -78,7 +78,7 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 			return;
 		}
 
-		const entries = this.list(dir);
+		const entries = await this.list(dir);
 		if (entries === null) {
 			streamDeck.logger.error(`Open File: cannot read directory "${dir}".`);
 			await ev.action.showAlert();
@@ -99,15 +99,35 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 		await this.updateStatus(ev.action, settings);
 	}
 
-	/** Read a directory into file entries with timestamps, or null on error. */
-	private list(dir: string): FileEntry[] | null {
+	/**
+	 * Read a directory into file entries with timestamps, or null on error.
+	 * Fully async: this plugin is ONE process serving every key and dial, and a
+	 * slow/network/huge directory scanned synchronously would freeze all of
+	 * them (it polls every 10s). Stat failures on individual files (deleted
+	 * mid-scan) are skipped rather than failing the listing.
+	 */
+	private async list(dir: string): Promise<FileEntry[] | null> {
 		try {
-			return readdirSync(dir, { withFileTypes: true })
-				.filter((d) => d.isFile())
-				.map((d) => {
-					const st = statSync(join(dir, d.name));
-					return { name: d.name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs };
-				});
+			const dirents = await readdir(dir, { withFileTypes: true });
+			const names = dirents.filter((d) => d.isFile()).map((d) => d.name);
+			const entries: FileEntry[] = [];
+			// Bounded batches: a huge directory must not open thousands of
+			// simultaneous stat operations (descriptor pressure).
+			const BATCH = 64;
+			for (let i = 0; i < names.length; i += BATCH) {
+				const batch = await Promise.all(
+					names.slice(i, i + BATCH).map(async (name) => {
+						try {
+							const st = await stat(join(dir, name));
+							return { name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs };
+						} catch {
+							return null; // deleted mid-scan
+						}
+					}),
+				);
+				for (const e of batch) if (e !== null) entries.push(e);
+			}
+			return entries;
 		} catch {
 			return null;
 		}
@@ -115,7 +135,7 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 
 	private open(args: string[]): Promise<boolean> {
 		return new Promise((resolve) => {
-			execFile("/usr/bin/open", args, (err) => resolve(!err));
+			execFile("/usr/bin/open", args, { timeout: 10_000 }, (err) => resolve(!err));
 		});
 	}
 
@@ -139,7 +159,7 @@ export class OpenFile extends SingletonAction<OpenFileSettings> {
 			const dir = expandHome((settings.directory ?? "").trim(), homedir());
 			let status: FileStatus = "none";
 			if (dir) {
-				const entries = this.list(dir);
+				const entries = await this.list(dir);
 				const hit = entries && selectFile(entries, settings.pattern ?? "*", settings.pick ?? "modified");
 				status = hit ? "match" : "none";
 			}

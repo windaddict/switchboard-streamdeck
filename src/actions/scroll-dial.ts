@@ -47,6 +47,9 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		// One proportional scroll-wheel event via the native helper — no keystroke
 		// spam, so the line count actually scales and there is no per-press lag.
 		const result = await runScroll(lines, import.meta.url);
+		if (!result.ok) {
+			streamDeck.logger.error("Scroll helper failed to run (missing/blocked binary?).");
+		}
 		if (!result.trusted) {
 			streamDeck.logger.error(
 				"Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +

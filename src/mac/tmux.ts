@@ -19,14 +19,12 @@ export interface TmuxWindow {
 
 /**
  * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_name}|#{window_active}"
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_name}"
  *
- * Each non-blank line is split on `|` into exactly four fields:
- * `session | index | name | active`. `active` is `true` only for the literal
- * string `"1"`; anything else is `false`. `index` is parsed as a number.
- *
- * Blank lines and lines with fewer than four `|`-separated fields are skipped.
- * Window names never contain `|` (tmux uses it only as our separator here).
+ * Each non-blank line is split on `|`: `session | index | active | name…`.
+ * The window NAME is the LAST field and may itself contain `|` — the fixed
+ * fields come first and the remainder is joined back into the name. `active`
+ * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
  */
 export function parseWindows(output: string): TmuxWindow[] {
 	const windows: TmuxWindow[] = [];
@@ -42,11 +40,11 @@ export function parseWindows(output: string): TmuxWindow[] {
 			continue;
 		}
 
-		const [session, index, name, active] = fields;
+		const [session, index, active] = fields;
 		windows.push({
 			session,
 			index: Number(index),
-			name,
+			name: fields.slice(3).join("|"),
 			active: active === "1",
 		});
 	}

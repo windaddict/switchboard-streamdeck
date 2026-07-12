@@ -11,9 +11,10 @@ import require$$0$1 from 'buffer';
 import require$$2 from 'util';
 import path, { join } from 'node:path';
 import { cwd } from 'node:process';
-import fs, { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import fs, { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
 /**!
@@ -8525,6 +8526,13 @@ function rotationDirection(ticks) {
         return "prev";
     return "none";
 }
+/** A rotation as direction + how many detents to apply. Fast spins arrive as
+ * one event with |ticks| > 1; collapsing them to a single step loses motion.
+ * Steps are capped so a wild spin can't queue a subprocess storm. */
+function rotationSteps(ticks) {
+    const t = Math.trunc(ticks);
+    return { direction: rotationDirection(t), steps: Math.min(Math.abs(t), 5) };
+}
 
 /**
  * Queries macOS Accessibility (AX) trust via the native `axcheck` helper, so
@@ -8544,7 +8552,7 @@ function axcheckHelperPath(baseUrl) {
 function checkAccessibility(baseUrl, exec = execFile) {
     const bin = axcheckHelperPath(baseUrl);
     return new Promise((resolve) => {
-        exec(bin, [], (_error, stdout) => {
+        exec(bin, [], { timeout: 4000 }, (_error, stdout) => {
             // Only a definitive "untrusted" raises the warning; anything else
             // (trusted, error, missing helper) is treated as granted to avoid
             // false positives on installs without the helper.
@@ -8808,6 +8816,35 @@ end tell`;
 }
 
 /**
+ * Per-key async mutex: chains tasks for the same key so read-modify-write
+ * handlers (dial rotations that persist a cursor, run a subprocess, then
+ * render) can't interleave. Stream Deck delivers events serially, but async
+ * handlers overlap at their await points — two rotations could both read the
+ * same settings index and both write index+1. Tasks for DIFFERENT keys run
+ * concurrently; a rejected task never breaks the chain.
+ *
+ * The map is self-cleaning: when a key's chain fully settles it removes its
+ * own entry (only if it is still the tail). There is deliberately no external
+ * "release" — deleting a live chain would let a new event run concurrently
+ * with an in-flight task, recreating the exact race this exists to prevent.
+ */
+const chains = new Map();
+function serialize(key, task) {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    let entry;
+    entry = next.then(() => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    }, () => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    });
+    chains.set(key, entry);
+    return next;
+}
+
+/**
  * Dial action: move between the text documents open in BBEdit's front window,
  * in the order chosen in the property inspector. Press jumps back to the
  * previously active document (like tmux last-window). The touchscreen shows
@@ -8842,21 +8879,29 @@ let BBEditDocDial = (() => {
             this.trackers.delete(ev.action.id);
         }
         async onDialRotate(ev) {
-            const direction = rotationDirection(ev.payload.ticks);
+            const { direction, steps } = rotationSteps(ev.payload.ticks);
             if (direction === "none")
                 return;
-            const state = await this.readDocs(ev.action);
-            if (state === null)
-                return;
-            const tracker = this.tracker(ev.action.id);
-            tracker.note(state.activeId); // catch changes made in BBEdit itself
-            const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
-            const targetId = nextDocId(ordered, state.activeId, direction);
-            if (targetId === null) {
-                await this.render(ev.action, "no docs");
-                return;
-            }
-            await this.select(ev.action, targetId, tracker);
+            // Serialized per dial: two overlapping list→select sequences would both
+            // read the same active doc and collapse two detents into one move.
+            await serialize(ev.action.id, async () => {
+                const state = await this.readDocs(ev.action);
+                if (state === null)
+                    return;
+                const tracker = this.tracker(ev.action.id);
+                tracker.note(state.activeId); // catch changes made in BBEdit itself
+                const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
+                let activeId = state.activeId;
+                for (let i = 0; i < steps; i++) {
+                    const targetId = nextDocId(ordered, activeId, direction);
+                    if (targetId === null) {
+                        await this.render(ev.action, "no docs");
+                        return;
+                    }
+                    await this.select(ev.action, targetId, tracker);
+                    activeId = targetId;
+                }
+            });
         }
         /** Press: jump back to the previously active document. */
         async onDialDown(ev) {
@@ -9129,14 +9174,12 @@ function hslToHex(h, s, l) {
  */
 /**
  * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_name}|#{window_active}"
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_name}"
  *
- * Each non-blank line is split on `|` into exactly four fields:
- * `session | index | name | active`. `active` is `true` only for the literal
- * string `"1"`; anything else is `false`. `index` is parsed as a number.
- *
- * Blank lines and lines with fewer than four `|`-separated fields are skipped.
- * Window names never contain `|` (tmux uses it only as our separator here).
+ * Each non-blank line is split on `|`: `session | index | active | name…`.
+ * The window NAME is the LAST field and may itself contain `|` — the fixed
+ * fields come first and the remainder is joined back into the name. `active`
+ * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
  */
 function parseWindows(output) {
     const windows = [];
@@ -9149,11 +9192,11 @@ function parseWindows(output) {
         if (fields.length < 4) {
             continue;
         }
-        const [session, index, name, active] = fields;
+        const [session, index, active] = fields;
         windows.push({
             session,
             index: Number(index),
-            name,
+            name: fields.slice(3).join("|"),
             active: active === "1",
         });
     }
@@ -9327,9 +9370,8 @@ function switchToWindowArgs(w, clientTty) {
         ? ["switch-client", "-c", clientTty, ...target]
         : ["switch-client", ...target];
 }
-const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_name}|#{window_index}";
-/** tmux args reading the current window as `session|name|index`. */
-const CURRENT_WINDOW_ARGS = ["display-message", "-p", CURRENT_WINDOW_FORMAT];
+// Name LAST — window names may contain `|` (fixed fields first, name joined).
+const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_index}|#{window_name}";
 /** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
 function currentWindowArgs(session) {
     return ["display-message", "-p", "-t", session, CURRENT_WINDOW_FORMAT];
@@ -9340,10 +9382,14 @@ function windowFlagsArgs(session) {
     const base = ["list-windows", "-F", "#{window_active}"];
     return session ? [...base, "-t", session] : base;
 }
-/** Parse `session|name|index` into a {@link CurrentWindow}. */
+/** Parse `session|index|name…` (name last, may contain `|`). */
 function parseCurrentWindow(output) {
-    const [session = "", name = "", index = "0"] = output.trim().split("|");
-    return { session, name, index: Number.parseInt(index, 10) || 0 };
+    const fields = output.trim().split("|");
+    return {
+        session: fields[0] ?? "",
+        index: Number.parseInt(fields[1] ?? "", 10) || 0,
+        name: fields.slice(2).join("|"),
+    };
 }
 /**
  * "Teach the button": the Focus-tmux target string for a captured current
@@ -9570,12 +9616,14 @@ const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/
 function findTmuxPath(exists = existsSync) {
     return TMUX_CANDIDATES.find(exists) ?? "tmux";
 }
-/** tmux args that emit one window per line as `session|index|name|active`. */
+/** tmux args that emit one window per line as `session|index|active|name`.
+ * The NAME is last: window names may legally contain `|`, so every fixed-width
+ * field comes first and the parser joins the remainder back into the name. */
 const LIST_WINDOWS_ARGS = [
     "list-windows",
     "-a",
     "-F",
-    "#{session_name}|#{window_index}|#{window_name}|#{window_active}",
+    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
 ];
 /** tmux args that emit one client per line as `tty|session`. */
 const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
@@ -9590,6 +9638,70 @@ function runTmux(args, tmuxPath, exec = execFile) {
             });
         });
     });
+}
+
+/**
+ * Which tmux client/session is in the frontmost macOS window? Chains the
+ * probes the live tmux key faces already use: frontmost app (NSWorkspace JXA)
+ * → iTerm's focused-session tty (only queried when iTerm IS frontmost —
+ * addressing a non-running app via AppleScript would launch it) → tmux
+ * list-clients tty → session. Null when indeterminate (iTerm not frontmost,
+ * focused pane isn't a tmux client, …); the tmux dials treat null as
+ * "nothing to control" and do nothing rather than drive a background terminal.
+ *
+ * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
+ * pays it once, and you don't change macOS windows mid-burst.
+ */
+const TTL_MS = 2000;
+let cached = null;
+let inFlight = null;
+/** Bumped by invalidation; a probe may only publish to the cache if the
+ * generation it started under is still current — a stale probe finishing
+ * AFTER an invalidation must not resurrect pre-invalidation state. */
+let generation = 0;
+/** Drop the cache and orphan any in-flight probe (its result won't publish). */
+function invalidateFrontTmux() {
+    generation++;
+    cached = null;
+    inFlight = null;
+}
+function resolveFrontTmux(tmuxPath) {
+    if (cached !== null && Date.now() - cached.at < TTL_MS) {
+        return Promise.resolve(cached.front);
+    }
+    // Share one probe among concurrent callers (several dials rotating at
+    // once must not each launch their own JXA + AppleScript + tmux trio).
+    if (inFlight !== null) {
+        return inFlight;
+    }
+    const p = probe(tmuxPath, generation);
+    inFlight = p;
+    void p.finally(() => {
+        // Only clear our own reference — an orphaned probe's cleanup must not
+        // drop a NEWER in-flight probe and trigger duplicate probing.
+        if (inFlight === p)
+            inFlight = null;
+    });
+    return p;
+}
+async function probe(tmuxPath, startedGeneration) {
+    let front = null;
+    const app = await runJxa(FRONT_APP_BUNDLE_JXA);
+    if (app.ok && app.stdout.trim() === ITERM_BUNDLE_ID) {
+        const [ttyRes, clientsRes] = await Promise.all([
+            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
+            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
+        ]);
+        const tty = ttyRes.stdout.trim();
+        const session = sessionForTty(parseClients(clientsRes.stdout), tty);
+        if (session !== null) {
+            front = { session, tty };
+        }
+    }
+    if (startedGeneration === generation) {
+        cached = { front, at: Date.now() };
+    }
+    return front;
 }
 
 /** How often the key faces re-check the live focus state. */
@@ -9623,6 +9735,7 @@ let FocusTmuxWindow = (() => {
         timer;
         refreshing = false;
         spin = 0; // poll tick counter — rotates the working spark
+        lastImage = new Map(); // skip identical repaints
         async onWillAppear(ev) {
             if (!ev.action.isKey())
                 return;
@@ -9645,6 +9758,7 @@ let FocusTmuxWindow = (() => {
         onWillDisappear(ev) {
             this.gate.cancel(ev.action.id);
             this.visible.delete(ev.action.id);
+            this.lastImage.delete(ev.action.id);
             if (this.visible.size === 0 && this.timer !== undefined) {
                 clearInterval(this.timer);
                 this.timer = undefined;
@@ -9689,8 +9803,12 @@ let FocusTmuxWindow = (() => {
                     const claude = status.state === "unknown"
                         ? "none"
                         : claudeStateForWindow(panes, status.session, status.window);
+                    const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
+                    if (this.lastImage.get(key.id) === image)
+                        continue; // unchanged — save the round-trip
                     try {
-                        await key.setImage(svgToDataUri(buildTmuxKeyImage(status, claude, this.spin)));
+                        await key.setImage(image);
+                        this.lastImage.set(key.id, image);
                     }
                     catch (err) {
                         streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
@@ -9729,21 +9847,46 @@ let FocusTmuxWindow = (() => {
             const raiseScript = tty ? buildITermRaiseScript(tty) : 'tell application "iTerm" to activate';
             const raise = await runAppleScript(raiseScript);
             if (!raise.ok) {
+                // A hard failure (permission denied, script error) must not paint ✓.
                 streamDeck.logger.error(`iTerm raise failed (${raise.code}): ${raise.stderr}`);
+                await key.showAlert();
+                return;
             }
-            else if (raise.stdout.includes("notfound")) {
+            if (raise.stdout.includes("notfound")) {
+                // Documented fallback: no iTerm session on that tty — iTerm was
+                // activated, which is the best available outcome, so still ✓.
                 streamDeck.logger.debug(`No iTerm session on tty ${tty ?? "?"}; activated iTerm only.`);
             }
             // Optionally switch tmux to the exact window (default on).
             if (settings.switchWindow !== false) {
-                await runTmux(selectWindowArgs(match), tmux);
+                const selected = await runTmux(selectWindowArgs(match), tmux);
+                if (!selected.ok) {
+                    streamDeck.logger.error(`tmux select-window failed: ${selected.stderr || "no server?"}`);
+                    await key.showAlert();
+                    return;
+                }
             }
             await key.showOk();
             await this.refreshAll(); // the press changed focus — flip the dots now
         }
-        /** Long press: capture the current tmux window into this button. */
+        /**
+         * Long press: capture the current tmux window into this button — the window
+         * of the session in the FRONTMOST macOS window (an untargeted query asks
+         * tmux for ITS current window, which can belong to a background terminal —
+         * the same wrong-session trap the dials had).
+         */
         async capture(key) {
-            const result = await runTmux(CURRENT_WINDOW_ARGS, findTmuxPath());
+            const tmux = findTmuxPath();
+            // Capture is an explicit "what is front RIGHT NOW" — a poll-aged cache
+            // entry (up to 2s old) could name the previous session. Probe fresh.
+            invalidateFrontTmux();
+            const front = await resolveFrontTmux(tmux);
+            if (front === null) {
+                streamDeck.logger.warn("Focus tmux capture: iTerm/tmux is not the frontmost window.");
+                await key.showAlert();
+                return;
+            }
+            const result = await runTmux(currentWindowArgs(front.session), tmux);
             const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
             if (target === "") {
                 streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);
@@ -9878,42 +10021,36 @@ return "ok"`;
  *
  * Safety: rather than a fixed `delay` then blindly writing `front document`
  * (which, if the private window opened slowly, would navigate the user's CURRENT
- * tab), we record the front document's URL first, then poll until it changes —
- * meaning a new window actually became frontmost. We only set the URL once a new
- * window appears (or when there was nothing to protect), so a slow ⌘⇧N can never
- * clobber an existing tab.
+ * tab), we count windows first and poll until the count INCREASES — the only
+ * reliable sign the new window exists (a URL-change proxy fails when the new
+ * window's start page has the same URL as the previous front tab). Only then is
+ * the URL set, on the now-frontmost new window. A timeout RAISES an
+ * AppleScript error — osascript then exits non-zero, which is the only signal
+ * runAppleScript's ok/callers actually honour (a returned "error:…" string
+ * would be treated as success).
  */
 function buildPrivateScript(t) {
     const url = escapeForAppleScript(t.url);
     return `tell application "Safari"
 	activate
-	try
-		set prevURL to (URL of front document)
-	on error
-		set prevURL to ""
-	end try
+	set prevCount to (count of windows)
 end tell
 tell application "System Events"
 	keystroke "n" using {command down, shift down}
 end tell
 tell application "Safari"
 	set waited to 0
-	set newURL to prevURL
-	repeat until (newURL is not prevURL) or (waited > 40)
+	repeat until ((count of windows) > prevCount) or (waited > 40)
 		delay 0.05
 		set waited to waited + 1
-		try
-			set newURL to (URL of front document)
-		on error
-			set newURL to prevURL
-		end try
 	end repeat
-	if (newURL is not prevURL) or (prevURL is "") then
+	if (count of windows) > prevCount then
 		set URL of front document to "${url}"
 		activate
+		return "ok"
 	end if
 end tell
-return "ok"`;
+error "private window did not open"`;
 }
 /** Build the AppleScript for a resolved target (private or normal). */
 function buildJumpScript(t) {
@@ -10234,7 +10371,7 @@ let OpenFile = (() => {
                 await ev.action.showAlert();
                 return;
             }
-            const entries = this.list(dir);
+            const entries = await this.list(dir);
             if (entries === null) {
                 streamDeck.logger.error(`Open File: cannot read directory "${dir}".`);
                 await ev.action.showAlert();
@@ -10252,15 +10389,36 @@ let OpenFile = (() => {
             await (ok ? ev.action.showOk() : ev.action.showAlert());
             await this.updateStatus(ev.action, settings);
         }
-        /** Read a directory into file entries with timestamps, or null on error. */
-        list(dir) {
+        /**
+         * Read a directory into file entries with timestamps, or null on error.
+         * Fully async: this plugin is ONE process serving every key and dial, and a
+         * slow/network/huge directory scanned synchronously would freeze all of
+         * them (it polls every 10s). Stat failures on individual files (deleted
+         * mid-scan) are skipped rather than failing the listing.
+         */
+        async list(dir) {
             try {
-                return readdirSync(dir, { withFileTypes: true })
-                    .filter((d) => d.isFile())
-                    .map((d) => {
-                    const st = statSync(join(dir, d.name));
-                    return { name: d.name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs };
-                });
+                const dirents = await readdir(dir, { withFileTypes: true });
+                const names = dirents.filter((d) => d.isFile()).map((d) => d.name);
+                const entries = [];
+                // Bounded batches: a huge directory must not open thousands of
+                // simultaneous stat operations (descriptor pressure).
+                const BATCH = 64;
+                for (let i = 0; i < names.length; i += BATCH) {
+                    const batch = await Promise.all(names.slice(i, i + BATCH).map(async (name) => {
+                        try {
+                            const st = await stat(join(dir, name));
+                            return { name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs };
+                        }
+                        catch {
+                            return null; // deleted mid-scan
+                        }
+                    }));
+                    for (const e of batch)
+                        if (e !== null)
+                            entries.push(e);
+                }
+                return entries;
             }
             catch {
                 return null;
@@ -10268,7 +10426,7 @@ let OpenFile = (() => {
         }
         open(args) {
             return new Promise((resolve) => {
-                execFile("/usr/bin/open", args, (err) => resolve(!err));
+                execFile("/usr/bin/open", args, { timeout: 10_000 }, (err) => resolve(!err));
             });
         }
         async refreshAll() {
@@ -10287,7 +10445,7 @@ let OpenFile = (() => {
                 const dir = expandHome((settings.directory ?? "").trim(), homedir());
                 let status = "none";
                 if (dir) {
-                    const entries = this.list(dir);
+                    const entries = await this.list(dir);
                     const hit = entries && selectFile(entries, settings.pattern ?? "*", settings.pick ?? "modified");
                     status = hit ? "match" : "none";
                 }
@@ -10408,6 +10566,8 @@ function buildKeystrokeScript(plan) {
 function scrollHelperPath(baseUrl) {
     return fileURLToPath(new URL("macos/scroll", baseUrl));
 }
+/** A stuck helper must never leave a dial handler pending forever. */
+const HELPER_TIMEOUT_MS$1 = 4000;
 /** Post a signed line-count scroll via the helper. No-op for 0 lines. */
 function runScroll(lines, baseUrl, exec = execFile) {
     if (lines === 0) {
@@ -10415,7 +10575,7 @@ function runScroll(lines, baseUrl, exec = execFile) {
     }
     const bin = scrollHelperPath(baseUrl);
     return new Promise((resolve) => {
-        exec(bin, [String(lines)], (error, _stdout, stderr) => {
+        exec(bin, [String(lines)], { timeout: HELPER_TIMEOUT_MS$1 }, (error, _stdout, stderr) => {
             const trusted = !/untrusted/i.test(String(stderr ?? ""));
             resolve({ ok: !error, trusted });
         });
@@ -10458,6 +10618,9 @@ let ScrollWindow = (() => {
             // One proportional scroll-wheel event via the native helper — no keystroke
             // spam, so the line count actually scales and there is no per-press lag.
             const result = await runScroll(lines, import.meta.url);
+            if (!result.ok) {
+                streamDeck.logger.error("Scroll helper failed to run (missing/blocked binary?).");
+            }
             if (!result.trusted) {
                 streamDeck.logger.error("Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
                     "Accessibility > enable Stream Deck (synthetic scroll needs this).");
@@ -10558,6 +10721,9 @@ function buildAppScript(app) {
         return `tell application "${appName}" to activate`;
     }
     const pattern = escapeForAppleScript(app.titlePattern);
+    // Exact-title pass first: the Window Ring stores FULL titles, and a bare
+    // `contains` would raise the wrong window when one title is a substring of
+    // another. Falls back to substring so partial user patterns still work.
     return [
         `tell application "${appName}" to activate`,
         `delay 0.15`,
@@ -10565,13 +10731,23 @@ function buildAppScript(app) {
         `  tell process "${appName}"`,
         `    set matched to false`,
         `    repeat with w in windows`,
-        `      if name of w contains "${pattern}" then`,
+        `      if name of w is "${pattern}" then`,
         `        perform action "AXRaise" of w`,
         `        set frontmost to true`,
         `        set matched to true`,
         `        exit repeat`,
         `      end if`,
         `    end repeat`,
+        `    if not matched then`,
+        `      repeat with w in windows`,
+        `        if name of w contains "${pattern}" then`,
+        `          perform action "AXRaise" of w`,
+        `          set frontmost to true`,
+        `          set matched to true`,
+        `          exit repeat`,
+        `        end if`,
+        `      end repeat`,
+        `    end if`,
         `  end tell`,
         `end tell`,
         `return "ok"`,
@@ -10795,18 +10971,29 @@ function nextTile(settings, direction) {
 function tileHelperPath(baseUrl) {
     return fileURLToPath(new URL("macos/tile", baseUrl));
 }
+/** A stuck helper must never leave a dial handler pending forever. */
+const HELPER_TIMEOUT_MS = 4000;
 /** Round to a few decimals so the CLI args stay short and stable. */
 function frac(n) {
     return (Math.round(n * 1e4) / 1e4).toString();
 }
-/** Apply a normalized cell to the focused window via the helper. */
+/**
+ * Apply a normalized cell to the focused window via the helper.
+ *
+ * The (notarized, unchangeable-without-re-notarizing) helper always exits 0
+ * and reports operational failures — "no-frontmost", "no-window", "no-screen",
+ * bad usage — on stderr. Any non-empty stderr therefore means the window did
+ * NOT move; `untrusted` additionally means Accessibility is missing. Callers
+ * must not persist or render the new position unless `ok` is true.
+ */
 function runTile(cell, baseUrl, exec = execFile) {
     const bin = tileHelperPath(baseUrl);
     const args = [frac(cell.x), frac(cell.y), frac(cell.w), frac(cell.h)];
     return new Promise((resolve) => {
-        exec(bin, args, (error, _stdout, stderr) => {
-            const trusted = !/untrusted/i.test(String(stderr ?? ""));
-            resolve({ ok: !error, trusted });
+        exec(bin, args, { timeout: HELPER_TIMEOUT_MS }, (error, _stdout, stderr) => {
+            const err = String(stderr ?? "").trim();
+            const trusted = !/untrusted/i.test(err);
+            resolve({ ok: !error && err === "", trusted });
         });
     });
 }
@@ -10839,47 +11026,65 @@ let ArrangeWindow = (() => {
             }
         }
         async onDialRotate(ev) {
-            // Clockwise → cw scheme stepping forward; counter-clockwise → ccw scheme
-            // stepping in reverse (nextTile handles that). The dial reports clockwise
-            // as positive ticks; `invertDial` flips this for hardware that reports
-            // rotation the other way.
-            let direction = rotationDirection(ev.payload.ticks);
+            // The dial reports clockwise as positive ticks; `invertDial` flips this
+            // for hardware that reports rotation the other way. Rotations are
+            // SERIALIZED per dial (a read-modify-write of the cursor around an async
+            // helper call would otherwise interleave and double-place cells) and the
+            // full tick count is consumed so a fast spin isn't collapsed to one step.
+            let { direction, steps } = rotationSteps(ev.payload.ticks);
             if (direction === "none")
                 return;
             if (ev.payload.settings.invertDial) {
                 direction = direction === "next" ? "prev" : "next";
             }
-            const step = nextTile(ev.payload.settings, direction);
-            const updated = {
-                ...ev.payload.settings,
-                activeScheme: step.activeScheme,
-                index: step.index,
-            };
-            await ev.action.setSettings(updated);
-            const result = await runTile(step.cell, import.meta.url);
-            if (!result.trusted)
-                this.warnUntrusted();
-            await this.render(ev.action, updated, step.position);
+            const dir = direction;
+            await serialize(ev.action.id, async () => {
+                let settings = await ev.action.getSettings(); // fresh — not the event snapshot
+                for (let i = 0; i < steps; i++) {
+                    const step = nextTile(settings, dir);
+                    const result = await runTile(step.cell, import.meta.url);
+                    if (!result.trusted)
+                        this.warnUntrusted();
+                    if (!result.ok) {
+                        // The helper reported no window moved — do not persist or
+                        // render a position the screen doesn't show.
+                        streamDeck.logger.warn("Arrange Window: helper reported no focused window/screen.");
+                        return;
+                    }
+                    settings = { ...settings, activeScheme: step.activeScheme, index: step.index };
+                    await ev.action.setSettings(settings);
+                    await this.render(ev.action, settings, step.position);
+                }
+            });
         }
         async onDialDown(ev) {
             // Press = maximize within the visible frame, and reset the cursor so the
             // next rotation starts fresh from the first cell.
-            const updated = { ...ev.payload.settings, index: -1 };
-            await ev.action.setSettings(updated);
-            const result = await runTile(FULL_CELL, import.meta.url);
-            if (!result.trusted)
-                this.warnUntrusted();
-            await this.render(ev.action, updated, "max");
+            await serialize(ev.action.id, async () => {
+                const result = await runTile(FULL_CELL, import.meta.url);
+                if (!result.trusted)
+                    this.warnUntrusted();
+                if (!result.ok)
+                    return; // nothing moved — keep the real state
+                const updated = { ...(await ev.action.getSettings()), index: -1 };
+                await ev.action.setSettings(updated);
+                await this.render(ev.action, updated, "max");
+            });
         }
-        /** Touch-tap: toggle between the two configured arrangements (A ↔ B). */
+        /** Touch-tap: toggle between the two configured arrangements (A ↔ B).
+         * Serialized with rotations — a tap during a queued spin must not have its
+         * scheme/index overwritten by an in-flight rotation's write. */
         async onTouchTap(ev) {
-            const updated = {
-                ...ev.payload.settings,
-                activeScheme: toggledTileScheme(ev.payload.settings),
-                index: -1, // fresh entry: the next turn starts the new arrangement cleanly
-            };
-            await ev.action.setSettings(updated);
-            await this.render(ev.action, updated);
+            await serialize(ev.action.id, async () => {
+                const settings = await ev.action.getSettings();
+                const updated = {
+                    ...settings,
+                    activeScheme: toggledTileScheme(settings),
+                    index: -1, // fresh entry: the next turn starts the new arrangement cleanly
+                };
+                await ev.action.setSettings(updated);
+                await this.render(ev.action, updated);
+            });
         }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
@@ -10904,41 +11109,6 @@ let ArrangeWindow = (() => {
     });
     return _classThis;
 })();
-
-/**
- * Which tmux client/session is in the frontmost macOS window? Chains the
- * probes the live tmux key faces already use: frontmost app (NSWorkspace JXA)
- * → iTerm's focused-session tty (only queried when iTerm IS frontmost —
- * addressing a non-running app via AppleScript would launch it) → tmux
- * list-clients tty → session. Null when indeterminate (iTerm not frontmost,
- * focused pane isn't a tmux client, …); the tmux dials treat null as
- * "nothing to control" and do nothing rather than drive a background terminal.
- *
- * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
- * pays it once, and you don't change macOS windows mid-burst.
- */
-const TTL_MS = 2000;
-let cached = null;
-async function resolveFrontTmux(tmuxPath) {
-    if (cached !== null && Date.now() - cached.at < TTL_MS) {
-        return cached.front;
-    }
-    let front = null;
-    const app = await runJxa(FRONT_APP_BUNDLE_JXA);
-    if (app.ok && app.stdout.trim() === ITERM_BUNDLE_ID) {
-        const [ttyRes, clientsRes] = await Promise.all([
-            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
-            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
-        ]);
-        const tty = ttyRes.stdout.trim();
-        const session = sessionForTty(parseClients(clientsRes.stdout), tty);
-        if (session !== null) {
-            front = { session, tty };
-        }
-    }
-    cached = { front, at: Date.now() };
-    return front;
-}
 
 /**
  * Dial action: rotate to cycle tmux windows, push for last-window. Touch-tap
@@ -10976,35 +11146,40 @@ let CycleTmuxWindow = (() => {
             this.scopes.delete(ev.action.id);
         }
         async onDialRotate(ev) {
-            const direction = rotationDirection(ev.payload.ticks);
+            const { direction, steps } = rotationSteps(ev.payload.ticks);
             if (direction !== "none") {
-                const tmux = findTmuxPath();
-                const front = await resolveFrontTmux(tmux);
-                if (front === null) {
-                    await this.refresh(ev.action);
-                    return; // no tmux in the frontmost window — do nothing
-                }
-                if (this.scope(ev.action.id) === "all") {
-                    const [list, current] = await Promise.all([
-                        runTmux(LIST_WINDOWS_ARGS, tmux),
-                        runTmux(currentWindowArgs(front.session), tmux),
-                    ]);
-                    const target = list.ok
-                        ? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
-                        : null;
-                    if (target !== null) {
-                        const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
-                        if (!result.ok) {
-                            streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+                // Serialized per dial, consuming the full tick count (see pane dial).
+                await serialize(ev.action.id, async () => {
+                    const tmux = findTmuxPath();
+                    const front = await resolveFrontTmux(tmux);
+                    if (front === null)
+                        return; // no tmux in the frontmost window
+                    for (let i = 0; i < steps; i++) {
+                        if (this.scope(ev.action.id) === "all") {
+                            const [list, current] = await Promise.all([
+                                runTmux(LIST_WINDOWS_ARGS, tmux),
+                                runTmux(currentWindowArgs(front.session), tmux),
+                            ]);
+                            const target = list.ok
+                                ? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
+                                : null;
+                            if (target === null)
+                                return;
+                            const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
+                            if (!result.ok) {
+                                streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+                                return;
+                            }
+                        }
+                        else {
+                            const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
+                            if (!result.ok) {
+                                streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+                                return;
+                            }
                         }
                     }
-                }
-                else {
-                    const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
-                    if (!result.ok) {
-                        streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
-                    }
-                }
+                });
             }
             await this.refresh(ev.action);
         }
@@ -11040,7 +11215,9 @@ let CycleTmuxWindow = (() => {
                     runTmux(currentWindowArgs(front.session), tmux),
                     runTmux(all ? LIST_WINDOWS_ARGS : windowFlagsArgs(front.session), tmux),
                 ]);
-                if (!current.ok)
+                // Keep the last good strip rather than painting a half-true one
+                // (e.g. dots missing) from a failed query.
+                if (!current.ok || !set.ok)
                     return;
                 const parsed = parseCurrentWindow(current.stdout);
                 feedback = all
@@ -11148,23 +11325,31 @@ let TmuxPaneDial = (() => {
             }
         }
         async onDialRotate(ev) {
-            const mode = ev.payload.settings.mode ?? "panes";
-            const direction = rotationDirection(ev.payload.ticks);
-            if (direction !== "none") {
+            const { direction, steps } = rotationSteps(ev.payload.ticks);
+            let mode = "panes";
+            // Serialized per dial and consuming the full tick count: fast spins
+            // arrive as one event with |ticks| > 1 and overlapping handlers would
+            // otherwise reorder the moves. The mode is read FRESH inside the
+            // critical section — the event snapshot could predate a queued toggle.
+            await serialize(ev.action.id, async () => {
+                mode = (await ev.action.getSettings()).mode ?? "panes";
+                if (direction === "none")
+                    return;
                 const tmux = findTmuxPath();
                 const front = await resolveFrontTmux(tmux);
-                if (front === null) {
-                    await this.refresh(ev.action, mode);
-                    return; // no tmux in the frontmost window — do nothing
-                }
+                if (front === null)
+                    return; // no tmux in the frontmost window
                 const args = mode === "windows"
                     ? selectWindowDirArgs(direction, front.session)
                     : selectPaneArgs(direction, front.session);
-                const result = await runTmux(args, tmux);
-                if (!result.ok) {
-                    streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+                for (let i = 0; i < steps; i++) {
+                    const result = await runTmux(args, tmux);
+                    if (!result.ok) {
+                        streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+                        return;
+                    }
                 }
-            }
+            });
             await this.refresh(ev.action, mode);
         }
         /** Press: toggle between switching panes and switching windows. */
@@ -11175,10 +11360,15 @@ let TmuxPaneDial = (() => {
         async onTouchTap(ev) {
             await this.toggle(ev.action, ev.payload.settings);
         }
-        async toggle(dial, settings) {
-            const mode = togglePaneDialMode(settings.mode ?? "panes");
-            await dial.setSettings({ ...settings, mode });
-            await this.refresh(dial, mode);
+        async toggle(dial, _settings) {
+            // Serialized with rotations, reading fresh settings — an event-snapshot
+            // read-modify-write could race a queued rotation's view of the mode.
+            await serialize(dial.id, async () => {
+                const settings = await dial.getSettings();
+                const mode = togglePaneDialMode(settings.mode ?? "panes");
+                await dial.setSettings({ ...settings, mode });
+                await this.refresh(dial, mode);
+            });
         }
         /** Repaint from the controlled session's state; a dash when there is none. */
         async refresh(dial, mode) {
@@ -11311,6 +11501,7 @@ let WindowRing = (() => {
         revertTimers = new Map();
         visible = new Map();
         timer;
+        refreshing = false;
         async onWillAppear(ev) {
             if (!ev.action.isKey())
                 return;
@@ -11407,11 +11598,23 @@ let WindowRing = (() => {
             await respondToAccessibilityCheck(ev.payload, import.meta.url);
         }
         async refreshAll() {
-            const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
-            const current = front.ok ? parseFrontWindow(front.stdout) : null;
-            for (const action of this.visible.values()) {
-                const settings = await action.getSettings();
-                await this.paintIcon(action, settings.windows ?? [], current);
+            if (this.refreshing)
+                return; // a slow Automation call must not stack polls
+            this.refreshing = true;
+            try {
+                const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
+                if (!front.ok)
+                    return; // keep the last good icons — don't paint "not in ring" from a failed probe
+                const current = parseFrontWindow(front.stdout);
+                for (const action of this.visible.values()) {
+                    if (!this.visible.has(action.id))
+                        continue; // disappeared mid-refresh
+                    const settings = await action.getSettings();
+                    await this.paintIcon(action, settings.windows ?? [], current);
+                }
+            }
+            finally {
+                this.refreshing = false;
             }
         }
         /** Re-read settings and repaint (used by the revert timer). */
@@ -11421,7 +11624,11 @@ let WindowRing = (() => {
         }
         async updateIcon(action, list) {
             const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
-            await this.paintIcon(action, list, front.ok ? parseFrontWindow(front.stdout) : null);
+            // A failed probe is UNKNOWN, not "not in ring" — keep the last icon
+            // rather than painting a false gray state.
+            if (!front.ok)
+                return;
+            await this.paintIcon(action, list, parseFrontWindow(front.stdout));
         }
         async paintIcon(action, list, current) {
             try {
@@ -11441,7 +11648,7 @@ let WindowRing = (() => {
         playSound(settings) {
             if (settings.sound !== true)
                 return;
-            execFile("/usr/bin/afplay", [SOUND_FILE], () => {
+            execFile("/usr/bin/afplay", [SOUND_FILE], { timeout: 5000 }, () => {
                 /* best-effort; ignore errors */
             });
         }

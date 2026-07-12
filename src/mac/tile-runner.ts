@@ -31,15 +31,27 @@ export interface TileResult {
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
+	options: { timeout?: number },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
+
+/** A stuck helper must never leave a dial handler pending forever. */
+const HELPER_TIMEOUT_MS = 4000;
 
 /** Round to a few decimals so the CLI args stay short and stable. */
 function frac(n: number): string {
 	return (Math.round(n * 1e4) / 1e4).toString();
 }
 
-/** Apply a normalized cell to the focused window via the helper. */
+/**
+ * Apply a normalized cell to the focused window via the helper.
+ *
+ * The (notarized, unchangeable-without-re-notarizing) helper always exits 0
+ * and reports operational failures — "no-frontmost", "no-window", "no-screen",
+ * bad usage — on stderr. Any non-empty stderr therefore means the window did
+ * NOT move; `untrusted` additionally means Accessibility is missing. Callers
+ * must not persist or render the new position unless `ok` is true.
+ */
 export function runTile(
 	cell: Cell,
 	baseUrl: string,
@@ -48,9 +60,10 @@ export function runTile(
 	const bin = tileHelperPath(baseUrl);
 	const args = [frac(cell.x), frac(cell.y), frac(cell.w), frac(cell.h)];
 	return new Promise((resolve) => {
-		exec(bin, args, (error, _stdout, stderr) => {
-			const trusted = !/untrusted/i.test(String(stderr ?? ""));
-			resolve({ ok: !error, trusted });
+		exec(bin, args, { timeout: HELPER_TIMEOUT_MS }, (error, _stdout, stderr) => {
+			const err = String(stderr ?? "").trim();
+			const trusted = !/untrusted/i.test(err);
+			resolve({ ok: !error && err === "", trusted });
 		});
 	});
 }

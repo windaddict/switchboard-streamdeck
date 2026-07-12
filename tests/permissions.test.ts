@@ -4,7 +4,7 @@ import { axcheckHelperPath, checkAccessibility, type ExecFileLike } from "../src
 const BASE = "file:///Plugins/x.sdPlugin/bin/plugin.js";
 
 function execYielding(stdout: string, error: Error | null = null): ExecFileLike {
-	return (_file, _args, cb) => {
+	return (_file, _args, _opts, cb) => {
 		cb(error, stdout, "");
 		return undefined;
 	};

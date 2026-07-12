@@ -53,6 +53,7 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 	private readonly revertTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly visible = new Map<string, KeyAction<WindowRingSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
+	private refreshing = false;
 
 	override async onWillAppear(ev: WillAppearEvent<WindowRingSettings>): Promise<void> {
 		if (!ev.action.isKey()) return;
@@ -165,11 +166,19 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 	}
 
 	private async refreshAll(): Promise<void> {
-		const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
-		const current = front.ok ? parseFrontWindow(front.stdout) : null;
-		for (const action of this.visible.values()) {
-			const settings = await action.getSettings();
-			await this.paintIcon(action, settings.windows ?? [], current);
+		if (this.refreshing) return; // a slow Automation call must not stack polls
+		this.refreshing = true;
+		try {
+			const front = await runAppleScript(FRONT_WINDOW_SCRIPT); // once per tick
+			if (!front.ok) return; // keep the last good icons — don't paint "not in ring" from a failed probe
+			const current = parseFrontWindow(front.stdout);
+			for (const action of this.visible.values()) {
+				if (!this.visible.has(action.id)) continue; // disappeared mid-refresh
+				const settings = await action.getSettings();
+				await this.paintIcon(action, settings.windows ?? [], current);
+			}
+		} finally {
+			this.refreshing = false;
 		}
 	}
 
@@ -181,7 +190,10 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 
 	private async updateIcon(action: KeyAction<WindowRingSettings>, list: RingWindow[]): Promise<void> {
 		const front = await runAppleScript(FRONT_WINDOW_SCRIPT);
-		await this.paintIcon(action, list, front.ok ? parseFrontWindow(front.stdout) : null);
+		// A failed probe is UNKNOWN, not "not in ring" — keep the last icon
+		// rather than painting a false gray state.
+		if (!front.ok) return;
+		await this.paintIcon(action, list, parseFrontWindow(front.stdout));
 	}
 
 	private async paintIcon(
@@ -205,7 +217,7 @@ export class WindowRing extends SingletonAction<WindowRingSettings> {
 
 	private playSound(settings: WindowRingSettings): void {
 		if (settings.sound !== true) return;
-		execFile("/usr/bin/afplay", [SOUND_FILE], () => {
+		execFile("/usr/bin/afplay", [SOUND_FILE], { timeout: 5000 }, () => {
 			/* best-effort; ignore errors */
 		});
 	}

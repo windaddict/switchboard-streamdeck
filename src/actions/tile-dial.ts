@@ -10,7 +10,8 @@ import streamDeck, {
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
-import { rotationDirection } from "../mac/rotation.js";
+import { rotationSteps } from "../mac/rotation.js";
+import { serialize } from "../mac/serialize.js";
 import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
 	activeTileScheme,
@@ -38,48 +39,65 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 	}
 
 	override async onDialRotate(ev: DialRotateEvent<TileSettings>): Promise<void> {
-		// Clockwise → cw scheme stepping forward; counter-clockwise → ccw scheme
-		// stepping in reverse (nextTile handles that). The dial reports clockwise
-		// as positive ticks; `invertDial` flips this for hardware that reports
-		// rotation the other way.
-		let direction = rotationDirection(ev.payload.ticks);
+		// The dial reports clockwise as positive ticks; `invertDial` flips this
+		// for hardware that reports rotation the other way. Rotations are
+		// SERIALIZED per dial (a read-modify-write of the cursor around an async
+		// helper call would otherwise interleave and double-place cells) and the
+		// full tick count is consumed so a fast spin isn't collapsed to one step.
+		let { direction, steps } = rotationSteps(ev.payload.ticks);
 		if (direction === "none") return;
 		if (ev.payload.settings.invertDial) {
 			direction = direction === "next" ? "prev" : "next";
 		}
+		const dir = direction;
 
-		const step = nextTile(ev.payload.settings, direction);
-		const updated: TileSettings = {
-			...ev.payload.settings,
-			activeScheme: step.activeScheme,
-			index: step.index,
-		};
-		await ev.action.setSettings(updated);
-
-		const result = await runTile(step.cell, import.meta.url);
-		if (!result.trusted) this.warnUntrusted();
-		await this.render(ev.action, updated, step.position);
+		await serialize(ev.action.id, async () => {
+			let settings = await ev.action.getSettings(); // fresh — not the event snapshot
+			for (let i = 0; i < steps; i++) {
+				const step = nextTile(settings, dir);
+				const result = await runTile(step.cell, import.meta.url);
+				if (!result.trusted) this.warnUntrusted();
+				if (!result.ok) {
+					// The helper reported no window moved — do not persist or
+					// render a position the screen doesn't show.
+					streamDeck.logger.warn("Arrange Window: helper reported no focused window/screen.");
+					return;
+				}
+				settings = { ...settings, activeScheme: step.activeScheme, index: step.index };
+				await ev.action.setSettings(settings);
+				await this.render(ev.action, settings, step.position);
+			}
+		});
 	}
 
 	override async onDialDown(ev: DialDownEvent<TileSettings>): Promise<void> {
 		// Press = maximize within the visible frame, and reset the cursor so the
 		// next rotation starts fresh from the first cell.
-		const updated: TileSettings = { ...ev.payload.settings, index: -1 };
-		await ev.action.setSettings(updated);
-		const result = await runTile(FULL_CELL, import.meta.url);
-		if (!result.trusted) this.warnUntrusted();
-		await this.render(ev.action, updated, "max");
+		await serialize(ev.action.id, async () => {
+			const result = await runTile(FULL_CELL, import.meta.url);
+			if (!result.trusted) this.warnUntrusted();
+			if (!result.ok) return; // nothing moved — keep the real state
+			const updated: TileSettings = { ...(await ev.action.getSettings()), index: -1 };
+			await ev.action.setSettings(updated);
+			await this.render(ev.action, updated, "max");
+		});
 	}
 
-	/** Touch-tap: toggle between the two configured arrangements (A ↔ B). */
+
+	/** Touch-tap: toggle between the two configured arrangements (A ↔ B).
+	 * Serialized with rotations — a tap during a queued spin must not have its
+	 * scheme/index overwritten by an in-flight rotation's write. */
 	override async onTouchTap(ev: TouchTapEvent<TileSettings>): Promise<void> {
-		const updated: TileSettings = {
-			...ev.payload.settings,
-			activeScheme: toggledTileScheme(ev.payload.settings),
-			index: -1, // fresh entry: the next turn starts the new arrangement cleanly
-		};
-		await ev.action.setSettings(updated);
-		await this.render(ev.action, updated);
+		await serialize(ev.action.id, async () => {
+			const settings = await ev.action.getSettings();
+			const updated: TileSettings = {
+				...settings,
+				activeScheme: toggledTileScheme(settings),
+				index: -1, // fresh entry: the next turn starts the new arrangement cleanly
+			};
+			await ev.action.setSettings(updated);
+			await this.render(ev.action, updated);
+		});
 	}
 
 	/** Answer the property inspector's live Accessibility-permission check. */

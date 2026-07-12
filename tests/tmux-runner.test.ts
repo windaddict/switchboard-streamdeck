@@ -26,7 +26,7 @@ describe("arg constants", () => {
 			"list-windows",
 			"-a",
 			"-F",
-			"#{session_name}|#{window_index}|#{window_name}|#{window_active}",
+			"#{session_name}|#{window_index}|#{window_active}|#{window_name}",
 		]);
 	});
 	it("list-clients maps tty to session", () => {

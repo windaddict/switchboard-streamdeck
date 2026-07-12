@@ -115,3 +115,13 @@ describe("captureApp", () => {
 		expect(captureApp("   ", {})).toBeNull();
 	});
 });
+
+describe("buildAppScript — exact-first title matching", () => {
+	it("tries an exact title match before the substring fallback", () => {
+		const script = buildAppScript({ appName: "Safari", titlePattern: "Inbox" });
+		const exact = script.indexOf('name of w is "Inbox"');
+		const contains = script.indexOf('name of w contains "Inbox"');
+		expect(exact).toBeGreaterThan(-1);
+		expect(contains).toBeGreaterThan(exact); // exact-title pass comes first
+	});
+});

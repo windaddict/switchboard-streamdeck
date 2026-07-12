@@ -63,6 +63,9 @@ export function buildAppScript(app: ResolvedApp): string {
 
 	const pattern = escapeForAppleScript(app.titlePattern);
 
+	// Exact-title pass first: the Window Ring stores FULL titles, and a bare
+	// `contains` would raise the wrong window when one title is a substring of
+	// another. Falls back to substring so partial user patterns still work.
 	return [
 		`tell application "${appName}" to activate`,
 		`delay 0.15`,
@@ -70,13 +73,23 @@ export function buildAppScript(app: ResolvedApp): string {
 		`  tell process "${appName}"`,
 		`    set matched to false`,
 		`    repeat with w in windows`,
-		`      if name of w contains "${pattern}" then`,
+		`      if name of w is "${pattern}" then`,
 		`        perform action "AXRaise" of w`,
 		`        set frontmost to true`,
 		`        set matched to true`,
 		`        exit repeat`,
 		`      end if`,
 		`    end repeat`,
+		`    if not matched then`,
+		`      repeat with w in windows`,
+		`        if name of w contains "${pattern}" then`,
+		`          perform action "AXRaise" of w`,
+		`          set frontmost to true`,
+		`          set matched to true`,
+		`          exit repeat`,
+		`        end if`,
+		`      end repeat`,
+		`    end if`,
 		`  end tell`,
 		`end tell`,
 		`return "ok"`,

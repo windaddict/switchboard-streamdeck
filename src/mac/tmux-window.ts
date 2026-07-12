@@ -75,9 +75,10 @@ export function switchToWindowArgs(w: TmuxWindow, clientTty?: string | null): st
 		: ["switch-client", ...target];
 }
 
-const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_name}|#{window_index}";
+// Name LAST — window names may contain `|` (fixed fields first, name joined).
+const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_index}|#{window_name}";
 
-/** tmux args reading the current window as `session|name|index`. */
+/** tmux args reading the current window as `session|index|name`. */
 export const CURRENT_WINDOW_ARGS = ["display-message", "-p", CURRENT_WINDOW_FORMAT];
 
 /** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
@@ -98,10 +99,14 @@ export interface CurrentWindow {
 	index: number;
 }
 
-/** Parse `session|name|index` into a {@link CurrentWindow}. */
+/** Parse `session|index|name…` (name last, may contain `|`). */
 export function parseCurrentWindow(output: string): CurrentWindow {
-	const [session = "", name = "", index = "0"] = output.trim().split("|");
-	return { session, name, index: Number.parseInt(index, 10) || 0 };
+	const fields = output.trim().split("|");
+	return {
+		session: fields[0] ?? "",
+		index: Number.parseInt(fields[1] ?? "", 10) || 0,
+		name: fields.slice(2).join("|"),
+	};
 }
 
 /**

@@ -24,8 +24,12 @@ export interface ScrollResult {
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
+	options: { timeout?: number },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
+
+/** A stuck helper must never leave a dial handler pending forever. */
+const HELPER_TIMEOUT_MS = 4000;
 
 /** Post a signed line-count scroll via the helper. No-op for 0 lines. */
 export function runScroll(
@@ -38,7 +42,7 @@ export function runScroll(
 	}
 	const bin = scrollHelperPath(baseUrl);
 	return new Promise((resolve) => {
-		exec(bin, [String(lines)], (error, _stdout, stderr) => {
+		exec(bin, [String(lines)], { timeout: HELPER_TIMEOUT_MS }, (error, _stdout, stderr) => {
 			const trusted = !/untrusted/i.test(String(stderr ?? ""));
 			resolve({ ok: !error, trusted });
 		});
