@@ -45,6 +45,59 @@ export function parsePanes(output: string): PaneInfo[] {
 
 export type ClaudeState = "working" | "waiting" | "none";
 
+/** tmux args listing every pane as `paneTty|session|windowIndex|command|title`
+ * (title LAST — it may contain `|`). Pane ttys identify tmux-hosted processes:
+ * they are invisible to iTerm/Terminal tab lists, so a raise-by-tty must
+ * detect them here and route through the tmux machinery instead. */
+export const LIST_PANE_TTYS_ARGS = [
+	"list-panes",
+	"-a",
+	"-F",
+	"#{pane_tty}|#{session_name}|#{window_index}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
+];
+
+export interface PaneTty {
+	tty: string;
+	session: string;
+	windowIndex: number;
+	/** This pane is the active pane of its window AND that window is the
+	 * session's current one — i.e. an attached, focused client would type here. */
+	receivesKeys: boolean;
+	command: string;
+	title: string;
+}
+
+/** Parse {@link LIST_PANE_TTYS_ARGS} output; malformed lines are skipped. */
+export function parsePaneTtys(output: string): PaneTty[] {
+	const panes: PaneTty[] = [];
+	for (const rawLine of output.split("\n")) {
+		const line = rawLine.trim();
+		if (line === "") continue;
+		const fields = line.split("|");
+		if (fields.length < 7) continue;
+		const windowIndex = Number.parseInt(fields[2], 10);
+		if (!Number.isFinite(windowIndex)) continue; // malformed line — never raise window 0 from garbage
+		panes.push({
+			tty: fields[0],
+			session: fields[1],
+			windowIndex,
+			receivesKeys: fields[3] === "1" && fields[4] === "1",
+			command: fields[5],
+			title: fields.slice(6).join("|"),
+		});
+	}
+	return panes;
+}
+
+/** Working/waiting from a pane title's leading marker (braille spinner =
+ * working, anything else = waiting); null when no title to judge. */
+export function titleWorking(title: string): boolean | null {
+	const trimmed = title.trim();
+	if (trimmed === "") return null;
+	const cp = trimmed.codePointAt(0);
+	return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+}
+
 /** True when the string starts with a braille pattern char — Claude Code's
  * animated working-spinner frames all live in U+2800–U+28FF. */
 function startsWithSpinner(title: string): boolean {

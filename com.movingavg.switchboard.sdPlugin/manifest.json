@@ -253,6 +253,23 @@
 				}
 			],
 			"UserTitleEnabled": false
+		},
+		{
+			"Name": "Claude Project",
+			"UUID": "com.movingavg.switchboard.claudeproject",
+			"Icon": "imgs/actions/claudeproject/icon",
+			"Tooltip": "Live face for a Claude Code project — any host (tmux, iTerm2, Terminal). Press to raise its window; hold to capture the frontmost session's project.",
+			"PropertyInspectorPath": "ui/claude-project.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/claudeproject/key",
+					"ShowTitle": false
+				}
+			],
+			"UserTitleEnabled": false
 		}
 	]
 }

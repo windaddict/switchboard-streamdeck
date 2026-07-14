@@ -4,7 +4,10 @@
 
 *An operator's control surface for macOS — routing your attention across tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: jump to **Claude Code**
+- **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
+
+**Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
 
 ---
 
@@ -20,7 +23,10 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 
 ## What it does
 
-Eleven actions, grouped by what they route your attention to.
+Twelve actions, grouped by what they route your attention to.
+
+**Claude Code**
+- **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
 
 **Safari**
 - **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards. Hold the key to capture the current front tab into the button.
@@ -148,7 +154,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 377 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 412 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

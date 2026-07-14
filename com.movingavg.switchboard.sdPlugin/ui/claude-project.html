@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Claude Project</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Project folder">
+			<sdpi-textfield setting="project" placeholder="/Users/you/code/my-project"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			The key face is live: the spark shows whether Claude Code is working
+			(amber, turning) or waiting for your input (white, still) in this
+			project — wherever it runs (tmux, iTerm2, or Terminal). The bar lights
+			up when your keystrokes would land in that session. Pressing raises the
+			hosting window.<br /><br />
+			<b>Tip:</b> hold the key for &frac12;&nbsp;second while the session's
+			terminal is frontmost to capture its project into this button
+			(✓ flashes when saved).<br /><br />
+			<b>Requires:</b> Automation access for iTerm2 and/or Terminal (macOS
+			prompts on first use). Detection itself needs no permissions.
+		</div>
+	</body>
+</html>

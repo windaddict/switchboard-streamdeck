@@ -6,7 +6,7 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Eleven actions today (the manifest is the
+that script before ever renaming again. Twelve actions today (the manifest is the
 source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
@@ -66,7 +66,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 377 tests today
+npm test              # vitest (pure modules) — 412 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain

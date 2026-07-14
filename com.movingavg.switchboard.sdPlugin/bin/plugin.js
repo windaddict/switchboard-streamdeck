@@ -8685,6 +8685,1148 @@ let CycleAppWindows = (() => {
     return _classThis;
 })();
 
+/** Small shared SVG helpers used by the key/touchscreen image builders. */
+/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
+function svgToDataUri(svg) {
+    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+/** Round to one decimal place — keeps generated SVG coordinates compact. */
+function round(n) {
+    return Math.round(n * 10) / 10;
+}
+/**
+ * Convert HSL (h 0–360, s/l 0–100) to a #rrggbb hex string. Key-face SVGs must
+ * not use `hsl()` literals: Stream Deck's KEY rasterizer silently paints them
+ * as black (the touchscreen pipeline accepts them; keys do not).
+ */
+function hslToHex(h, s, l) {
+    const sn = s / 100;
+    const ln = l / 100;
+    const a = sn * Math.min(ln, 1 - ln);
+    const channel = (n) => {
+        const k = (n + h / 30) % 12;
+        const c = ln - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+        return Math.round(255 * c)
+            .toString(16)
+            .padStart(2, "0");
+    };
+    return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
+
+/**
+ * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
+ * push for last-window, and render a dynamic touchscreen background that
+ * reflects the current session/window. All functions are pure (no tmux, no
+ * Stream Deck) so they unit test in isolation.
+ */
+/** Toggle the dial's scope (touch-tap). */
+function toggleScope(scope) {
+    return scope === "session" ? "all" : "session";
+}
+/**
+ * tmux args to move to the next/previous window. Untargeted, tmux acts on its
+ * own "current" session; pass `session` to scope to the session actually in
+ * the frontmost macOS window.
+ */
+function selectWindowDirArgs(direction, session) {
+    const base = direction === "next" ? ["next-window"] : ["previous-window"];
+    return session ? [...base, "-t", session] : base;
+}
+/** tmux args to toggle to the previously active window of `session`
+ * (push = back-and-forth). */
+function lastWindowArgs(session) {
+    return ["last-window", "-t", session];
+}
+/** tmux args to toggle the given CLIENT to its previously active session
+ * (push in "all" scope). Scoped with -c so a background client never moves. */
+function lastSessionArgs(clientTty) {
+    return ["switch-client", "-c", clientTty, "-l"];
+}
+/**
+ * The window a rotation should land on in "all" scope: the neighbour of the
+ * current window in the flattened all-sessions list (wrapping across session
+ * boundaries). Falls back to the first window when the current one isn't in
+ * the list; null only for an empty list.
+ */
+function nextWindowAcross(windows, current, direction) {
+    const n = windows.length;
+    if (n === 0)
+        return null;
+    const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
+    if (idx < 0)
+        return windows[0];
+    const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
+    return windows[target];
+}
+/**
+ * tmux args that jump a client to a window in ANY session.
+ * `switch-client -t sess:idx` changes session and window in one step
+ * (`select-window` alone cannot leave the current session). Pass the front
+ * client's tty as `clientTty` — untargeted, tmux moves ITS "current client",
+ * which can be a background terminal.
+ */
+function switchToWindowArgs(w, clientTty) {
+    const target = ["-t", `${w.session}:${w.index}`];
+    return clientTty
+        ? ["switch-client", "-c", clientTty, ...target]
+        : ["switch-client", ...target];
+}
+// Name LAST — window names may contain `|` (fixed fields first, name joined).
+const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_index}|#{window_name}";
+/** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
+function currentWindowArgs(session) {
+    return ["display-message", "-p", "-t", session, CURRENT_WINDOW_FORMAT];
+}
+/** tmux args listing the active flag of each window in the given session
+ * (untargeted when omitted — tmux's own "current" session). */
+function windowFlagsArgs(session) {
+    const base = ["list-windows", "-F", "#{window_active}"];
+    return session ? [...base, "-t", session] : base;
+}
+/** Parse `session|index|name…` (name last, may contain `|`). */
+function parseCurrentWindow(output) {
+    const fields = output.trim().split("|");
+    return {
+        session: fields[0] ?? "",
+        index: Number.parseInt(fields[1] ?? "", 10) || 0,
+        name: fields.slice(2).join("|"),
+    };
+}
+/**
+ * "Teach the button": the Focus-tmux target string for a captured current
+ * window, in the same `session:name` form the dropdown persists. "" (nothing
+ * to save) when the session is blank — i.e. no tmux server was running.
+ */
+function captureTmuxTarget(current) {
+    if (current.session.trim() === "")
+        return "";
+    return `${current.session}:${current.name}`;
+}
+/** Parse the per-window active flags ("1" = active) preserving window order. */
+function parseActiveFlags(output) {
+    return output
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .map((line) => line === "1");
+}
+/** Deterministic 0–359 hue derived from a session name, so colours are stable. */
+function sessionHue(session) {
+    let h = 0;
+    for (let i = 0; i < session.length; i++) {
+        h = (h * 31 + session.charCodeAt(i)) % 360;
+    }
+    return h;
+}
+/** Escape text for safe embedding inside SVG/XML. */
+function escapeXml(value) {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+}
+/** Row of position dots; the active window's dot is larger and brighter. */
+function dotsSvg(count, activeIndex, hue) {
+    if (count <= 0)
+        return "";
+    // Shrink the gap when many windows must fit (all-sessions scope) so the
+    // row never overflows the 200px strip.
+    const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
+    const startX = 100 - ((count - 1) * gap) / 2;
+    const y = 86;
+    let out = "";
+    for (let i = 0; i < count; i++) {
+        const cx = round(startX + i * gap);
+        const active = i === activeIndex;
+        const r = active ? 4 : 2.5;
+        const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
+        out += `<circle cx="${cx}" cy="${y}" r="${r}" fill="${fill}"/>`;
+    }
+    return out;
+}
+/** Truncate a label so it fits the 200px touch strip. */
+function truncate$2(value, max = 16) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+/**
+ * Build the 200×100 touchscreen image as an SVG string: a session-tinted
+ * vertical gradient, faint left/right chevrons hinting the dial rotates, the
+ * session name (top) and current window name (centre), and a row of dots
+ * showing the window position. Stream Deck layout items may not overlap, so all
+ * of this lives in one full-area pixmap. User text is XML-escaped.
+ */
+function buildBackgroundSvg(opts) {
+    const { hue, session, window, count, activeIndex, badge } = opts;
+    const badgeSvg = badge
+        ? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
+        : "";
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
+        `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
+        `<stop offset="0" stop-color="hsl(${hue},55%,24%)"/>` +
+        `<stop offset="1" stop-color="hsl(${hue},60%,10%)"/>` +
+        `</linearGradient></defs>` +
+        `<rect width="200" height="100" fill="url(#g)"/>` +
+        `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
+        `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$2(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$2(window))}</text>` +
+        dotsSvg(count, activeIndex, hue) +
+        badgeSvg +
+        `</svg>`);
+}
+/** Build the setFeedback payload for the current window + window flags. */
+function buildWindowFeedback(current, flags) {
+    const svg = buildBackgroundSvg({
+        hue: sessionHue(current.session),
+        session: current.session,
+        window: current.name,
+        count: flags.length,
+        activeIndex: flags.indexOf(true),
+    });
+    return { bg: svgToDataUri(svg) };
+}
+/**
+ * setFeedback payload for "all" scope: the dots span every window of every
+ * session (current window highlighted) and an ALL badge marks the scope.
+ */
+function buildAllWindowsFeedback(windows, current) {
+    const svg = buildBackgroundSvg({
+        hue: sessionHue(current.session),
+        session: current.session,
+        window: current.name,
+        count: windows.length,
+        activeIndex: windows.findIndex((w) => w.session === current.session && w.index === current.index),
+        badge: "ALL",
+    });
+    return { bg: svgToDataUri(svg) };
+}
+
+/**
+ * Pure logic for the "Claude Project" key: find Claude Code CLI instances on
+ * the machine (any host — tmux, plain iTerm2, Terminal.app), decide their
+ * working/waiting state, and render the live key face. The impure scanning
+ * lives in claude-scan.ts; this module only parses and decides.
+ *
+ * Identity model: a button targets a PROJECT DIRECTORY. A claude process
+ * belongs to it when its cwd matches. State comes from two signals:
+ * the tmux pane title's spinner marker when the instance is tmux-hosted
+ * (always readable via the tmux server), else the freshness of the newest
+ * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
+ * only while a session is actively working.
+ */
+/**
+ * Parse `ps -axo pid=,tty=,comm=` output, keeping only `claude` processes
+ * with a real controlling tty. NOTE: enumerate with ps, not pgrep — BSD pgrep
+ * silently omits its own ancestor processes.
+ */
+function parsePsClaude(output) {
+    const out = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split(/\s+/);
+        if (fields.length < 3)
+            continue;
+        const pid = Number.parseInt(fields[0], 10);
+        const tty = fields[1];
+        const comm = fields.slice(2).join(" ");
+        const base = comm.slice(comm.lastIndexOf("/") + 1);
+        if (!Number.isFinite(pid) || base !== "claude" || tty === "??")
+            continue;
+        out.push({ pid, tty: `/dev/${tty}` });
+    }
+    return out;
+}
+/** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
+function parseLsofCwds(output) {
+    const cwds = new Map();
+    let pid = null;
+    for (const line of output.split("\n")) {
+        if (line.startsWith("p")) {
+            const n = Number.parseInt(line.slice(1), 10);
+            pid = Number.isFinite(n) ? n : null;
+        }
+        else if (line.startsWith("n") && pid !== null) {
+            cwds.set(pid, line.slice(1));
+        }
+    }
+    return cwds;
+}
+/** ~/.claude/projects directory name for a project path: every
+ * non-alphanumeric character becomes "-" (verified transform). */
+function projectSlug(projectPath) {
+    return projectPath.replace(/[^A-Za-z0-9]/g, "-");
+}
+/** Normalize a configured project path for matching (trailing slash off). */
+function normalizeProjectPath(p) {
+    const trimmed = p.trim();
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
+/** The instances whose cwd is exactly the target project. */
+function instancesForProject(instances, projectPath) {
+    const target = normalizeProjectPath(projectPath);
+    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
+}
+/** A transcript younger than this is "actively working". */
+const TRANSCRIPT_FRESH_MS = 30_000;
+/**
+ * Decide the project's Claude state. Title marker wins when known (the tmux
+ * pane title's spinner stays animated through long tool calls, where the
+ * transcript goes quiet); transcript freshness covers hosts whose titles we
+ * can't read without launching apps.
+ */
+function projectClaudeState(args) {
+    if (!args.present)
+        return "none";
+    if (args.titleWorking === true)
+        return "working";
+    if (args.titleWorking === false)
+        return "waiting";
+    if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
+        return "working";
+    }
+    return "waiting";
+}
+const MONO$1 = "Menlo, Monaco, monospace";
+function truncate$1(value, max) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+/** Last path segment as the display name ("" -> "?"). */
+function projectBasename(projectPath) {
+    const normalized = normalizeProjectPath(projectPath);
+    const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+    return base || "?";
+}
+/**
+ * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
+ * project name in mono (hue seeded per project, so each project wears a
+ * stable colour), host as the eyebrow, the status bar lit when keystrokes
+ * would land in that session, and the Claude spark (amber turning = working,
+ * white still = waiting). No claude process → dashed bar, no spark. Hex
+ * colours only — the key rasterizer paints hsl() black.
+ */
+function buildClaudeProjectKeyImage(args) {
+    const name = truncate$1(projectBasename(args.project), 9);
+    const hue = sessionHue(projectBasename(args.project));
+    const spin = args.spin ?? 0;
+    let bar;
+    let nameFill;
+    let eyebrowFill = "";
+    if (args.claude === "none") {
+        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+        nameFill = "#6A716E";
+    }
+    else if (args.hot) {
+        bar =
+            `<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
+                `<stop offset="0" stop-color="${hslToHex(hue, 62, 46)}"/>` +
+                `<stop offset="1" stop-color="${hslToHex(hue, 66, 36)}"/>` +
+                `</linearGradient></defs>` +
+                `<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
+                `<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
+        nameFill = "#FFFFFF";
+        eyebrowFill = hslToHex(hue, 55, 72);
+    }
+    else {
+        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
+        nameFill = "#A6ADA9";
+        eyebrowFill = hslToHex(hue, 50, 70);
+    }
+    const eyebrow = args.host
+        ? `<text x="36" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1.2" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$1(args.host.toUpperCase(), 10))}</text>`
+        : "";
+    let spark = "";
+    if (args.claude !== "none") {
+        const color = args.claude === "working" ? "#F0A63C" : "#F2FFF6";
+        const angle = args.claude === "working" ? (spin % 12) * 30 : 0;
+        spark =
+            `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
+                `stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
+                `transform="rotate(${angle} 61 12)"/>`;
+    }
+    // tmux identity mark's sibling: a small spark outline at the bar's left
+    // end marks this as a Claude key even when idle.
+    const mark = `<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" ` +
+        `stroke="${args.claude === "none" ? "#8B9490" : args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70)}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
+        `<rect width="72" height="72" fill="#0F1211"/>` +
+        eyebrow +
+        spark +
+        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+        bar +
+        mark +
+        `</svg>`);
+}
+
+/**
+ * Scans the machine for running Claude Code CLI instances: `ps` enumerates
+ * pids+ttys (pgrep misses ancestors), one batched `lsof` maps every pid to
+ * its project cwd (~0.06s total, measured). Absolute binary paths — Stream
+ * Deck launches plugins with a minimal PATH. `exec` injectable for tests.
+ */
+const TIMEOUT_MS = 4000;
+function run(file, args, exec) {
+    return new Promise((resolve) => {
+        exec(file, args, { timeout: TIMEOUT_MS }, (error, stdout) => {
+            resolve(error ? "" : String(stdout ?? ""));
+        });
+    });
+}
+const PS_CLAUDE_ARGS = ["-axo", "pid=,tty=,comm="];
+function lsofCwdArgs(pids) {
+    return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
+}
+/** All running Claude Code CLI instances with their ttys and project cwds. */
+async function scanClaudeInstances(exec = execFile) {
+    const ps = await run("/bin/ps", PS_CLAUDE_ARGS, exec);
+    const procs = parsePsClaude(ps);
+    if (procs.length === 0)
+        return [];
+    const lsof = await run("/usr/sbin/lsof", lsofCwdArgs(procs.map((p) => p.pid)), exec);
+    const cwds = parseLsofCwds(lsof);
+    return procs
+        .map((p) => ({ pid: p.pid, tty: p.tty, cwd: cwds.get(p.pid) ?? "" }))
+        .filter((i) => i.cwd !== "");
+}
+/** Is a process with exactly this name running? (pgrep -x; used to avoid
+ * AppleScript-launching a terminal app that isn't open.) */
+function processRunning(name, exec = execFile) {
+    return new Promise((resolve) => {
+        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS }, (error) => {
+            resolve(!error);
+        });
+    });
+}
+
+/**
+ * Detect Claude Code inside tmux windows — and whether it is WORKING or
+ * WAITING for input — from signals tmux already captures. Claude Code sets
+ * the terminal title (OSC), which tmux stores as `pane_title`: while working
+ * the title starts with an animated braille spinner frame (U+2800–U+28FF);
+ * while idle at the prompt it starts with a static "✳". Presence is
+ * `pane_current_command == "claude"`. Pure parsing/decision only.
+ */
+/** tmux args listing every pane as `session|windowIndex|windowName|command|title`
+ * (title LAST — it is a task summary and may itself contain `|`). */
+const LIST_PANES_ARGS = [
+    "list-panes",
+    "-a",
+    "-F",
+    "#{session_name}|#{window_index}|#{window_name}|#{pane_current_command}|#{pane_title}",
+];
+/** Parse {@link LIST_PANES_ARGS} output; malformed lines are skipped. */
+function parsePanes(output) {
+    const panes = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split("|");
+        if (fields.length < 5)
+            continue;
+        panes.push({
+            session: fields[0],
+            windowIndex: Number.parseInt(fields[1], 10) || 0,
+            windowName: fields[2],
+            command: fields[3],
+            title: fields.slice(4).join("|"),
+        });
+    }
+    return panes;
+}
+/** tmux args listing every pane as `paneTty|session|windowIndex|command|title`
+ * (title LAST — it may contain `|`). Pane ttys identify tmux-hosted processes:
+ * they are invisible to iTerm/Terminal tab lists, so a raise-by-tty must
+ * detect them here and route through the tmux machinery instead. */
+const LIST_PANE_TTYS_ARGS = [
+    "list-panes",
+    "-a",
+    "-F",
+    "#{pane_tty}|#{session_name}|#{window_index}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
+];
+/** Parse {@link LIST_PANE_TTYS_ARGS} output; malformed lines are skipped. */
+function parsePaneTtys(output) {
+    const panes = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split("|");
+        if (fields.length < 7)
+            continue;
+        const windowIndex = Number.parseInt(fields[2], 10);
+        if (!Number.isFinite(windowIndex))
+            continue; // malformed line — never raise window 0 from garbage
+        panes.push({
+            tty: fields[0],
+            session: fields[1],
+            windowIndex,
+            receivesKeys: fields[3] === "1" && fields[4] === "1",
+            command: fields[5],
+            title: fields.slice(6).join("|"),
+        });
+    }
+    return panes;
+}
+/** Working/waiting from a pane title's leading marker (braille spinner =
+ * working, anything else = waiting); null when no title to judge. */
+function titleWorking(title) {
+    const trimmed = title.trim();
+    if (trimmed === "")
+        return null;
+    const cp = trimmed.codePointAt(0);
+    return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+}
+/** True when the string starts with a braille pattern char — Claude Code's
+ * animated working-spinner frames all live in U+2800–U+28FF. */
+function startsWithSpinner(title) {
+    const cp = title.codePointAt(0);
+    return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+}
+/**
+ * Claude Code's state inside one tmux window (matched by session + window
+ * name, same as the key's target). Several claude panes in one window:
+ * WORKING wins — the key should read busy if anything is busy.
+ */
+function claudeStateForWindow(panes, session, windowName) {
+    let state = "none";
+    for (const p of panes) {
+        if (p.session !== session || p.windowName !== windowName)
+            continue;
+        if (p.command !== "claude")
+            continue;
+        if (startsWithSpinner(p.title))
+            return "working";
+        state = "waiting";
+    }
+    return state;
+}
+
+/**
+ * Freshness of a project's newest Claude Code transcript. Sessions append to
+ * ~/.claude/projects/<slug>/<session>.jsonl while working; the newest file's
+ * mtime goes stale within seconds of the session going idle (verified live).
+ * Fully async and batch-bounded — this runs inside the shared poll of a
+ * plugin process that serves every key and dial.
+ */
+const BATCH = 64;
+/** Age in ms of the newest .jsonl transcript for the project, or null when
+ * the project has no transcript directory / no transcripts. */
+async function newestTranscriptAgeMs(projectPath, now = Date.now(), base = join(homedir(), ".claude", "projects")) {
+    const dir = join(base, projectSlug(projectPath));
+    try {
+        const names = (await readdir(dir)).filter((n) => n.endsWith(".jsonl"));
+        let newest = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < names.length; i += BATCH) {
+            const mtimes = await Promise.all(names.slice(i, i + BATCH).map(async (n) => {
+                try {
+                    return (await stat(join(dir, n))).mtimeMs;
+                }
+                catch {
+                    return null; // removed mid-scan
+                }
+            }));
+            for (const m of mtimes) {
+                if (m !== null && m > newest)
+                    newest = m;
+            }
+        }
+        return newest === Number.NEGATIVE_INFINITY ? null : Math.max(0, now - newest);
+    }
+    catch {
+        return null;
+    }
+}
+
+/** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
+function escapeForAppleScript(value) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/** iTerm2's bundle identifier (for frontmost-app checks). */
+const ITERM_BUNDLE_ID = "com.googlecode.iterm2";
+/**
+ * AppleScript returning the tty of iTerm's FOCUSED session — current session
+ * of the current tab of the current (front) window — or "" when there is no
+ * window. Only run this when iTerm is already frontmost: merely addressing an
+ * app via AppleScript launches it.
+ */
+const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
+	try
+		return tty of current session of current tab of current window
+	on error
+		return ""
+	end try
+end tell`;
+/**
+ * Build AppleScript that activates iTerm and selects the window+tab+session
+ * whose `tty` equals the given tty. The script returns "ok" if a match was
+ * found and selected, otherwise "notfound".
+ *
+ * The tty is escaped via {@link escapeForAppleScript} before interpolation so
+ * that quotes/backslashes in the value cannot break out of the AppleScript
+ * string literal.
+ *
+ * iTerm2's AppleScript application name is "iTerm". Each iTerm2 session exposes
+ * a `tty` property (e.g. "/dev/ttys000").
+ *
+ * @param tty - The tty device path to match (e.g. "/dev/ttys000").
+ * @returns The AppleScript source, or "" when `tty` is empty/whitespace-only
+ *          (the caller treats "" as nothing-to-do).
+ */
+function buildITermRaiseScript(tty) {
+    if (tty.trim() === "") {
+        return "";
+    }
+    const escapedTty = escapeForAppleScript(tty);
+    return `tell application "iTerm"
+	activate
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if (tty of s) is "${escapedTty}" then
+					select w
+					tell t to select
+					tell s to select
+					return "ok"
+				end if
+			end repeat
+		end repeat
+	end repeat
+end tell
+return "notfound"`;
+}
+
+/**
+ * Long-press detection for Keypad actions, factored out of Window Ring's
+ * proven pattern: the hold callback fires AT the threshold (immediate haptic
+ * of "something happened", no waiting for release), and a release before the
+ * threshold is reported as a short press for the caller to act on in onKeyUp.
+ * Pure timers, no SDK — unit-tested with fake timers.
+ */
+/** Press held this long (ms) registers as a long press. */
+const LONG_PRESS_MS$1 = 500;
+class PressGate {
+    holdMs;
+    timers = new Map();
+    constructor(holdMs = LONG_PRESS_MS$1) {
+        this.holdMs = holdMs;
+    }
+    /** Key went down: arm the hold callback. A second down re-arms. */
+    down(id, onHold) {
+        this.cancel(id);
+        const t = setTimeout(() => {
+            this.timers.delete(id);
+            onHold();
+        }, this.holdMs);
+        this.timers.set(id, t);
+    }
+    /**
+     * Key came up. Returns true for a short press (released before the
+     * threshold — the caller should run the normal action); false when the
+     * hold callback already fired or nothing was armed.
+     */
+    up(id) {
+        const t = this.timers.get(id);
+        if (t === undefined)
+            return false;
+        clearTimeout(t);
+        this.timers.delete(id);
+        return true;
+    }
+    /** Disarm without firing (e.g. the key disappeared mid-press). */
+    cancel(id) {
+        const t = this.timers.get(id);
+        if (t !== undefined)
+            clearTimeout(t);
+        this.timers.delete(id);
+    }
+}
+
+/**
+ * Pure parsing + target-resolution helpers for driving tmux from the plugin.
+ *
+ * None of these functions shell out — they take the raw stdout of tmux
+ * commands as strings and return plain data, so they are fully unit-testable.
+ */
+/**
+ * Parse the output of:
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_name}"
+ *
+ * Each non-blank line is split on `|`: `session | index | active | name…`.
+ * The window NAME is the LAST field and may itself contain `|` — the fixed
+ * fields come first and the remainder is joined back into the name. `active`
+ * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
+ */
+function parseWindows(output) {
+    const windows = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line.length === 0) {
+            continue;
+        }
+        const fields = line.split("|");
+        if (fields.length < 4) {
+            continue;
+        }
+        const [session, index, active] = fields;
+        windows.push({
+            session,
+            index: Number(index),
+            name: fields.slice(3).join("|"),
+            active: active === "1",
+        });
+    }
+    return windows;
+}
+/**
+ * Parse the output of:
+ *   tmux list-clients -F "#{client_tty}|#{client_session}"
+ *
+ * Returns a map of session name → client tty. If a session appears on more
+ * than one line, the FIRST occurrence wins. Blank and malformed lines (fewer
+ * than two `|`-separated fields) are skipped.
+ */
+function parseClients(output) {
+    const clients = new Map();
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line.length === 0) {
+            continue;
+        }
+        const fields = line.split("|");
+        if (fields.length < 2) {
+            continue;
+        }
+        const [tty, session] = fields;
+        if (!clients.has(session)) {
+            clients.set(session, tty);
+        }
+    }
+    return clients;
+}
+/**
+ * Reverse lookup on {@link parseClients}: which session is attached to the
+ * given client tty? Null for "" or an unknown tty.
+ */
+function sessionForTty(clients, tty) {
+    if (tty === "")
+        return null;
+    for (const [session, clientTty] of clients) {
+        if (clientTty === tty)
+            return session;
+    }
+    return null;
+}
+/**
+ * Resolve a user-supplied target string to a single {@link TmuxWindow}.
+ *
+ * The target is trimmed first; an empty/whitespace-only target returns `null`.
+ *
+ * Two forms are supported:
+ *
+ * - `"session:name"` — the part before `:` must match a window's session
+ *   exactly (case-insensitive) AND the part after must match the window's name
+ *   exactly (case-insensitive). If the part after `:` is all digits, it ALSO
+ *   matches when it equals the window's index.
+ *
+ * - `"name"` (no colon) — first try a case-insensitive EXACT name match across
+ *   all windows; if none, fall back to a case-insensitive SUBSTRING match.
+ *   Returns the first match in either pass.
+ *
+ * Returns `null` when nothing matches.
+ */
+function resolveTarget$1(windows, target) {
+    const trimmed = target.trim();
+    if (trimmed.length === 0) {
+        return null;
+    }
+    const colon = trimmed.indexOf(":");
+    if (colon !== -1) {
+        const sessionPart = trimmed.slice(0, colon).toLowerCase();
+        const namePart = trimmed.slice(colon + 1);
+        const namePartLower = namePart.toLowerCase();
+        const isIndex = namePart.length > 0 && /^\d+$/.test(namePart);
+        const indexValue = isIndex ? Number(namePart) : NaN;
+        for (const w of windows) {
+            if (w.session.toLowerCase() !== sessionPart) {
+                continue;
+            }
+            if (w.name.toLowerCase() === namePartLower) {
+                return w;
+            }
+            if (isIndex && w.index === indexValue) {
+                return w;
+            }
+        }
+        return null;
+    }
+    const targetLower = trimmed.toLowerCase();
+    // Pass 1: exact (case-insensitive) name match.
+    for (const w of windows) {
+        if (w.name.toLowerCase() === targetLower) {
+            return w;
+        }
+    }
+    // Pass 2: substring (case-insensitive) name match.
+    for (const w of windows) {
+        if (w.name.toLowerCase().includes(targetLower)) {
+            return w;
+        }
+    }
+    return null;
+}
+/** The tmux args that select the given window: `select-window -t <session>:<index>`. */
+function selectWindowArgs(w) {
+    return ["select-window", "-t", `${w.session}:${w.index}`];
+}
+/** Human-readable dropdown label, e.g. `"dev: movingavg"`. */
+function tmuxWindowLabel(w) {
+    return `${w.session}: ${w.name}`;
+}
+/** Stable dropdown/target value, e.g. `"dev:movingavg"`. */
+function tmuxWindowValue(w) {
+    return `${w.session}:${w.name}`;
+}
+
+/**
+ * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
+ * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
+ * are injectable for tests.
+ */
+const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
+/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
+function findTmuxPath(exists = existsSync) {
+    return TMUX_CANDIDATES.find(exists) ?? "tmux";
+}
+/** tmux args that emit one window per line as `session|index|active|name`.
+ * The NAME is last: window names may legally contain `|`, so every fixed-width
+ * field comes first and the parser joins the remainder back into the name. */
+const LIST_WINDOWS_ARGS = [
+    "list-windows",
+    "-a",
+    "-F",
+    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
+];
+/** tmux args that emit one client per line as `tty|session`. */
+const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
+/** Run tmux with the given args and capture stdout/stderr. */
+function runTmux(args, tmuxPath, exec = execFile) {
+    return new Promise((resolve) => {
+        exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
+            resolve({
+                ok: !error,
+                stdout: String(stdout ?? ""),
+                stderr: String(stderr ?? ""),
+            });
+        });
+    });
+}
+
+/**
+ * Terminal.app scripting for the Claude Project key: read the focused tab's
+ * tty and raise the window+tab hosting a given tty. Verified against the
+ * Terminal sdef: tabs expose read-only `tty`, windows a settable
+ * `selected tab` / `frontmost`. Only address Terminal when it is RUNNING —
+ * `tell application "Terminal"` would launch it.
+ */
+const TERMINAL_BUNDLE_ID = "com.apple.Terminal";
+/** Process name for the running check (pgrep -x). */
+const TERMINAL_PROCESS_NAME = "Terminal";
+/** AppleScript returning the tty of Terminal's focused tab, or "". */
+const TERMINAL_FOCUSED_TTY_SCRIPT = `tell application "Terminal"
+	try
+		if (count of windows) is 0 then return ""
+		return tty of selected tab of front window
+	on error
+		return ""
+	end try
+end tell`;
+/**
+ * AppleScript that selects the Terminal window+tab whose tty matches, raises
+ * it, and activates Terminal. Returns "ok" or "notfound".
+ */
+function buildTerminalRaiseScript(tty) {
+    if (tty.trim() === "") {
+        return "";
+    }
+    const escapedTty = escapeForAppleScript(tty);
+    return `tell application "Terminal"
+	repeat with w in windows
+		repeat with t in tabs of w
+			if (tty of t) is "${escapedTty}" then
+				set selected tab of w to t
+				set frontmost of w to true
+				activate
+				return "ok"
+			end if
+		end repeat
+	end repeat
+end tell
+return "notfound"`;
+}
+
+/** How often the key faces re-check the live state. */
+const POLL_MS$3 = 2500;
+/**
+ * Live key face for a Claude Code PROJECT, host-independent: works whether
+ * the session runs under tmux, plain iTerm2, or Terminal.app. The face shows
+ * the project name, whether keystrokes would land in that session (status
+ * bar), and the Claude spark (amber turning = working, white still = waiting;
+ * dashed bar = no claude running there). Press raises the hosting window —
+ * tmux-hosted instances sit on tmux pane ttys that iTerm/Terminal have never
+ * heard of, so those route through the tmux raise machinery. Hold to capture
+ * the frontmost session's project ("teach the button").
+ */
+let ClaudeProject = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.claudeproject" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        gate = new PressGate();
+        visible = new Map();
+        timer;
+        refreshing = false;
+        spin = 0;
+        lastImage = new Map();
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => void this.refreshAll(), POLL_MS$3);
+            }
+            await this.refreshAll();
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+            this.lastImage.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Claude Project capture failed: ${String(err)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return; // long press already captured
+            await this.focus(ev.action);
+        }
+        /** One query set per tick: process scan, tmux pane/client maps, frontmost
+         * app + its focused tty. Transcript freshness is checked per project. */
+        async snapshot() {
+            const tmux = findTmuxPath();
+            const [instances, panesRes, clientsRes, front] = await Promise.all([
+                scanClaudeInstances(),
+                runTmux(LIST_PANE_TTYS_ARGS, tmux),
+                runTmux(LIST_CLIENTS_ARGS, tmux),
+                runJxa(FRONT_APP_BUNDLE_JXA),
+            ]);
+            const frontBundle = front.ok ? front.stdout.trim() : "";
+            // Only address a terminal app that is FRONTMOST (addressing via
+            // AppleScript would launch it; frontmost implies running).
+            let focusedTty = "";
+            if (frontBundle === ITERM_BUNDLE_ID) {
+                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            }
+            else if (frontBundle === TERMINAL_BUNDLE_ID) {
+                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            }
+            return {
+                instances,
+                panes: panesRes.ok ? parsePaneTtys(panesRes.stdout) : [],
+                clients: parseClients(clientsRes.stdout),
+                frontBundle,
+                focusedTty,
+            };
+        }
+        async refreshAll() {
+            if (this.refreshing || this.visible.size === 0)
+                return;
+            this.refreshing = true;
+            try {
+                const snap = await this.snapshot();
+                this.spin++;
+                for (const key of this.visible.values()) {
+                    const settings = await key.getSettings();
+                    const project = (settings.project ?? "").trim();
+                    const image = await this.renderKey(project, snap);
+                    if (this.lastImage.get(key.id) === image)
+                        continue;
+                    try {
+                        await key.setImage(image);
+                        this.lastImage.set(key.id, image);
+                    }
+                    catch (err) {
+                        streamDeck.logger.debug(`Claude Project image skipped: ${String(err)}`);
+                    }
+                }
+            }
+            finally {
+                this.refreshing = false;
+            }
+        }
+        async renderKey(project, snap) {
+            const mine = project ? instancesForProject(snap.instances, project) : [];
+            const pane = this.paneFor(mine, snap.panes);
+            const instance = pane.instance ?? mine[0];
+            let host = "";
+            let hot = false;
+            let title = null;
+            if (instance !== undefined) {
+                if (pane.pane !== undefined) {
+                    host = "tmux";
+                    title = titleWorking(pane.pane.title);
+                    // Keystrokes land there when the pane would receive its session's
+                    // keys AND that session's client is the focused iTerm session.
+                    hot =
+                        pane.pane.receivesKeys &&
+                            snap.focusedTty !== "" &&
+                            snap.clients.get(pane.pane.session) === snap.focusedTty;
+                }
+                else {
+                    hot = snap.focusedTty !== "" && instance.tty === snap.focusedTty;
+                    if (hot) {
+                        host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
+                    }
+                }
+            }
+            const claude = projectClaudeState({
+                present: instance !== undefined,
+                titleWorking: title,
+                transcriptAgeMs: instance !== undefined ? await newestTranscriptAgeMs(project) : null,
+            });
+            return svgToDataUri(buildClaudeProjectKeyImage({
+                project: project || "no target",
+                host,
+                hot,
+                claude,
+                spin: this.spin,
+            }));
+        }
+        /** The project's tmux-hosted instance and its pane, if any. */
+        paneFor(mine, panes) {
+            for (const instance of mine) {
+                const pane = panes.find((p) => p.tty === instance.tty);
+                if (pane !== undefined)
+                    return { instance, pane };
+            }
+            return { instance: mine[0] };
+        }
+        /** Short press: raise whatever window hosts the project's session. */
+        async focus(key) {
+            const settings = await key.getSettings();
+            const project = (settings.project ?? "").trim();
+            if (!project) {
+                streamDeck.logger.warn("Claude Project pressed with no project configured.");
+                await key.showAlert();
+                return;
+            }
+            // Resolve FRESH at press time — never from the poll cache.
+            const snap = await this.snapshot();
+            const mine = instancesForProject(snap.instances, project);
+            if (mine.length === 0) {
+                streamDeck.logger.warn(`Claude Project: no claude running in ${project}.`);
+                await key.showAlert();
+                return;
+            }
+            const { instance, pane } = this.paneFor(mine, snap.panes);
+            const target = instance ?? mine[0];
+            if (pane !== undefined) {
+                // tmux-hosted: raise the hosting iTerm window by CLIENT tty, then
+                // switch tmux to the exact window.
+                const clientTty = snap.clients.get(pane.session);
+                const raise = await runAppleScript(clientTty ? buildITermRaiseScript(clientTty) : 'tell application "iTerm" to activate');
+                if (!raise.ok) {
+                    streamDeck.logger.error(`Claude Project raise failed (${raise.code}): ${raise.stderr}`);
+                    await key.showAlert();
+                    return;
+                }
+                const tmux = findTmuxPath();
+                const selected = await runTmux(["select-window", "-t", `${pane.session}:${pane.windowIndex}`], tmux);
+                if (!selected.ok) {
+                    streamDeck.logger.error(`Claude Project select-window failed: ${selected.stderr}`);
+                    await key.showAlert();
+                    return;
+                }
+                await key.showOk();
+                return;
+            }
+            // Plain terminal: try the running hosts by tty. Only address apps that
+            // are RUNNING — AppleScript launches the ones that aren't.
+            if (await processRunning("iTerm2")) {
+                const raise = await runAppleScript(buildITermRaiseScript(target.tty));
+                if (raise.ok && raise.stdout.includes("ok")) {
+                    await key.showOk();
+                    return;
+                }
+            }
+            if (await processRunning(TERMINAL_PROCESS_NAME)) {
+                const raise = await runAppleScript(buildTerminalRaiseScript(target.tty));
+                if (raise.ok && raise.stdout.includes("ok")) {
+                    await key.showOk();
+                    return;
+                }
+            }
+            streamDeck.logger.warn(`Claude Project: no window found hosting ${target.tty}.`);
+            await key.showAlert();
+        }
+        /** Long press: capture the frontmost session's project into this button. */
+        async capture(key) {
+            const snap = await this.snapshot();
+            if (snap.focusedTty === "") {
+                streamDeck.logger.warn("Claude Project capture: no terminal is frontmost.");
+                await key.showAlert();
+                return;
+            }
+            // Direct hit: the focused tab/session IS a claude tty (plain host).
+            let cwd = snap.instances.find((i) => i.tty === snap.focusedTty)?.cwd;
+            // tmux: the focused tty is a CLIENT tty; find the session it shows, then
+            // the pane that would receive keys, then the claude on that pane tty.
+            if (cwd === undefined) {
+                for (const [session, clientTty] of snap.clients) {
+                    if (clientTty !== snap.focusedTty)
+                        continue;
+                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
+                    if (pane !== undefined) {
+                        cwd = snap.instances.find((i) => i.tty === pane.tty)?.cwd;
+                    }
+                    break;
+                }
+            }
+            if (cwd === undefined || cwd === "") {
+                streamDeck.logger.warn("Claude Project capture: focused terminal is not running claude.");
+                await key.showAlert();
+                return;
+            }
+            const settings = await key.getSettings();
+            await key.setSettings({ ...settings, project: cwd });
+            streamDeck.logger.info(`Claude Project captured ${cwd}.`);
+            await key.showOk();
+            await this.refreshAll();
+        }
+    });
+    return _classThis;
+})();
+
 /**
  * Pure logic for the BBEdit document dial: move between the text documents open
  * in BBEdit's front window, in a user-chosen traversal order. We cycle `text
@@ -8973,536 +10115,6 @@ let BBEditDocDial = (() => {
 })();
 
 /**
- * Detect Claude Code inside tmux windows — and whether it is WORKING or
- * WAITING for input — from signals tmux already captures. Claude Code sets
- * the terminal title (OSC), which tmux stores as `pane_title`: while working
- * the title starts with an animated braille spinner frame (U+2800–U+28FF);
- * while idle at the prompt it starts with a static "✳". Presence is
- * `pane_current_command == "claude"`. Pure parsing/decision only.
- */
-/** tmux args listing every pane as `session|windowIndex|windowName|command|title`
- * (title LAST — it is a task summary and may itself contain `|`). */
-const LIST_PANES_ARGS = [
-    "list-panes",
-    "-a",
-    "-F",
-    "#{session_name}|#{window_index}|#{window_name}|#{pane_current_command}|#{pane_title}",
-];
-/** Parse {@link LIST_PANES_ARGS} output; malformed lines are skipped. */
-function parsePanes(output) {
-    const panes = [];
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line === "")
-            continue;
-        const fields = line.split("|");
-        if (fields.length < 5)
-            continue;
-        panes.push({
-            session: fields[0],
-            windowIndex: Number.parseInt(fields[1], 10) || 0,
-            windowName: fields[2],
-            command: fields[3],
-            title: fields.slice(4).join("|"),
-        });
-    }
-    return panes;
-}
-/** True when the string starts with a braille pattern char — Claude Code's
- * animated working-spinner frames all live in U+2800–U+28FF. */
-function startsWithSpinner(title) {
-    const cp = title.codePointAt(0);
-    return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
-}
-/**
- * Claude Code's state inside one tmux window (matched by session + window
- * name, same as the key's target). Several claude panes in one window:
- * WORKING wins — the key should read busy if anything is busy.
- */
-function claudeStateForWindow(panes, session, windowName) {
-    let state = "none";
-    for (const p of panes) {
-        if (p.session !== session || p.windowName !== windowName)
-            continue;
-        if (p.command !== "claude")
-            continue;
-        if (startsWithSpinner(p.title))
-            return "working";
-        state = "waiting";
-    }
-    return state;
-}
-
-/** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
-function escapeForAppleScript(value) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/** iTerm2's bundle identifier (for frontmost-app checks). */
-const ITERM_BUNDLE_ID = "com.googlecode.iterm2";
-/**
- * AppleScript returning the tty of iTerm's FOCUSED session — current session
- * of the current tab of the current (front) window — or "" when there is no
- * window. Only run this when iTerm is already frontmost: merely addressing an
- * app via AppleScript launches it.
- */
-const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
-	try
-		return tty of current session of current tab of current window
-	on error
-		return ""
-	end try
-end tell`;
-/**
- * Build AppleScript that activates iTerm and selects the window+tab+session
- * whose `tty` equals the given tty. The script returns "ok" if a match was
- * found and selected, otherwise "notfound".
- *
- * The tty is escaped via {@link escapeForAppleScript} before interpolation so
- * that quotes/backslashes in the value cannot break out of the AppleScript
- * string literal.
- *
- * iTerm2's AppleScript application name is "iTerm". Each iTerm2 session exposes
- * a `tty` property (e.g. "/dev/ttys000").
- *
- * @param tty - The tty device path to match (e.g. "/dev/ttys000").
- * @returns The AppleScript source, or "" when `tty` is empty/whitespace-only
- *          (the caller treats "" as nothing-to-do).
- */
-function buildITermRaiseScript(tty) {
-    if (tty.trim() === "") {
-        return "";
-    }
-    const escapedTty = escapeForAppleScript(tty);
-    return `tell application "iTerm"
-	activate
-	repeat with w in windows
-		repeat with t in tabs of w
-			repeat with s in sessions of t
-				if (tty of s) is "${escapedTty}" then
-					select w
-					tell t to select
-					tell s to select
-					return "ok"
-				end if
-			end repeat
-		end repeat
-	end repeat
-end tell
-return "notfound"`;
-}
-
-/**
- * Long-press detection for Keypad actions, factored out of Window Ring's
- * proven pattern: the hold callback fires AT the threshold (immediate haptic
- * of "something happened", no waiting for release), and a release before the
- * threshold is reported as a short press for the caller to act on in onKeyUp.
- * Pure timers, no SDK — unit-tested with fake timers.
- */
-/** Press held this long (ms) registers as a long press. */
-const LONG_PRESS_MS$1 = 500;
-class PressGate {
-    holdMs;
-    timers = new Map();
-    constructor(holdMs = LONG_PRESS_MS$1) {
-        this.holdMs = holdMs;
-    }
-    /** Key went down: arm the hold callback. A second down re-arms. */
-    down(id, onHold) {
-        this.cancel(id);
-        const t = setTimeout(() => {
-            this.timers.delete(id);
-            onHold();
-        }, this.holdMs);
-        this.timers.set(id, t);
-    }
-    /**
-     * Key came up. Returns true for a short press (released before the
-     * threshold — the caller should run the normal action); false when the
-     * hold callback already fired or nothing was armed.
-     */
-    up(id) {
-        const t = this.timers.get(id);
-        if (t === undefined)
-            return false;
-        clearTimeout(t);
-        this.timers.delete(id);
-        return true;
-    }
-    /** Disarm without firing (e.g. the key disappeared mid-press). */
-    cancel(id) {
-        const t = this.timers.get(id);
-        if (t !== undefined)
-            clearTimeout(t);
-        this.timers.delete(id);
-    }
-}
-
-/** Small shared SVG helpers used by the key/touchscreen image builders. */
-/** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
-function svgToDataUri(svg) {
-    return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
-}
-/** Round to one decimal place — keeps generated SVG coordinates compact. */
-function round(n) {
-    return Math.round(n * 10) / 10;
-}
-/**
- * Convert HSL (h 0–360, s/l 0–100) to a #rrggbb hex string. Key-face SVGs must
- * not use `hsl()` literals: Stream Deck's KEY rasterizer silently paints them
- * as black (the touchscreen pipeline accepts them; keys do not).
- */
-function hslToHex(h, s, l) {
-    const sn = s / 100;
-    const ln = l / 100;
-    const a = sn * Math.min(ln, 1 - ln);
-    const channel = (n) => {
-        const k = (n + h / 30) % 12;
-        const c = ln - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-        return Math.round(255 * c)
-            .toString(16)
-            .padStart(2, "0");
-    };
-    return `#${channel(0)}${channel(8)}${channel(4)}`;
-}
-
-/**
- * Pure parsing + target-resolution helpers for driving tmux from the plugin.
- *
- * None of these functions shell out — they take the raw stdout of tmux
- * commands as strings and return plain data, so they are fully unit-testable.
- */
-/**
- * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_name}"
- *
- * Each non-blank line is split on `|`: `session | index | active | name…`.
- * The window NAME is the LAST field and may itself contain `|` — the fixed
- * fields come first and the remainder is joined back into the name. `active`
- * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
- */
-function parseWindows(output) {
-    const windows = [];
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line.length === 0) {
-            continue;
-        }
-        const fields = line.split("|");
-        if (fields.length < 4) {
-            continue;
-        }
-        const [session, index, active] = fields;
-        windows.push({
-            session,
-            index: Number(index),
-            name: fields.slice(3).join("|"),
-            active: active === "1",
-        });
-    }
-    return windows;
-}
-/**
- * Parse the output of:
- *   tmux list-clients -F "#{client_tty}|#{client_session}"
- *
- * Returns a map of session name → client tty. If a session appears on more
- * than one line, the FIRST occurrence wins. Blank and malformed lines (fewer
- * than two `|`-separated fields) are skipped.
- */
-function parseClients(output) {
-    const clients = new Map();
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line.length === 0) {
-            continue;
-        }
-        const fields = line.split("|");
-        if (fields.length < 2) {
-            continue;
-        }
-        const [tty, session] = fields;
-        if (!clients.has(session)) {
-            clients.set(session, tty);
-        }
-    }
-    return clients;
-}
-/**
- * Reverse lookup on {@link parseClients}: which session is attached to the
- * given client tty? Null for "" or an unknown tty.
- */
-function sessionForTty(clients, tty) {
-    if (tty === "")
-        return null;
-    for (const [session, clientTty] of clients) {
-        if (clientTty === tty)
-            return session;
-    }
-    return null;
-}
-/**
- * Resolve a user-supplied target string to a single {@link TmuxWindow}.
- *
- * The target is trimmed first; an empty/whitespace-only target returns `null`.
- *
- * Two forms are supported:
- *
- * - `"session:name"` — the part before `:` must match a window's session
- *   exactly (case-insensitive) AND the part after must match the window's name
- *   exactly (case-insensitive). If the part after `:` is all digits, it ALSO
- *   matches when it equals the window's index.
- *
- * - `"name"` (no colon) — first try a case-insensitive EXACT name match across
- *   all windows; if none, fall back to a case-insensitive SUBSTRING match.
- *   Returns the first match in either pass.
- *
- * Returns `null` when nothing matches.
- */
-function resolveTarget$1(windows, target) {
-    const trimmed = target.trim();
-    if (trimmed.length === 0) {
-        return null;
-    }
-    const colon = trimmed.indexOf(":");
-    if (colon !== -1) {
-        const sessionPart = trimmed.slice(0, colon).toLowerCase();
-        const namePart = trimmed.slice(colon + 1);
-        const namePartLower = namePart.toLowerCase();
-        const isIndex = namePart.length > 0 && /^\d+$/.test(namePart);
-        const indexValue = isIndex ? Number(namePart) : NaN;
-        for (const w of windows) {
-            if (w.session.toLowerCase() !== sessionPart) {
-                continue;
-            }
-            if (w.name.toLowerCase() === namePartLower) {
-                return w;
-            }
-            if (isIndex && w.index === indexValue) {
-                return w;
-            }
-        }
-        return null;
-    }
-    const targetLower = trimmed.toLowerCase();
-    // Pass 1: exact (case-insensitive) name match.
-    for (const w of windows) {
-        if (w.name.toLowerCase() === targetLower) {
-            return w;
-        }
-    }
-    // Pass 2: substring (case-insensitive) name match.
-    for (const w of windows) {
-        if (w.name.toLowerCase().includes(targetLower)) {
-            return w;
-        }
-    }
-    return null;
-}
-/** The tmux args that select the given window: `select-window -t <session>:<index>`. */
-function selectWindowArgs(w) {
-    return ["select-window", "-t", `${w.session}:${w.index}`];
-}
-/** Human-readable dropdown label, e.g. `"dev: movingavg"`. */
-function tmuxWindowLabel(w) {
-    return `${w.session}: ${w.name}`;
-}
-/** Stable dropdown/target value, e.g. `"dev:movingavg"`. */
-function tmuxWindowValue(w) {
-    return `${w.session}:${w.name}`;
-}
-
-/**
- * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
- * push for last-window, and render a dynamic touchscreen background that
- * reflects the current session/window. All functions are pure (no tmux, no
- * Stream Deck) so they unit test in isolation.
- */
-/** Toggle the dial's scope (touch-tap). */
-function toggleScope(scope) {
-    return scope === "session" ? "all" : "session";
-}
-/**
- * tmux args to move to the next/previous window. Untargeted, tmux acts on its
- * own "current" session; pass `session` to scope to the session actually in
- * the frontmost macOS window.
- */
-function selectWindowDirArgs(direction, session) {
-    const base = direction === "next" ? ["next-window"] : ["previous-window"];
-    return session ? [...base, "-t", session] : base;
-}
-/** tmux args to toggle to the previously active window of `session`
- * (push = back-and-forth). */
-function lastWindowArgs(session) {
-    return ["last-window", "-t", session];
-}
-/** tmux args to toggle the given CLIENT to its previously active session
- * (push in "all" scope). Scoped with -c so a background client never moves. */
-function lastSessionArgs(clientTty) {
-    return ["switch-client", "-c", clientTty, "-l"];
-}
-/**
- * The window a rotation should land on in "all" scope: the neighbour of the
- * current window in the flattened all-sessions list (wrapping across session
- * boundaries). Falls back to the first window when the current one isn't in
- * the list; null only for an empty list.
- */
-function nextWindowAcross(windows, current, direction) {
-    const n = windows.length;
-    if (n === 0)
-        return null;
-    const idx = windows.findIndex((w) => w.session === current.session && w.index === current.index);
-    if (idx < 0)
-        return windows[0];
-    const target = direction === "next" ? (idx + 1) % n : (idx - 1 + n) % n;
-    return windows[target];
-}
-/**
- * tmux args that jump a client to a window in ANY session.
- * `switch-client -t sess:idx` changes session and window in one step
- * (`select-window` alone cannot leave the current session). Pass the front
- * client's tty as `clientTty` — untargeted, tmux moves ITS "current client",
- * which can be a background terminal.
- */
-function switchToWindowArgs(w, clientTty) {
-    const target = ["-t", `${w.session}:${w.index}`];
-    return clientTty
-        ? ["switch-client", "-c", clientTty, ...target]
-        : ["switch-client", ...target];
-}
-// Name LAST — window names may contain `|` (fixed fields first, name joined).
-const CURRENT_WINDOW_FORMAT = "#{session_name}|#{window_index}|#{window_name}";
-/** {@link CURRENT_WINDOW_ARGS} scoped to a session's active window. */
-function currentWindowArgs(session) {
-    return ["display-message", "-p", "-t", session, CURRENT_WINDOW_FORMAT];
-}
-/** tmux args listing the active flag of each window in the given session
- * (untargeted when omitted — tmux's own "current" session). */
-function windowFlagsArgs(session) {
-    const base = ["list-windows", "-F", "#{window_active}"];
-    return session ? [...base, "-t", session] : base;
-}
-/** Parse `session|index|name…` (name last, may contain `|`). */
-function parseCurrentWindow(output) {
-    const fields = output.trim().split("|");
-    return {
-        session: fields[0] ?? "",
-        index: Number.parseInt(fields[1] ?? "", 10) || 0,
-        name: fields.slice(2).join("|"),
-    };
-}
-/**
- * "Teach the button": the Focus-tmux target string for a captured current
- * window, in the same `session:name` form the dropdown persists. "" (nothing
- * to save) when the session is blank — i.e. no tmux server was running.
- */
-function captureTmuxTarget(current) {
-    if (current.session.trim() === "")
-        return "";
-    return `${current.session}:${current.name}`;
-}
-/** Parse the per-window active flags ("1" = active) preserving window order. */
-function parseActiveFlags(output) {
-    return output
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "")
-        .map((line) => line === "1");
-}
-/** Deterministic 0–359 hue derived from a session name, so colours are stable. */
-function sessionHue(session) {
-    let h = 0;
-    for (let i = 0; i < session.length; i++) {
-        h = (h * 31 + session.charCodeAt(i)) % 360;
-    }
-    return h;
-}
-/** Escape text for safe embedding inside SVG/XML. */
-function escapeXml(value) {
-    return value
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&apos;");
-}
-/** Row of position dots; the active window's dot is larger and brighter. */
-function dotsSvg(count, activeIndex, hue) {
-    if (count <= 0)
-        return "";
-    // Shrink the gap when many windows must fit (all-sessions scope) so the
-    // row never overflows the 200px strip.
-    const gap = count > 1 ? Math.min(14, 180 / (count - 1)) : 14;
-    const startX = 100 - ((count - 1) * gap) / 2;
-    const y = 86;
-    let out = "";
-    for (let i = 0; i < count; i++) {
-        const cx = round(startX + i * gap);
-        const active = i === activeIndex;
-        const r = active ? 4 : 2.5;
-        const fill = active ? `hsl(${hue},70%,78%)` : `hsl(${hue},30%,45%)`;
-        out += `<circle cx="${cx}" cy="${y}" r="${r}" fill="${fill}"/>`;
-    }
-    return out;
-}
-/** Truncate a label so it fits the 200px touch strip. */
-function truncate$1(value, max = 16) {
-    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-/**
- * Build the 200×100 touchscreen image as an SVG string: a session-tinted
- * vertical gradient, faint left/right chevrons hinting the dial rotates, the
- * session name (top) and current window name (centre), and a row of dots
- * showing the window position. Stream Deck layout items may not overlap, so all
- * of this lives in one full-area pixmap. User text is XML-escaped.
- */
-function buildBackgroundSvg(opts) {
-    const { hue, session, window, count, activeIndex, badge } = opts;
-    const badgeSvg = badge
-        ? `<text x="192" y="17" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1" fill="hsl(${hue},60%,85%)" opacity="0.9">${escapeXml(badge)}</text>`
-        : "";
-    return (`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">` +
-        `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
-        `<stop offset="0" stop-color="hsl(${hue},55%,24%)"/>` +
-        `<stop offset="1" stop-color="hsl(${hue},60%,10%)"/>` +
-        `</linearGradient></defs>` +
-        `<rect width="200" height="100" fill="url(#g)"/>` +
-        `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$1(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$1(window))}</text>` +
-        dotsSvg(count, activeIndex, hue) +
-        badgeSvg +
-        `</svg>`);
-}
-/** Build the setFeedback payload for the current window + window flags. */
-function buildWindowFeedback(current, flags) {
-    const svg = buildBackgroundSvg({
-        hue: sessionHue(current.session),
-        session: current.session,
-        window: current.name,
-        count: flags.length,
-        activeIndex: flags.indexOf(true),
-    });
-    return { bg: svgToDataUri(svg) };
-}
-/**
- * setFeedback payload for "all" scope: the dots span every window of every
- * session (current window highlighted) and an ALL badge marks the scope.
- */
-function buildAllWindowsFeedback(windows, current) {
-    const svg = buildBackgroundSvg({
-        hue: sessionHue(current.session),
-        session: current.session,
-        window: current.name,
-        count: windows.length,
-        activeIndex: windows.findIndex((w) => w.session === current.session && w.index === current.index),
-        badge: "ALL",
-    });
-    return { bg: svgToDataUri(svg) };
-}
-
-/**
  * Live key face for Focus tmux Window: a miniature tmux pane whose bottom
  * status bar lights up — with a block cursor — exactly when the button's tmux
  * window would receive keyboard input (active window of its session, that
@@ -9604,40 +10216,6 @@ spin = 0) {
         bar +
         glyph +
         `</svg>`);
-}
-
-/**
- * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
- * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
- * are injectable for tests.
- */
-const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
-/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
-function findTmuxPath(exists = existsSync) {
-    return TMUX_CANDIDATES.find(exists) ?? "tmux";
-}
-/** tmux args that emit one window per line as `session|index|active|name`.
- * The NAME is last: window names may legally contain `|`, so every fixed-width
- * field comes first and the parser joins the remainder back into the name. */
-const LIST_WINDOWS_ARGS = [
-    "list-windows",
-    "-a",
-    "-F",
-    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
-];
-/** tmux args that emit one client per line as `tty|session`. */
-const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
-/** Run tmux with the given args and capture stdout/stderr. */
-function runTmux(args, tmuxPath, exec = execFile) {
-    return new Promise((resolve) => {
-        exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
-            resolve({
-                ok: !error,
-                stdout: String(stdout ?? ""),
-                stderr: String(stderr ?? ""),
-            });
-        });
-    });
 }
 
 /**
@@ -11667,6 +12245,7 @@ let WindowRing = (() => {
 
 streamDeck.logger.setLevel(LogLevel.INFO);
 streamDeck.actions.registerAction(new JumpToTab());
+streamDeck.actions.registerAction(new ClaudeProject());
 streamDeck.actions.registerAction(new ScrollWindow());
 streamDeck.actions.registerAction(new SwitchApp());
 streamDeck.actions.registerAction(new FocusTmuxWindow());

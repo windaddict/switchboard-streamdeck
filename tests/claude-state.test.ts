@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
 	claudeStateForWindow,
 	LIST_PANES_ARGS,
+	LIST_PANE_TTYS_ARGS,
 	parsePanes,
+	parsePaneTtys,
+	titleWorking,
 } from "../src/mac/claude-state.js";
 
 const OUTPUT = [
@@ -63,5 +66,51 @@ describe("claudeStateForWindow", () => {
 	});
 	it("a claude with a plain title counts as waiting (unknown-but-present)", () => {
 		expect(claudeStateForWindow(parsePanes("s|1|w|claude|zsh"), "s", "w")).toBe("waiting");
+	});
+});
+
+describe("parsePaneTtys", () => {
+	const OUT = [
+		"/dev/ttys019|dev|1|1|1|claude|⠐ Building the app",
+		"/dev/ttys020|dev|1|0|1|fish|~/code",
+		"/dev/ttys021|dev|2|1|0|claude|✳ Done | done",
+	].join("\n");
+	it("parses tty/session/index/activity/command/title (title last, pipes kept)", () => {
+		const panes = parsePaneTtys(OUT);
+		expect(panes[0]).toEqual({
+			tty: "/dev/ttys019",
+			session: "dev",
+			windowIndex: 1,
+			receivesKeys: true,
+			command: "claude",
+			title: "⠐ Building the app",
+		});
+		expect(panes[2].title).toBe("✳ Done | done");
+	});
+	it("receivesKeys requires BOTH pane-active and window-active", () => {
+		const panes = parsePaneTtys(OUT);
+		expect(panes[1].receivesKeys).toBe(false); // inactive pane
+		expect(panes[2].receivesKeys).toBe(false); // active pane, background window
+	});
+	it("format asks for the title last", () => {
+		expect(LIST_PANE_TTYS_ARGS[3].endsWith("#{pane_title}")).toBe(true);
+	});
+});
+
+describe("titleWorking", () => {
+	it("braille = working, ✳ = waiting, empty = unknown", () => {
+		expect(titleWorking("⠐ Fixing")).toBe(true);
+		expect(titleWorking("✳ Ready")).toBe(false);
+		expect(titleWorking("")).toBeNull();
+		expect(titleWorking("   ")).toBeNull();
+	});
+	it("reads the marker after leading whitespace", () => {
+		expect(titleWorking("  ⠐ Fixing")).toBe(true);
+	});
+});
+
+describe("parsePaneTtys — malformed guard", () => {
+	it("skips a line whose window index is not numeric (never window 0 from garbage)", () => {
+		expect(parsePaneTtys("/dev/ttys001|dev|x|1|1|claude|t")).toEqual([]);
 	});
 });
