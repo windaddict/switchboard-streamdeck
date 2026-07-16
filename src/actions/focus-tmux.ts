@@ -11,6 +11,7 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript, runJxa } from "../applescript/runner.js";
+import { CoalescedRunner } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import { claudeStateForWindow, LIST_PANES_ARGS, parsePanes } from "../mac/claude-state.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
@@ -58,7 +59,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	private readonly gate = new PressGate();
 	private readonly visible = new Map<string, KeyAction<FocusTmuxSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
-	private refreshing = false;
+	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private spin = 0; // poll tick counter — rotates the working spark
 	private readonly lastImage = new Map<string, string>(); // skip identical repaints
 
@@ -100,10 +101,16 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	 * nothing is hot and the iTerm query is skipped), tmux windows + clients,
 	 * and iTerm's focused-session tty.
 	 */
-	private async refreshAll(): Promise<void> {
-		if (this.refreshing || this.visible.size === 0) return;
-		this.refreshing = true;
-		try {
+	/** Coalesced: an explicit repaint request colliding with an in-flight poll
+	 * tick queues a rerun instead of being dropped — a freshly captured or
+	 * raised key must never keep its old face for another poll cycle. */
+	private refreshAll(): Promise<void> {
+		return this.refresher.request();
+	}
+
+	private async doRefreshAll(): Promise<void> {
+		if (this.visible.size === 0) return;
+		{
 			const tmux = findTmuxPath();
 			this.spin++;
 			const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
@@ -143,8 +150,6 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
 				}
 			}
-		} finally {
-			this.refreshing = false;
 		}
 	}
 
@@ -203,6 +208,9 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 		await key.showOk();
 		await this.refreshAll(); // the press changed focus — flip the dots now
+		// NSWorkspace can still report the OLD frontmost app right after the
+		// raise; one short-settle re-refresh corrects the cold-then-fix flicker.
+		setTimeout(() => void this.refreshAll(), 450);
 	}
 
 	/**

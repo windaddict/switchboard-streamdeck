@@ -8685,6 +8685,53 @@ let CycleAppWindows = (() => {
     return _classThis;
 })();
 
+/**
+ * Overlap-safe job coalescing for the polling actions. A poll tick and an
+ * explicit "state just changed, repaint now" request can collide; the naive
+ * `if (running) return` guard silently DROPS the explicit request, leaving a
+ * freshly captured/raised key painting its old state for a full extra poll
+ * cycle. This runner never overlaps the job and never loses a request: a
+ * request during a run queues exactly one rerun (multiple requests coalesce
+ * into that one), which starts as soon as the current run finishes — with the
+ * job then reading the post-change state.
+ */
+class CoalescedRunner {
+    job;
+    running = false;
+    pending = false;
+    constructor(job) {
+        this.job = job;
+    }
+    /**
+     * Run the job, or — if it is already running — schedule one rerun after it
+     * finishes. Resolves when the run this call participated in has finished
+     * (for a queued rerun: immediately; the rerun still executes). A throwing
+     * job never wedges the runner.
+     */
+    async request() {
+        if (this.running) {
+            this.pending = true;
+            return;
+        }
+        this.running = true;
+        try {
+            do {
+                this.pending = false;
+                try {
+                    await this.job();
+                }
+                catch {
+                    // The job owns its error reporting; a throw must not stop a
+                    // queued rerun or permanently wedge the runner.
+                }
+            } while (this.pending);
+        }
+        finally {
+            this.running = false;
+        }
+    }
+}
+
 /** Small shared SVG helpers used by the key/touchscreen image builders. */
 /** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
 function svgToDataUri(svg) {
@@ -9599,7 +9646,7 @@ let ClaudeProject = (() => {
         gate = new PressGate();
         visible = new Map();
         timer;
-        refreshing = false;
+        refresher = new CoalescedRunner(() => this.doRefreshAll());
         spin = 0;
         lastImage = new Map();
         async onWillAppear(ev) {
@@ -9658,11 +9705,14 @@ let ClaudeProject = (() => {
                 focusedTty,
             };
         }
-        async refreshAll() {
-            if (this.refreshing || this.visible.size === 0)
+        /** Coalesced — see focus-tmux: explicit repaints must never be dropped. */
+        refreshAll() {
+            return this.refresher.request();
+        }
+        async doRefreshAll() {
+            if (this.visible.size === 0)
                 return;
-            this.refreshing = true;
-            try {
+            {
                 const snap = await this.snapshot();
                 this.spin++;
                 for (const key of this.visible.values()) {
@@ -9679,9 +9729,6 @@ let ClaudeProject = (() => {
                         streamDeck.logger.debug(`Claude Project image skipped: ${String(err)}`);
                     }
                 }
-            }
-            finally {
-                this.refreshing = false;
             }
         }
         async renderKey(project, snap) {
@@ -9768,6 +9815,7 @@ let ClaudeProject = (() => {
                     return;
                 }
                 await key.showOk();
+                setTimeout(() => void this.refreshAll(), 450); // frontmost settle
                 return;
             }
             // Plain terminal: try the running hosts by tty. Only address apps that
@@ -10311,7 +10359,7 @@ let FocusTmuxWindow = (() => {
         gate = new PressGate();
         visible = new Map();
         timer;
-        refreshing = false;
+        refresher = new CoalescedRunner(() => this.doRefreshAll());
         spin = 0; // poll tick counter — rotates the working spark
         lastImage = new Map(); // skip identical repaints
         async onWillAppear(ev) {
@@ -10348,11 +10396,16 @@ let FocusTmuxWindow = (() => {
          * nothing is hot and the iTerm query is skipped), tmux windows + clients,
          * and iTerm's focused-session tty.
          */
-        async refreshAll() {
-            if (this.refreshing || this.visible.size === 0)
+        /** Coalesced: an explicit repaint request colliding with an in-flight poll
+         * tick queues a rerun instead of being dropped — a freshly captured or
+         * raised key must never keep its old face for another poll cycle. */
+        refreshAll() {
+            return this.refresher.request();
+        }
+        async doRefreshAll() {
+            if (this.visible.size === 0)
                 return;
-            this.refreshing = true;
-            try {
+            {
                 const tmux = findTmuxPath();
                 this.spin++;
                 const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
@@ -10392,9 +10445,6 @@ let FocusTmuxWindow = (() => {
                         streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
                     }
                 }
-            }
-            finally {
-                this.refreshing = false;
             }
         }
         /** Short press: raise the iTerm2 window for the configured tmux window. */
@@ -10446,6 +10496,9 @@ let FocusTmuxWindow = (() => {
             }
             await key.showOk();
             await this.refreshAll(); // the press changed focus — flip the dots now
+            // NSWorkspace can still report the OLD frontmost app right after the
+            // raise; one short-settle re-refresh corrects the cold-then-fix flicker.
+            setTimeout(() => void this.refreshAll(), 450);
         }
         /**
          * Long press: capture the current tmux window into this button — the window

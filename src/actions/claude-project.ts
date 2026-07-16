@@ -9,6 +9,7 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript, runJxa } from "../applescript/runner.js";
+import { CoalescedRunner } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import {
 	buildClaudeProjectKeyImage,
@@ -71,7 +72,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 	private readonly gate = new PressGate();
 	private readonly visible = new Map<string, KeyAction<ClaudeProjectSettings>>();
 	private timer?: ReturnType<typeof setInterval>;
-	private refreshing = false;
+	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private spin = 0;
 	private readonly lastImage = new Map<string, string>();
 
@@ -137,10 +138,14 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		};
 	}
 
-	private async refreshAll(): Promise<void> {
-		if (this.refreshing || this.visible.size === 0) return;
-		this.refreshing = true;
-		try {
+	/** Coalesced — see focus-tmux: explicit repaints must never be dropped. */
+	private refreshAll(): Promise<void> {
+		return this.refresher.request();
+	}
+
+	private async doRefreshAll(): Promise<void> {
+		if (this.visible.size === 0) return;
+		{
 			const snap = await this.snapshot();
 			this.spin++;
 
@@ -156,8 +161,6 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 					streamDeck.logger.debug(`Claude Project image skipped: ${String(err)}`);
 				}
 			}
-		} finally {
-			this.refreshing = false;
 		}
 	}
 
@@ -261,6 +264,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 				return;
 			}
 			await key.showOk();
+			setTimeout(() => void this.refreshAll(), 450); // frontmost settle
 			return;
 		}
 
