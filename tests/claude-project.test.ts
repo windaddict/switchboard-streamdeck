@@ -129,6 +129,13 @@ describe("buildClaudeProjectKeyImage", () => {
 		);
 		expect(buildClaudeProjectKeyImage({ ...base, claude: "waiting" })).toContain('stroke="#F2FFF6"');
 	});
+	it("working orbit dot moves between ticks; waiting has none", () => {
+		const a = buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 0 });
+		const b = buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 1 });
+		expect(a).toContain('cx="61" cy="4"');
+		expect(b).toContain('cx="65" cy="5.1"');
+		expect(buildClaudeProjectKeyImage({ ...base, claude: "waiting" })).not.toContain('r="1.7"');
+	});
 	it("shows the project basename and host eyebrow, XML-escaped, hex only", () => {
 		const svg = buildClaudeProjectKeyImage({ ...base, project: "/x/a&b" });
 		expect(svg).toContain("a&amp;b");

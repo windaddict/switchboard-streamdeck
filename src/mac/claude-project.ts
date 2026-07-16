@@ -124,6 +124,9 @@ export function projectBasename(projectPath: string): string {
 	return base || "?";
 }
 
+/** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
+const ORBIT: ReadonlyArray<readonly [number, number]> = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
+
 /**
  * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
  * project name in mono (hue seeded per project, so each project wears a
@@ -180,6 +183,13 @@ export function buildClaudeProjectKeyImage(args: {
 			`<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
 			`stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
 			`transform="rotate(${angle} 61 12)"/>`;
+		if (args.claude === "working") {
+			// The star is 6-fold symmetric, so its rotation collapses to a
+			// two-frame wobble — motion you cannot see at key size. The orbiting
+			// dot gives 12 genuinely distinct frames per revolution.
+			const [ox, oy] = ORBIT[spin % 12];
+			spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
+		}
 	}
 
 	// tmux identity mark's sibling: a small spark outline at the bar's left

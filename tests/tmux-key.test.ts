@@ -113,6 +113,15 @@ describe("buildTmuxKeyImage — Claude Code spark", () => {
 		expect(svg).toContain('stroke="#F0A63C"');
 		expect(svg).toContain('transform="rotate(90 61 12)"');
 	});
+	it("working shows the orbiting dot, and it MOVES between ticks (visible motion)", () => {
+		const a = buildTmuxKeyImage(status, "working", 0);
+		const b = buildTmuxKeyImage(status, "working", 1);
+		expect(a).toContain('cx="61" cy="4"');
+		expect(b).toContain('cx="65" cy="5.1"');
+	});
+	it("waiting has no orbit dot (stillness IS the signal)", () => {
+		expect(buildTmuxKeyImage(status, "waiting", 3)).not.toContain('r="1.7"');
+	});
 	it("waiting: still signal-white spark", () => {
 		const svg = buildTmuxKeyImage(status, "waiting", 3);
 		expect(svg).toContain('stroke="#F2FFF6"');
