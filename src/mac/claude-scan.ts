@@ -8,12 +8,13 @@
 import { execFile as nodeExecFile } from "node:child_process";
 
 import { type ClaudeInstance, parseLsofCwds, parsePsClaude } from "./claude-project.js";
+import { UTF8_ENV } from "./tmux-runner.js";
 
 /** Minimal execFile shape we depend on (for test injection). */
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
-	options: { timeout?: number },
+	options: { timeout?: number; env?: NodeJS.ProcessEnv },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
 
@@ -25,7 +26,7 @@ function run(
 	exec: ExecFileLike,
 ): Promise<string> {
 	return new Promise((resolve) => {
-		exec(file, args, { timeout: TIMEOUT_MS }, (error, stdout) => {
+		exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => {
 			resolve(error ? "" : String(stdout ?? ""));
 		});
 	});
@@ -63,7 +64,7 @@ export function processRunning(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
 ): Promise<boolean> {
 	return new Promise((resolve) => {
-		exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS }, (error) => {
+		exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error) => {
 			resolve(!error);
 		});
 	});

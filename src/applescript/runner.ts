@@ -8,6 +8,8 @@
 
 import { execFile as nodeExecFile } from "node:child_process";
 
+import { UTF8_ENV } from "../mac/tmux-runner.js";
+
 export type ErrorCode = "success" | "permission-denied" | "error";
 
 export interface RunResult {
@@ -21,7 +23,7 @@ export interface RunResult {
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
-	options: { timeout?: number },
+	options: { timeout?: number; env?: NodeJS.ProcessEnv },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
 
@@ -45,7 +47,7 @@ function runOsascript(
 	exec: ExecFileLike,
 ): Promise<RunResult> {
 	return new Promise((resolve) => {
-		exec("/usr/bin/osascript", args, { timeout: 8000 }, (error, stdout, stderr) => {
+		exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
 			const out = String(stdout ?? "");
 			const err = String(stderr ?? "");
 			if (error) {

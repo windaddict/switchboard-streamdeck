@@ -37,9 +37,18 @@ export interface TmuxResult {
 export type ExecFileLike = (
 	file: string,
 	args: readonly string[],
-	options: { timeout?: number },
+	options: { timeout?: number; env?: NodeJS.ProcessEnv },
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ) => unknown;
+
+/**
+ * Stream Deck launches plugins with a minimal environment — no LANG/LC_ALL —
+ * so child processes run in the C locale and tmux TRANSLITERATES every
+ * non-ASCII character in its output to "_": the Claude braille/✳ title
+ * markers arrived as underscores and every session read "waiting" on-device
+ * while every UTF-8 shell probe looked correct. Force UTF-8 for all children.
+ */
+export const UTF8_ENV: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "en_US.UTF-8" };
 
 /** Run tmux with the given args and capture stdout/stderr. */
 export function runTmux(
@@ -48,7 +57,7 @@ export function runTmux(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
 ): Promise<TmuxResult> {
 	return new Promise((resolve) => {
-		exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
+		exec(tmuxPath, args, { timeout: 5000, env: UTF8_ENV }, (error, stdout, stderr) => {
 			resolve({
 				ok: !error,
 				stdout: String(stdout ?? ""),

@@ -8379,6 +8379,48 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 /**
+ * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
+ * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
+ * are injectable for tests.
+ */
+const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
+/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
+function findTmuxPath(exists = existsSync) {
+    return TMUX_CANDIDATES.find(exists) ?? "tmux";
+}
+/** tmux args that emit one window per line as `session|index|active|name`.
+ * The NAME is last: window names may legally contain `|`, so every fixed-width
+ * field comes first and the parser joins the remainder back into the name. */
+const LIST_WINDOWS_ARGS = [
+    "list-windows",
+    "-a",
+    "-F",
+    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
+];
+/** tmux args that emit one client per line as `tty|session`. */
+const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
+/**
+ * Stream Deck launches plugins with a minimal environment — no LANG/LC_ALL —
+ * so child processes run in the C locale and tmux TRANSLITERATES every
+ * non-ASCII character in its output to "_": the Claude braille/✳ title
+ * markers arrived as underscores and every session read "waiting" on-device
+ * while every UTF-8 shell probe looked correct. Force UTF-8 for all children.
+ */
+const UTF8_ENV = { ...process.env, LC_ALL: "en_US.UTF-8" };
+/** Run tmux with the given args and capture stdout/stderr. */
+function runTmux(args, tmuxPath, exec = execFile) {
+    return new Promise((resolve) => {
+        exec(tmuxPath, args, { timeout: 5000, env: UTF8_ENV }, (error, stdout, stderr) => {
+            resolve({
+                ok: !error,
+                stdout: String(stdout ?? ""),
+                stderr: String(stderr ?? ""),
+            });
+        });
+    });
+}
+
+/**
  * Thin osascript runner, shared by all actions. The `exec` dependency is
  * injectable so tests can mock it without spawning processes. Error
  * classification distinguishes the two macOS privacy denials we can hit —
@@ -8399,7 +8441,7 @@ function classifyError(stderr) {
 }
 function runOsascript(args, exec) {
     return new Promise((resolve) => {
-        exec("/usr/bin/osascript", args, { timeout: 8000 }, (error, stdout, stderr) => {
+        exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
             const out = String(stdout ?? "");
             const err = String(stderr ?? "");
             if (error) {
@@ -9128,7 +9170,7 @@ function buildClaudeProjectKeyImage(args) {
 const TIMEOUT_MS = 4000;
 function run(file, args, exec) {
     return new Promise((resolve) => {
-        exec(file, args, { timeout: TIMEOUT_MS }, (error, stdout) => {
+        exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => {
             resolve(error ? "" : String(stdout ?? ""));
         });
     });
@@ -9153,7 +9195,7 @@ async function scanClaudeInstances(exec = execFile) {
  * AppleScript-launching a terminal app that isn't open.) */
 function processRunning(name, exec = execFile) {
     return new Promise((resolve) => {
-        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS }, (error) => {
+        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error) => {
             resolve(!error);
         });
     });
@@ -9548,40 +9590,6 @@ function tmuxWindowLabel(w) {
 /** Stable dropdown/target value, e.g. `"dev:movingavg"`. */
 function tmuxWindowValue(w) {
     return `${w.session}:${w.name}`;
-}
-
-/**
- * Spawns the tmux CLI. Stream Deck launches plugins with a minimal PATH that
- * usually lacks Homebrew, so we resolve an absolute tmux path. `exec`/`exists`
- * are injectable for tests.
- */
-const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
-/** First tmux binary that exists, falling back to bare "tmux" (PATH lookup). */
-function findTmuxPath(exists = existsSync) {
-    return TMUX_CANDIDATES.find(exists) ?? "tmux";
-}
-/** tmux args that emit one window per line as `session|index|active|name`.
- * The NAME is last: window names may legally contain `|`, so every fixed-width
- * field comes first and the parser joins the remainder back into the name. */
-const LIST_WINDOWS_ARGS = [
-    "list-windows",
-    "-a",
-    "-F",
-    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
-];
-/** tmux args that emit one client per line as `tty|session`. */
-const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
-/** Run tmux with the given args and capture stdout/stderr. */
-function runTmux(args, tmuxPath, exec = execFile) {
-    return new Promise((resolve) => {
-        exec(tmuxPath, args, { timeout: 5000 }, (error, stdout, stderr) => {
-            resolve({
-                ok: !error,
-                stdout: String(stdout ?? ""),
-                stderr: String(stderr ?? ""),
-            });
-        });
-    });
 }
 
 /**

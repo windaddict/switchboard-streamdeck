@@ -146,6 +146,14 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   `length of missing value` throws -1728, killing the whole tab scan — one stale
   tab broke every Jump to Tab button. Coerce `missing value` to `""` explicitly
   (see `buildNormalScript` in `src/safari/applescript.ts`).
+- **Stream Deck's minimal env has NO LANG/LC_ALL → child processes run in the C
+  locale → tmux TRANSLITERATES all non-ASCII output to "_"** — the Claude
+  braille/✳ title markers arrived as underscores and every session read
+  "waiting" ON-DEVICE while every UTF-8 shell probe looked correct (hid for a
+  week; found only by tracing the plugin's raw stdout). ALL subprocess runners
+  must pass `env: UTF8_ENV` (exported from `tmux-runner.ts`). When on-device
+  behavior contradicts an out-of-process probe, suspect the ENVIRONMENT first
+  and dump the plugin's raw bytes.
 - **Polling actions must repaint through `CoalescedRunner`** (`src/mac/coalesce.ts`).
   A bare `if (refreshing) return` guard silently DROPPED the explicit repaint after
   hold-to-capture whenever it collided with an in-flight poll tick — shipped as a
