@@ -1,19 +1,16 @@
 # Switchboard
 
-![Switchboard — a macOS Stream Deck plugin with eleven actions for switching Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
+![Switchboard — a macOS Stream Deck plugin with twelve actions: live Claude Code project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
 
-*An operator's control surface for macOS — routing your attention across tabs, windows, panes, apps, documents, and files from a Stream Deck.*
+*An operator's control surface for macOS — routing your attention across Claude Code sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: jump to **Claude Code**
-- **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
-
-**Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, drive **tmux** windows and panes, move between **iTerm2** windows and **BBEdit** documents, open files by wildcard pattern, and tap through a custom **window ring** — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code** projects from the deck — each key's spark shows working (amber, turning) vs. waiting for your input (white, still), wherever the session runs (tmux, iTerm2, or Terminal.app), and a press raises its window. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
 
 ---
 
 ## The story
 
-I'm an engineer by training, but these days I work from the director's chair, not the IDE — I advise MedTech and SaaS CEOs on aligning technology with strategy. I didn't *write* Switchboard; I **directed** an AI agent (Claude) to build it: I specified what I wanted, steered the design, reviewed the work, and insisted on tests at every step. That's how a working, tested tool shipped in an afternoon.
+I'm an engineer by training, but these days I work from the director's chair, not the IDE — I advise MedTech and SaaS CEOs on aligning technology with strategy. I didn't *write* Switchboard; I **directed** an AI agent (Claude) to build it: I specified what I wanted, steered the design, reviewed the work, and insisted on tests at every step. That's how a working, tested tool shipped in an afternoon — and it has kept evolving, session by session, in the open ever since.
 
 That's the point. Switchboard is a **Moving Average Labs** artifact — a small, concrete proof of how AI changes the way operators build. The lesson isn't the tmux dials; it's the operating model behind them.
 
@@ -34,14 +31,14 @@ Twelve actions, grouped by what they route your attention to.
 **Windows & apps**
 - **Open / Switch App** *(key)* — launch or switch to an app, optionally focusing a window whose title matches a pattern. Hold the key to capture the frontmost app into the button.
 - **Cycle App Windows** *(dial)* — rotate through the windows of the frontmost application; press or tap the touchscreen to flip the dial into cycling the visible apps themselves.
-- **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); push to jump to the top (or toggle speed); tap the touchscreen to toggle fast/slow.
-- **Arrange Window** *(dial)* — rotate to tile the frontmost window through the active arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid); counter-clockwise retraces the same arrangement in reverse. Tap the touchscreen to toggle between the button's two configured arrangements (e.g. columns ↔ grid). Push to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
-- **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
+- **Scroll Window** *(dial)* — rotate to scroll the frontmost window (one proportional scroll-wheel event via a native helper); press to jump to the top (or, if configured, toggle speed); tap the touchscreen to always toggle fast/slow.
+- **Arrange Window** *(dial)* — rotate to tile the frontmost window through the active arrangement (halves, thirds, quarters — across columns or rows — or a 2×2/2×3/2×4 grid); counter-clockwise retraces the same arrangement in reverse. Tap the touchscreen to toggle between the button's two configured arrangements (e.g. columns ↔ grid). Press to maximize. Uses a native Accessibility helper that's Dock-aware and multi-monitor correct.
+- **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it, if it's already in the ring), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
 
 **tmux & iTerm2**
 - **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it. Hold the key to capture the current tmux window into the button. The key face renders live as a mini tmux pane: its status bar lights up in the session's color — with a block cursor — exactly when that window would receive your keystrokes (active in tmux, focused in iTerm2, iTerm2 frontmost). A spark in the corner tracks Claude Code inside the window: amber and slowly turning while it works, still and white when it's finished and waiting for your input.
 - **Switch tmux Pane** *(dial)* — rotate to move between tmux panes — or, after a press/tap toggles the mode, tmux windows. Only drives the tmux session in the frontmost macOS window — when iTerm2 isn't frontmost the dial does nothing (never a background terminal) — and the mode survives restarts. The touchscreen shows the mode and the pane's running command (or the window name).
-- **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; push for the last window. Tap the touchscreen to widen the scope to ALL sessions — rotation then crosses session boundaries and push jumps to the last session. Only drives the tmux client in the frontmost macOS window (does nothing when iTerm2 isn't frontmost). Renders the current session/window live on the touchscreen.
+- **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; press for the last window. Tap the touchscreen to widen the scope to ALL sessions — rotation then crosses session boundaries and press jumps to the last session. Only drives the tmux client in the frontmost macOS window (does nothing when iTerm2 isn't frontmost). Renders the current session/window live on the touchscreen.
 
 **BBEdit**
 - **BBEdit Documents** *(dial)* — move between the open documents in BBEdit's front window, in your chosen order (open order, alphabetical, or by last-modified); push to jump back to the previous document.
@@ -53,7 +50,7 @@ Twelve actions, grouped by what they route your attention to.
 
 ## Live on the deck
 
-The **Focus tmux Window** keys render live: each is a miniature tmux pane whose status bar lights up in its session's color — with a block cursor — exactly when that window would receive your keystrokes. The spark in the corner tracks **Claude Code** inside the window: amber and turning while it works, still and white when it's finished and waiting for your next prompt.
+The **Focus tmux Window** and **Claude Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up in its session's color — with a block cursor — exactly when that window would receive your keystrokes. The spark in the corner tracks **Claude Code**: amber and turning while it works, still and white when it's finished and waiting for your next prompt. Claude Project keys carry the same face for a whole project, whether the session runs under tmux, plain iTerm2, or Terminal.app. The keys observe and focus — they infer state from the session's own signals and raise its window; they never drive Claude itself.
 
 ![Five states of a live tmux key: focused with Claude working, background with Claude working, background with Claude ready for input, background with no Claude, and a window that no longer exists](docs/tmux-live-keys.png)
 
@@ -72,7 +69,7 @@ The dial touchscreens speak the same color language — green drives tmux, blue 
 - **Open File** shows a live ✓/✗ status badge right on the key — you can see at a glance whether a matching file exists.
 - **Safari Tab Jump** ships multi-account Gmail and Calendar presets — pick the account number, and the URL and match pattern are built for you.
 - **Window Ring** flashes a green check on add and a red "−" on remove, with an optional sound, so long-press registration is unmistakable.
-- One interaction grammar everywhere: **rotate** browses, **press** escapes to a known place, **tap** flips the dial's mode or scope, and **holding** a go-to key teaches it whatever you're looking at.
+- A consistent interaction grammar: **rotate** browses, **press** escapes to a known place (or toggles the mode where there's no place to escape to), **tap** flips the dial's mode or scope, and **holding** a go-to key teaches it whatever you're looking at.
 
 ---
 
@@ -129,11 +126,11 @@ Then restart the Stream Deck app.
 
 ## Permissions
 
-Switchboard sends keystrokes and drives other apps, so macOS asks for two grants on first use:
+Switchboard sends keystrokes and drives other apps, so macOS asks for its grants as you exercise each feature:
 
-- **Accessibility** — for keystrokes, scrolling, and window cycling.
+- **Accessibility** — for keystrokes, scrolling, window cycling, and window moving/tiling.
   System Settings → Privacy & Security → Accessibility → enable Stream Deck.
-- **Automation** — for driving Safari, iTerm2, and BBEdit.
+- **Automation** — granted per target app (Safari, iTerm2, Terminal, BBEdit) the first time an action drives it.
   System Settings → Privacy & Security → Automation → enable Stream Deck for the target apps.
 
 If a grant is denied, the key shows an alert and the plugin log spells out the exact re-enable path instead of failing silently.
@@ -154,7 +151,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 412 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 416 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

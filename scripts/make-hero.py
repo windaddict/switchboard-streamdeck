@@ -58,7 +58,7 @@ def main() -> None:
         f'<image x="{PAD}" y="40" width="92" height="92" href="{header_icon}"/>',
         f'<text x="{PAD + 110}" y="92" fill="#f5f5f7" font-size="52" font-weight="700">Switchboard</text>',
         f'<text x="{PAD + 112}" y="126" fill="#9b9ba1" font-size="18">'
-        "An operator&#8217;s control surface for macOS — tabs, windows, panes, apps, docs &amp; files.</text>",
+        "An operator&#8217;s control surface for macOS — Claude Code, tabs, windows, panes &amp; files.</text>",
         f'<line x1="{PAD}" y1="168" x2="{W - PAD}" y2="168" stroke="#2a2a2e" stroke-width="1"/>',
     ]
 

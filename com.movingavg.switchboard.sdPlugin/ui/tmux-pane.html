@@ -7,9 +7,12 @@
 	</head>
 	<body>
 		<div style="font-size: 12px; color: #bbb; line-height: 1.5;">
-			Rotate the dial to move between the <b>panes</b> of the active tmux
-			window. <b>Press</b> to exit copy-mode and jump back to the prompt.
-			There’s nothing to configure.
+			Rotate the dial to move between tmux <b>panes</b> — or, after a press or
+			touchscreen tap toggles the mode, tmux <b>windows</b>. The mode is saved
+			with the button and survives restarts. The dial only drives the tmux
+			session in the frontmost macOS window: when iTerm2 isn't frontmost it
+			does nothing (the strip shows a dash), so it can never move a background
+			terminal.
 		</div>
 
 		<div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">

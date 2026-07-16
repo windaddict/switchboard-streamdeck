@@ -3,7 +3,7 @@
 	"Name": "Switchboard",
 	"Version": "1.2.2.0",
 	"Author": "Moving Average Labs",
-	"Description": "Switchboard — an operator's control surface for macOS: jump to Safari tabs (multi-account Gmail/Calendar, custom, private), scroll and switch windows and apps, drive tmux windows/panes, cycle BBEdit documents, and open the right file from a folder.",
+	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code is working or waiting in each project (tmux, iTerm2, or Terminal.app; press to raise it) — plus Safari tab jump with multi-account Gmail/Calendar presets, window tiling and cycling, tmux windows and panes, BBEdit documents, and opening the right file from a folder.",
 	"Category": "Switchboard",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"Icon": "imgs/plugin/marketplace",

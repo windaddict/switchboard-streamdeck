@@ -17,7 +17,7 @@ cask "switchboard" do
 
   url "https://github.com/windaddict/switchboard-streamdeck/releases/download/v#{version}/com.movingavg.switchboard.sdPlugin.zip"
   name "Switchboard"
-  desc "Stream Deck plugin for fast app, window, tab, and file switching"
+  desc "Stream Deck plugin with live Claude Code keys and fast window/tab switching"
   homepage "https://github.com/windaddict/switchboard-streamdeck"
 
   depends_on macos: :monterey
