@@ -54,6 +54,8 @@ The **Focus tmux Window** and **Claude Project** keys render live. Each tmux key
 
 ![Five states of a live tmux key: focused with Claude working, background with Claude working, background with Claude ready for input, background with no Claude, and a window that no longer exists](docs/tmux-live-keys.png)
 
+![Four states of a Claude Project key: focused under tmux with Claude working, focused under Terminal with Claude ready, a background project with Claude working, and a project with no Claude running](docs/claude-project-keys.png)
+
 <img src="docs/claude-spark.gif" width="120" alt="Animated key face: the amber spark turns while Claude Code works" />
 
 The dial touchscreens speak the same color language — green drives tmux, blue drives macOS windows and apps, amber drives BBEdit — and the ⇄ mark appears exactly where a tap flips the dial's mode:

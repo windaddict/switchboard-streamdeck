@@ -9082,8 +9082,10 @@ function buildClaudeProjectKeyImage(args) {
         nameFill = "#A6ADA9";
         eyebrowFill = hslToHex(hue, 50, 70);
     }
+    // Anchored at x=30, not center: the longest host label ("TERMINAL") must
+    // clear the Claude spark in the top-right corner.
     const eyebrow = args.host
-        ? `<text x="36" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1.2" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$1(args.host.toUpperCase(), 10))}</text>`
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$1(args.host.toUpperCase(), 8))}</text>`
         : "";
     let spark = "";
     if (args.claude !== "none") {
