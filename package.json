@@ -1,6 +1,6 @@
 {
 	"name": "switchboard",
-	"version": "1.2.2",
+	"version": "1.3.0",
 	"description": "Stream Deck plugin: jump to (or open) a Safari tab, with multi-account Gmail/Calendar presets, custom sites, and private-window targets.",
 	"type": "module",
 	"private": true,
