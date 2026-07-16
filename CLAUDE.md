@@ -21,6 +21,11 @@ src/
   mac/                      # PURE, tested logic (no SDK, no I/O)
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
+  mac/claude-*.ts           # Claude Code detection: claude-scan (ps→batched lsof; pgrep
+                            #   misses ancestors), claude-state (title marker: braille=working,
+                            #   ✳=waiting; tmux pane-tty map), claude-transcript (~/.claude/
+                            #   projects freshness), claude-project (state decision + key face)
+  mac/{coalesce,serialize,press-gate}.ts  # shared async plumbing (all unit-tested)
 tests/*.test.ts             # vitest; one file per pure module
 com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js
@@ -141,6 +146,19 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   `length of missing value` throws -1728, killing the whole tab scan — one stale
   tab broke every Jump to Tab button. Coerce `missing value` to `""` explicitly
   (see `buildNormalScript` in `src/safari/applescript.ts`).
+- **Polling actions must repaint through `CoalescedRunner`** (`src/mac/coalesce.ts`).
+  A bare `if (refreshing) return` guard silently DROPPED the explicit repaint after
+  hold-to-capture whenever it collided with an in-flight poll tick — shipped as a
+  "stale hot indicator" bug. Never guard-and-drop; coalesce.
+- **Scripted doc edits: verify the replaced string is unique first.** A python
+  `str.replace` targeting a "What it does" bullet also matched the README intro and
+  shipped it broken (bullet spliced mid-sentence) for two releases. Re-read the
+  rendered section after any scripted edit.
+- **README figures are code-generated.** docs/tmux-live-keys.png, claude-project-keys.png,
+  claude-spark.gif, and dial-strips.png render FROM the real image builders (tsx snippet +
+  inkscape) — regenerate them whenever a key-face design changes, or the README silently lies.
+- **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
+  `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:
   Automation (Apple Events, error **-1743**) for controlling apps via AppleScript;
   Accessibility (error **-1719**) for keystrokes / scroll / `CGEventPost`. Surface
@@ -204,7 +222,13 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 
 ## Releasing (the end-to-end runbook lives in `.claude/commands/release.md`)
 
-Short version — see that command for the exact, ordered steps:
+Short version — see that command for the exact, ordered steps. Session-learned traps:
+- Before picking the version, check `git log vLAST..HEAD --oneline` — an unreleased
+  `feat:` in the delta makes it a MINOR, whatever prompted the release.
+- `npm run pack` rewrites manifest.json WITHOUT its trailing newline — after packing,
+  `git checkout -- com.movingavg.switchboard.sdPlugin/manifest.json`.
+- Every `npm run build` drops plugin.js's executable bit: commit with
+  `git add -A && git update-index --chmod=+x com.movingavg.switchboard.sdPlugin/bin/plugin.js`.
 
 1. Bump `package.json` version; update README counts. Commit, `git push origin main`.
 2. `npm run build` (NOT `build:helper` — see below) then `npm run pack` +
