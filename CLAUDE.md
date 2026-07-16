@@ -98,6 +98,13 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   — Stream Deck respawns the plugin within seconds on the new bundle. Full app
   relaunch (`killall "Stream Deck" && open -a "Elgato Stream Deck"`) only needed
   for manifest changes; an osascript `quit` may be blocked with error -128.
+- **Debugging the LIVE plugin:** temporarily add
+  `import { appendFileSync } from "node:fs"` and trace to `/tmp/sb-trace.log`
+  inside the poll, rebuild, kill-respawn, read the file, then STRIP the trace.
+  (`require()` throws in the ESM bundle — and the resulting per-tick throw is
+  swallowed by CoalescedRunner, so a broken trace looks like a dead poll.)
+  This is how the C-locale bug was caught: the trace showed the plugin's raw
+  bytes differing from every shell probe.
 - **Manifest change that adds/renames an ACTION**: the Stream Deck app caches the
   action list — the user must **fully quit and relaunch Stream Deck** for new
   actions to appear. PI/code changes don't need this; new actions do.
@@ -231,6 +238,8 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 ## Releasing (the end-to-end runbook lives in `.claude/commands/release.md`)
 
 Short version — see that command for the exact, ordered steps. Session-learned traps:
+- `gh release create` makes the tag REMOTELY only — run `git fetch --tags`
+  before any `git log vX.Y.Z..HEAD` delta check, or it fails "unknown revision".
 - Before picking the version, check `git log vLAST..HEAD --oneline` — an unreleased
   `feat:` in the delta makes it a MINOR, whatever prompted the release.
 - `npm run pack` rewrites manifest.json WITHOUT its trailing newline — after packing,
@@ -304,6 +313,11 @@ by rewriting the action UUIDs in the Stream Deck profile store (settings preserv
 — no re-configuring). The script remains as the tool to re-run if the id ever
 changes again: quit Stream Deck, then `scripts/rename.sh --dry-run` to preview,
 `scripts/rename.sh --yes` to apply.
+
+Installed buttons' ACTUAL settings (targets, titles) live in the profile store:
+`~/Library/Application Support/com.elgato.StreamDeck/ProfilesV3/<id>.sdProfile/Profiles/<id>/manifest.json`
+— read it to diagnose what a key is really configured to do (quit Stream Deck
+before ever EDITING it).
 
 What a UUID rename touches (the script covers all of these — reference list):
 1. `manifest.json` — plugin `UUID` + every action `UUID` (10 actions).
