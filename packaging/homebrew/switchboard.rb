@@ -12,8 +12,8 @@
 #       `brew install --cask ./packaging/homebrew/switchboard.rb`.)
 
 cask "switchboard" do
-  version "1.3.0"
-  sha256 "54b6553674c0feef38f82cff1a1e0ce159de6b850bf88e632a9b6e33180fd1dc"
+  version "1.3.1"
+  sha256 "226d925877869838fbe83e427432a781804cb9e7768ee597040ca4ed28bdb546"
 
   url "https://github.com/windaddict/switchboard-streamdeck/releases/download/v#{version}/com.movingavg.switchboard.sdPlugin.zip"
   name "Switchboard"
