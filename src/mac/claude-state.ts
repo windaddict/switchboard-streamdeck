@@ -94,15 +94,19 @@ export function parsePaneTtys(output: string): PaneTty[] {
 export function titleWorking(title: string): boolean | null {
 	const trimmed = title.trim();
 	if (trimmed === "") return null;
-	const cp = trimmed.codePointAt(0);
-	return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+	return startsWithSpinner(trimmed);
 }
 
-/** True when the string starts with a braille pattern char — Claude Code's
- * animated working-spinner frames all live in U+2800–U+28FF. */
+/** True when the title matches Claude Code's WORKING format: a braille
+ * spinner frame (U+2800–U+28FF) followed by a space and the task summary.
+ * Trimmed first (identity and state must read the same bytes), and the
+ * marker+space shape rejects unrelated TUI titles that merely start with a
+ * braille character. */
 function startsWithSpinner(title: string): boolean {
-	const cp = title.codePointAt(0);
-	return cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+	const t = title.trim();
+	const cp = t.codePointAt(0);
+	if (cp === undefined || cp < 0x2800 || cp > 0x28ff) return false;
+	return t.length === 1 || t[1] === " ";
 }
 
 /**
@@ -118,7 +122,16 @@ export function claudeStateForWindow(
 	let state: ClaudeState = "none";
 	for (const p of panes) {
 		if (p.session !== session || p.windowName !== windowName) continue;
-		if (p.command !== "claude") continue;
+		// command === "claude" is the authoritative identity. The ONE sanctioned
+		// fallback: a WORKING-format title (braille frame + space) on a pane
+		// whose foreground command is a tool — Claude's OSC title persists while
+		// a foreground shell tool momentarily owns the tty. The fallback is
+		// deliberately braille-only: a stale ✳ on a dead/reused pane must never
+		// be adopted as a waiting Claude forever.
+		if (p.command !== "claude") {
+			if (startsWithSpinner(p.title)) return "working";
+			continue;
+		}
 		if (startsWithSpinner(p.title)) return "working";
 		state = "waiting";
 	}

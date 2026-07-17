@@ -67,7 +67,20 @@ describe("claudeStateForWindow", () => {
 	it("a claude with a plain title counts as waiting (unknown-but-present)", () => {
 		expect(claudeStateForWindow(parsePanes("s|1|w|claude|zsh"), "s", "w")).toBe("waiting");
 	});
-});
+	it("a foreground shell tool does not hide a WORKING Claude — braille title keeps the pane matched", () => {
+		// pane_current_command reports the running TOOL while Claude's OSC title persists
+		expect(claudeStateForWindow(parsePanes("s|1|w|python3|⠐ Building the app"), "s", "w")).toBe("working");
+	});
+	it("a stale ✳ on a non-claude pane is NEVER adopted (dead sessions must not read waiting forever)", () => {
+		expect(claudeStateForWindow(parsePanes("s|1|w|bash|✳ Done"), "s", "w")).toBe("none");
+		expect(claudeStateForWindow(parsePanes("s|1|w|fish|~/code/x"), "s", "w")).toBe("none");
+	});
+	it("identity and state read the same trimmed bytes (leading whitespace)", () => {
+		expect(claudeStateForWindow(parsePanes("s|1|w|python3|  ⠐ Building"), "s", "w")).toBe("working");
+	});
+	it("a braille-leading title WITHOUT the marker+space shape is not Claude", () => {
+		expect(claudeStateForWindow(parsePanes("s|1|w|node|⠐⠑⠒ progress-bar"), "s", "w")).toBe("none");
+	});
 
 describe("parsePaneTtys", () => {
 	const OUT = [
@@ -113,4 +126,5 @@ describe("parsePaneTtys — malformed guard", () => {
 	it("skips a line whose window index is not numeric (never window 0 from garbage)", () => {
 		expect(parsePaneTtys("/dev/ttys001|dev|x|1|1|claude|t")).toEqual([]);
 	});
+});
 });
