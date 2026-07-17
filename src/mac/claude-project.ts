@@ -23,28 +23,51 @@ export interface ClaudeInstance {
 	tty: string;
 	/** The process's working directory = its project. */
 	cwd: string;
+	/** A shell tool (foreground or backgrounded) is running under this claude. */
+	shellBusy: boolean;
+}
+
+export interface PsWorld {
+	/** claude CLI processes with a controlling tty. */
+	claudes: Array<{ pid: number; tty: string }>;
+	/** claude pids that currently have a live SHELL TOOL child — Claude Code
+	 * runs every Bash tool (foreground or backgrounded) as a direct child via
+	 * its shell-snapshot mechanism, so this is true exactly while "N shells
+	 * still running". Detects the case where the turn has ended (title = ✳)
+	 * but a background shell keeps working. */
+	busyPids: Set<number>;
 }
 
 /**
- * Parse `ps -axo pid=,tty=,comm=` output, keeping only `claude` processes
- * with a real controlling tty. NOTE: enumerate with ps, not pgrep — BSD pgrep
- * silently omits its own ancestor processes.
+ * Parse `ps -axo pid=,ppid=,tty=,command=` output. NOTE: enumerate with ps,
+ * not pgrep — BSD pgrep silently omits its own ancestor processes.
  */
-export function parsePsClaude(output: string): Array<{ pid: number; tty: string }> {
-	const out: Array<{ pid: number; tty: string }> = [];
+export function parsePsWorld(output: string): PsWorld {
+	const claudes: Array<{ pid: number; tty: string }> = [];
+	const shellToolParents = new Set<number>();
 	for (const rawLine of output.split("\n")) {
 		const line = rawLine.trim();
 		if (line === "") continue;
 		const fields = line.split(/\s+/);
-		if (fields.length < 3) continue;
+		if (fields.length < 4) continue;
 		const pid = Number.parseInt(fields[0], 10);
-		const tty = fields[1];
-		const comm = fields.slice(2).join(" ");
-		const base = comm.slice(comm.lastIndexOf("/") + 1);
-		if (!Number.isFinite(pid) || base !== "claude" || tty === "??") continue;
-		out.push({ pid, tty: `/dev/${tty}` });
+		const ppid = Number.parseInt(fields[1], 10);
+		const tty = fields[2];
+		const command = fields.slice(3).join(" ");
+		if (!Number.isFinite(pid)) continue;
+		const firstWord = command.split(" ", 1)[0];
+		const base = firstWord.slice(firstWord.lastIndexOf("/") + 1);
+		if (base === "claude" && tty !== "??") {
+			claudes.push({ pid, tty: `/dev/${tty}` });
+		}
+		if (Number.isFinite(ppid) && command.includes("shell-snapshots/snapshot-")) {
+			shellToolParents.add(ppid);
+		}
 	}
-	return out;
+	return {
+		claudes,
+		busyPids: new Set(claudes.filter((c) => shellToolParents.has(c.pid)).map((c) => c.pid)),
+	};
 }
 
 /** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
@@ -103,9 +126,14 @@ export function projectClaudeState(args: {
 	 * shell reads "waiting" after ~30s while an agent (whose subagent
 	 * transcripts keep streaming) reads "working". */
 	pendingToolUse?: boolean;
+	/** A shell tool is running under the claude process right now. OUTRANKS an
+	 * idle title: a backgrounded shell keeps running after the turn ends and
+	 * the title flips to ✳ ("Brewed … · 1 shell still running"). */
+	shellBusy?: boolean;
 }): ClaudeState {
 	if (!args.present) return "none";
 	if (args.titleWorking === true) return "working";
+	if (args.shellBusy === true) return "working";
 	if (args.titleWorking === false) return "waiting";
 	if (args.pendingToolUse === true) return "working";
 	if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {

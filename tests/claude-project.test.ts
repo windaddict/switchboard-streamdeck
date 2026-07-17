@@ -4,37 +4,47 @@ import {
 	instancesForProject,
 	normalizeProjectPath,
 	parseLsofCwds,
-	parsePsClaude,
+	parsePsWorld,
 	projectBasename,
 	projectClaudeState,
 	projectSlug,
 	TRANSCRIPT_FRESH_MS,
 } from "../src/mac/claude-project.js";
 
-describe("parsePsClaude", () => {
+describe("parsePsWorld", () => {
 	const PS = [
-		" 1120 ttys019 claude",
-		"14251 ttys001 claude",
-		"  400 ??      claude",
-		"  500 ttys002 /Applications/Claude.app/Contents/MacOS/Claude",
-		"  600 ttys003 claude-something",
-		"  700 ttys004 /usr/local/bin/claude",
+		" 1120 1000 ttys019 claude --permission-mode auto",
+		"14251 1000 ttys001 claude",
+		"  400 1000 ??      claude",
+		"  500 1000 ttys002 /Applications/Claude.app/Contents/MacOS/Claude",
+		"  600 1000 ttys003 claude-something",
+		"  700 1000 ttys004 /usr/local/bin/claude",
+		" 3161 1120 ??      /bin/zsh -c source /Users/j/.claude/shell-snapshots/snapshot-zsh-17.sh && eval 'sleep 100'",
+		" 3200 9999 ??      /bin/zsh -c source /Users/j/.claude/shell-snapshots/snapshot-zsh-18.sh", 
 	].join("\n");
 	it("keeps claude processes with a real tty, /dev-prefixed", () => {
-		expect(parsePsClaude(PS)).toEqual([
+		expect(parsePsWorld(PS).claudes).toEqual([
 			{ pid: 1120, tty: "/dev/ttys019" },
 			{ pid: 14251, tty: "/dev/ttys001" },
 			{ pid: 700, tty: "/dev/ttys004" },
 		]);
 	});
 	it("drops ttyless (??) processes and non-claude commands", () => {
-		const pids = parsePsClaude(PS).map((p) => p.pid);
+		const pids = parsePsWorld(PS).claudes.map((p) => p.pid);
 		expect(pids).not.toContain(400); // no tty
 		expect(pids).not.toContain(500); // desktop app binary named Claude
 		expect(pids).not.toContain(600); // prefix-named other tool
 	});
+	it("marks a claude busy when a shell-snapshot child runs under it", () => {
+		const world = parsePsWorld(PS);
+		expect(world.busyPids.has(1120)).toBe(true); // pid 3161's parent
+		expect(world.busyPids.has(14251)).toBe(false);
+	});
+	it("a shell-snapshot child of a NON-claude parent marks nothing", () => {
+		expect(parsePsWorld(PS).busyPids.has(9999)).toBe(false);
+	});
 	it("tolerates empty output", () => {
-		expect(parsePsClaude("")).toEqual([]);
+		expect(parsePsWorld("").claudes).toEqual([]);
 	});
 });
 
@@ -60,8 +70,8 @@ describe("projectSlug", () => {
 
 describe("instancesForProject", () => {
 	const instances = [
-		{ pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app" },
-		{ pid: 2, tty: "/dev/ttys002", cwd: "/Users/j/code/other" },
+		{ pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", shellBusy: false },
+		{ pid: 2, tty: "/dev/ttys002", cwd: "/Users/j/code/other", shellBusy: false },
 	];
 	it("matches by normalized path (trailing slash tolerated)", () => {
 		expect(instancesForProject(instances, "/Users/j/code/app/")).toHaveLength(1);
@@ -86,6 +96,11 @@ describe("projectClaudeState", () => {
 		expect(projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 0 })).toBe(
 			"waiting",
 		);
+	});
+	it("a running background shell OUTRANKS the idle title ('Brewed … · 1 shell still running')", () => {
+		expect(
+			projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 300_000, shellBusy: true }),
+		).toBe("working");
 	});
 	it("a pending tool call keeps WORKING through a long quiet shell (title unknown)", () => {
 		expect(

@@ -53,13 +53,14 @@ export const LIST_PANE_TTYS_ARGS = [
 	"list-panes",
 	"-a",
 	"-F",
-	"#{pane_tty}|#{session_name}|#{window_index}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
+	"#{pane_tty}|#{session_name}|#{window_index}|#{window_name}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
 ];
 
 export interface PaneTty {
 	tty: string;
 	session: string;
 	windowIndex: number;
+	windowName: string;
 	/** This pane is the active pane of its window AND that window is the
 	 * session's current one — i.e. an attached, focused client would type here. */
 	receivesKeys: boolean;
@@ -74,16 +75,17 @@ export function parsePaneTtys(output: string): PaneTty[] {
 		const line = rawLine.trim();
 		if (line === "") continue;
 		const fields = line.split("|");
-		if (fields.length < 7) continue;
+		if (fields.length < 8) continue;
 		const windowIndex = Number.parseInt(fields[2], 10);
 		if (!Number.isFinite(windowIndex)) continue; // malformed line — never raise window 0 from garbage
 		panes.push({
 			tty: fields[0],
 			session: fields[1],
 			windowIndex,
-			receivesKeys: fields[3] === "1" && fields[4] === "1",
-			command: fields[5],
-			title: fields.slice(6).join("|"),
+			windowName: fields[3],
+			receivesKeys: fields[4] === "1" && fields[5] === "1",
+			command: fields[6],
+			title: fields.slice(7).join("|"),
 		});
 	}
 	return panes;
@@ -115,7 +117,7 @@ function startsWithSpinner(title: string): boolean {
  * WORKING wins — the key should read busy if anything is busy.
  */
 export function claudeStateForWindow(
-	panes: PaneInfo[],
+	panes: Array<Pick<PaneInfo, "session" | "windowName" | "command" | "title">>,
 	session: string,
 	windowName: string,
 ): ClaudeState {
@@ -136,4 +138,18 @@ export function claudeStateForWindow(
 		state = "waiting";
 	}
 	return state;
+}
+
+/** Does this window contain a pane whose tty hosts a shell-busy claude?
+ * Feeds the tmux keys the "turn ended but a background shell still runs"
+ * case, where the pane title reads ✳ (waiting). */
+export function windowShellBusy(
+	panes: Array<Pick<PaneTty, "tty" | "session" | "windowName">>,
+	session: string,
+	windowName: string,
+	busyTtys: ReadonlySet<string>,
+): boolean {
+	return panes.some(
+		(p) => p.session === session && p.windowName === windowName && busyTtys.has(p.tty),
+	);
 }

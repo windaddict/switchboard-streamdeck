@@ -6,6 +6,7 @@ import {
 	parsePanes,
 	parsePaneTtys,
 	titleWorking,
+	windowShellBusy,
 } from "../src/mac/claude-state.js";
 
 const OUTPUT = [
@@ -84,9 +85,9 @@ describe("claudeStateForWindow", () => {
 
 describe("parsePaneTtys", () => {
 	const OUT = [
-		"/dev/ttys019|dev|1|1|1|claude|⠐ Building the app",
-		"/dev/ttys020|dev|1|0|1|fish|~/code",
-		"/dev/ttys021|dev|2|1|0|claude|✳ Done | done",
+		"/dev/ttys019|dev|1|ea-system|1|1|claude|⠐ Building the app",
+		"/dev/ttys020|dev|1|ea-system|0|1|fish|~/code",
+		"/dev/ttys021|dev|2|movingavg|1|0|claude|✳ Done | done",
 	].join("\n");
 	it("parses tty/session/index/activity/command/title (title last, pipes kept)", () => {
 		const panes = parsePaneTtys(OUT);
@@ -94,6 +95,7 @@ describe("parsePaneTtys", () => {
 			tty: "/dev/ttys019",
 			session: "dev",
 			windowIndex: 1,
+			windowName: "ea-system",
 			receivesKeys: true,
 			command: "claude",
 			title: "⠐ Building the app",
@@ -124,7 +126,18 @@ describe("titleWorking", () => {
 
 describe("parsePaneTtys — malformed guard", () => {
 	it("skips a line whose window index is not numeric (never window 0 from garbage)", () => {
-		expect(parsePaneTtys("/dev/ttys001|dev|x|1|1|claude|t")).toEqual([]);
+		expect(parsePaneTtys("/dev/ttys001|dev|x|w|1|1|claude|t")).toEqual([]);
 	});
 });
+});
+
+describe("windowShellBusy", () => {
+	const panes = parsePaneTtys("/dev/ttys019|dev|1|ea-system|1|1|claude|✳ Done\n/dev/ttys020|dev|1|ea-system|0|1|fish|~/x");
+	it("true when the window hosts a busy claude tty (background shell after turn end)", () => {
+		expect(windowShellBusy(panes, "dev", "ea-system", new Set(["/dev/ttys019"]))).toBe(true);
+	});
+	it("false for other windows or no busy ttys", () => {
+		expect(windowShellBusy(panes, "dev", "other", new Set(["/dev/ttys019"]))).toBe(false);
+		expect(windowShellBusy(panes, "dev", "ea-system", new Set())).toBe(false);
+	});
 });

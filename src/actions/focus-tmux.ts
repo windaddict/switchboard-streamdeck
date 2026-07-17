@@ -14,7 +14,13 @@ import streamDeck, {
 import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { CoalescedRunner } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
-import { claudeStateForWindow, LIST_PANES_ARGS, parsePanes } from "../mac/claude-state.js";
+import { scanClaudeInstances } from "../mac/claude-scan.js";
+import {
+	claudeStateForWindow,
+	LIST_PANE_TTYS_ARGS,
+	parsePaneTtys,
+	windowShellBusy,
+} from "../mac/claude-state.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
@@ -114,11 +120,12 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		{
 			const tmux = findTmuxPath();
 			this.spin++;
-			const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
+			const [front, windowsRes, clientsRes, panesRes, instances] = await Promise.all([
 				runJxa(FRONT_APP_BUNDLE_JXA),
 				runTmux(LIST_WINDOWS_ARGS, tmux),
 				runTmux(LIST_CLIENTS_ARGS, tmux),
-				runTmux(LIST_PANES_ARGS, tmux),
+				runTmux(LIST_PANE_TTYS_ARGS, tmux),
+				scanClaudeInstances(),
 			]);
 			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
 			// Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
@@ -127,7 +134,8 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 				: "";
 			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
 			const clients = parseClients(clientsRes.stdout);
-			const panes = panesRes.ok ? parsePanes(panesRes.stdout) : [];
+			const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
+			const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
 
 			for (const key of this.visible.values()) {
 				const settings = await key.getSettings();
@@ -138,10 +146,15 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					iTermFrontmost,
 					focusedTty,
 				});
-				const claude =
+				let claude =
 					status.state === "unknown"
 						? "none"
 						: claudeStateForWindow(panes, status.session, status.window);
+				// "Brewed … · 1 shell still running": the turn ended (title ✳ =
+				// waiting) but a backgrounded shell keeps working under claude.
+				if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
+					claude = "working";
+				}
 				if (settings.target === "apps:switchboard") appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
 				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip

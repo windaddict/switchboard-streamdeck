@@ -200,6 +200,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 			titleWorking: title,
 			transcriptAgeMs: transcript.ageMs,
 			pendingToolUse: transcript.pendingToolUse,
+			shellBusy: instance?.shellBusy === true,
 		});
 
 		return svgToDataUri(

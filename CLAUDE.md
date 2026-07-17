@@ -21,7 +21,8 @@ src/
   mac/                      # PURE, tested logic (no SDK, no I/O)
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
-  mac/claude-*.ts           # Claude Code detection: claude-scan (ps→batched lsof; pgrep
+  mac/claude-*.ts           # Claude Code detection: claude-scan (ps→batched lsof +
+                            #   shell-snapshot busy children = "N shells still running"; pgrep
                             #   misses ancestors), claude-state (title marker: braille=working,
                             #   ✳=waiting; tmux pane-tty map), claude-transcript (~/.claude/
                             #   projects freshness), claude-project (state decision + key face)

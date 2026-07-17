@@ -9006,28 +9006,38 @@ function buildAllWindowsFeedback(windows, current) {
  * only while a session is actively working.
  */
 /**
- * Parse `ps -axo pid=,tty=,comm=` output, keeping only `claude` processes
- * with a real controlling tty. NOTE: enumerate with ps, not pgrep — BSD pgrep
- * silently omits its own ancestor processes.
+ * Parse `ps -axo pid=,ppid=,tty=,command=` output. NOTE: enumerate with ps,
+ * not pgrep — BSD pgrep silently omits its own ancestor processes.
  */
-function parsePsClaude(output) {
-    const out = [];
+function parsePsWorld(output) {
+    const claudes = [];
+    const shellToolParents = new Set();
     for (const rawLine of output.split("\n")) {
         const line = rawLine.trim();
         if (line === "")
             continue;
         const fields = line.split(/\s+/);
-        if (fields.length < 3)
+        if (fields.length < 4)
             continue;
         const pid = Number.parseInt(fields[0], 10);
-        const tty = fields[1];
-        const comm = fields.slice(2).join(" ");
-        const base = comm.slice(comm.lastIndexOf("/") + 1);
-        if (!Number.isFinite(pid) || base !== "claude" || tty === "??")
+        const ppid = Number.parseInt(fields[1], 10);
+        const tty = fields[2];
+        const command = fields.slice(3).join(" ");
+        if (!Number.isFinite(pid))
             continue;
-        out.push({ pid, tty: `/dev/${tty}` });
+        const firstWord = command.split(" ", 1)[0];
+        const base = firstWord.slice(firstWord.lastIndexOf("/") + 1);
+        if (base === "claude" && tty !== "??") {
+            claudes.push({ pid, tty: `/dev/${tty}` });
+        }
+        if (Number.isFinite(ppid) && command.includes("shell-snapshots/snapshot-")) {
+            shellToolParents.add(ppid);
+        }
     }
-    return out;
+    return {
+        claudes,
+        busyPids: new Set(claudes.filter((c) => shellToolParents.has(c.pid)).map((c) => c.pid)),
+    };
 }
 /** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
 function parseLsofCwds(output) {
@@ -9071,6 +9081,8 @@ function projectClaudeState(args) {
     if (!args.present)
         return "none";
     if (args.titleWorking === true)
+        return "working";
+    if (args.shellBusy === true)
         return "working";
     if (args.titleWorking === false)
         return "waiting";
@@ -9177,20 +9189,26 @@ function run(file, args, exec) {
         });
     });
 }
-const PS_CLAUDE_ARGS = ["-axo", "pid=,tty=,comm="];
+const PS_CLAUDE_ARGS = ["-axo", "pid=,ppid=,tty=,command="];
 function lsofCwdArgs(pids) {
     return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
-/** All running Claude Code CLI instances with their ttys and project cwds. */
+/** All running Claude Code CLI instances with their ttys, project cwds, and
+ * whether a shell tool is running under each. */
 async function scanClaudeInstances(exec = execFile) {
     const ps = await run("/bin/ps", PS_CLAUDE_ARGS, exec);
-    const procs = parsePsClaude(ps);
-    if (procs.length === 0)
+    const world = parsePsWorld(ps);
+    if (world.claudes.length === 0)
         return [];
-    const lsof = await run("/usr/sbin/lsof", lsofCwdArgs(procs.map((p) => p.pid)), exec);
+    const lsof = await run("/usr/sbin/lsof", lsofCwdArgs(world.claudes.map((p) => p.pid)), exec);
     const cwds = parseLsofCwds(lsof);
-    return procs
-        .map((p) => ({ pid: p.pid, tty: p.tty, cwd: cwds.get(p.pid) ?? "" }))
+    return world.claudes
+        .map((p) => ({
+        pid: p.pid,
+        tty: p.tty,
+        cwd: cwds.get(p.pid) ?? "",
+        shellBusy: world.busyPids.has(p.pid),
+    }))
         .filter((i) => i.cwd !== "");
 }
 /** Is a process with exactly this name running? (pgrep -x; used to avoid
@@ -9213,32 +9231,6 @@ function processRunning(name, exec = execFile) {
  */
 /** tmux args listing every pane as `session|windowIndex|windowName|command|title`
  * (title LAST — it is a task summary and may itself contain `|`). */
-const LIST_PANES_ARGS = [
-    "list-panes",
-    "-a",
-    "-F",
-    "#{session_name}|#{window_index}|#{window_name}|#{pane_current_command}|#{pane_title}",
-];
-/** Parse {@link LIST_PANES_ARGS} output; malformed lines are skipped. */
-function parsePanes(output) {
-    const panes = [];
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line === "")
-            continue;
-        const fields = line.split("|");
-        if (fields.length < 5)
-            continue;
-        panes.push({
-            session: fields[0],
-            windowIndex: Number.parseInt(fields[1], 10) || 0,
-            windowName: fields[2],
-            command: fields[3],
-            title: fields.slice(4).join("|"),
-        });
-    }
-    return panes;
-}
 /** tmux args listing every pane as `paneTty|session|windowIndex|command|title`
  * (title LAST — it may contain `|`). Pane ttys identify tmux-hosted processes:
  * they are invisible to iTerm/Terminal tab lists, so a raise-by-tty must
@@ -9247,7 +9239,7 @@ const LIST_PANE_TTYS_ARGS = [
     "list-panes",
     "-a",
     "-F",
-    "#{pane_tty}|#{session_name}|#{window_index}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
+    "#{pane_tty}|#{session_name}|#{window_index}|#{window_name}|#{pane_active}|#{window_active}|#{pane_current_command}|#{pane_title}",
 ];
 /** Parse {@link LIST_PANE_TTYS_ARGS} output; malformed lines are skipped. */
 function parsePaneTtys(output) {
@@ -9257,7 +9249,7 @@ function parsePaneTtys(output) {
         if (line === "")
             continue;
         const fields = line.split("|");
-        if (fields.length < 7)
+        if (fields.length < 8)
             continue;
         const windowIndex = Number.parseInt(fields[2], 10);
         if (!Number.isFinite(windowIndex))
@@ -9266,9 +9258,10 @@ function parsePaneTtys(output) {
             tty: fields[0],
             session: fields[1],
             windowIndex,
-            receivesKeys: fields[3] === "1" && fields[4] === "1",
-            command: fields[5],
-            title: fields.slice(6).join("|"),
+            windowName: fields[3],
+            receivesKeys: fields[4] === "1" && fields[5] === "1",
+            command: fields[6],
+            title: fields.slice(7).join("|"),
         });
     }
     return panes;
@@ -9319,6 +9312,12 @@ function claudeStateForWindow(panes, session, windowName) {
         state = "waiting";
     }
     return state;
+}
+/** Does this window contain a pane whose tty hosts a shell-busy claude?
+ * Feeds the tmux keys the "turn ended but a background shell still runs"
+ * case, where the pane title reads ✳ (waiting). */
+function windowShellBusy(panes, session, windowName, busyTtys) {
+    return panes.some((p) => p.session === session && p.windowName === windowName && busyTtys.has(p.tty));
 }
 
 /**
@@ -9868,6 +9867,7 @@ let ClaudeProject = (() => {
                 titleWorking: title,
                 transcriptAgeMs: transcript.ageMs,
                 pendingToolUse: transcript.pendingToolUse,
+                shellBusy: instance?.shellBusy === true,
             });
             return svgToDataUri(buildClaudeProjectKeyImage({
                 project: project || "no target",
@@ -10525,11 +10525,12 @@ let FocusTmuxWindow = (() => {
             {
                 const tmux = findTmuxPath();
                 this.spin++;
-                const [front, windowsRes, clientsRes, panesRes] = await Promise.all([
+                const [front, windowsRes, clientsRes, panesRes, instances] = await Promise.all([
                     runJxa(FRONT_APP_BUNDLE_JXA),
                     runTmux(LIST_WINDOWS_ARGS, tmux),
                     runTmux(LIST_CLIENTS_ARGS, tmux),
-                    runTmux(LIST_PANES_ARGS, tmux),
+                    runTmux(LIST_PANE_TTYS_ARGS, tmux),
+                    scanClaudeInstances(),
                 ]);
                 const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
                 // Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
@@ -10538,7 +10539,8 @@ let FocusTmuxWindow = (() => {
                     : "";
                 const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
                 const clients = parseClients(clientsRes.stdout);
-                const panes = panesRes.ok ? parsePanes(panesRes.stdout) : [];
+                const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
+                const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
                 for (const key of this.visible.values()) {
                     const settings = await key.getSettings();
                     const status = evaluateKeyStatus({
@@ -10548,9 +10550,14 @@ let FocusTmuxWindow = (() => {
                         iTermFrontmost,
                         focusedTty,
                     });
-                    const claude = status.state === "unknown"
+                    let claude = status.state === "unknown"
                         ? "none"
                         : claudeStateForWindow(panes, status.session, status.window);
+                    // "Brewed … · 1 shell still running": the turn ended (title ✳ =
+                    // waiting) but a backgrounded shell keeps working under claude.
+                    if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
+                        claude = "working";
+                    }
                     if (settings.target === "apps:switchboard")
                         appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
                     const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));

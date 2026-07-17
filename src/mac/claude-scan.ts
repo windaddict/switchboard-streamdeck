@@ -7,7 +7,7 @@
 
 import { execFile as nodeExecFile } from "node:child_process";
 
-import { type ClaudeInstance, parseLsofCwds, parsePsClaude } from "./claude-project.js";
+import { type ClaudeInstance, parseLsofCwds, parsePsWorld } from "./claude-project.js";
 import { UTF8_ENV } from "./tmux-runner.js";
 
 /** Minimal execFile shape we depend on (for test injection). */
@@ -32,28 +32,34 @@ function run(
 	});
 }
 
-export const PS_CLAUDE_ARGS = ["-axo", "pid=,tty=,comm="];
+export const PS_CLAUDE_ARGS = ["-axo", "pid=,ppid=,tty=,command="];
 
 export function lsofCwdArgs(pids: number[]): string[] {
 	return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
 
-/** All running Claude Code CLI instances with their ttys and project cwds. */
+/** All running Claude Code CLI instances with their ttys, project cwds, and
+ * whether a shell tool is running under each. */
 export async function scanClaudeInstances(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
 ): Promise<ClaudeInstance[]> {
 	const ps = await run("/bin/ps", PS_CLAUDE_ARGS, exec);
-	const procs = parsePsClaude(ps);
-	if (procs.length === 0) return [];
+	const world = parsePsWorld(ps);
+	if (world.claudes.length === 0) return [];
 
 	const lsof = await run(
 		"/usr/sbin/lsof",
-		lsofCwdArgs(procs.map((p) => p.pid)),
+		lsofCwdArgs(world.claudes.map((p) => p.pid)),
 		exec,
 	);
 	const cwds = parseLsofCwds(lsof);
-	return procs
-		.map((p) => ({ pid: p.pid, tty: p.tty, cwd: cwds.get(p.pid) ?? "" }))
+	return world.claudes
+		.map((p) => ({
+			pid: p.pid,
+			tty: p.tty,
+			cwd: cwds.get(p.pid) ?? "",
+			shellBusy: world.busyPids.has(p.pid),
+		}))
 		.filter((i) => i.cwd !== "");
 }
 
