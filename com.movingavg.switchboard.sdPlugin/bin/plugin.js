@@ -11,10 +11,10 @@ import require$$0$1 from 'buffer';
 import require$$2 from 'util';
 import path, { join } from 'node:path';
 import { cwd } from 'node:process';
-import fs, { existsSync, readFileSync } from 'node:fs';
+import fs, { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
 /**!
@@ -9074,6 +9074,8 @@ function projectClaudeState(args) {
         return "working";
     if (args.titleWorking === false)
         return "waiting";
+    if (args.pendingToolUse === true)
+        return "working";
     if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
         return "working";
     }
@@ -9327,31 +9329,100 @@ function claudeStateForWindow(panes, session, windowName) {
  * plugin process that serves every key and dial.
  */
 const BATCH = 64;
-/** Age in ms of the newest .jsonl transcript for the project, or null when
- * the project has no transcript directory / no transcripts. */
-async function newestTranscriptAgeMs(projectPath, now = Date.now(), base = join(homedir(), ".claude", "projects")) {
+/**
+ * Is there an in-flight tool call in a transcript tail? Claude Code appends
+ * the assistant turn (with tool_use blocks) when a tool STARTS and the
+ * tool_result only when it finishes — so during a long shell command the file
+ * goes quiet with an UNANSWERED tool_use in its tail. Matching tool_use ids
+ * to tool_result ids is essential: other entry types (bridge-session,
+ * attachment, system) interleave after the tool_use, so "look at the last
+ * line" never works (verified against live transcripts). Keeps "working"
+ * honest through long tools on hosts where no tmux title is readable —
+ * agents don't need this, their subagent transcripts keep the directory
+ * fresh. Pure; exported for tests.
+ */
+function pendingToolUseInTail(lines) {
+    const uses = new Set();
+    const answered = new Set();
+    for (const line of lines) {
+        // cheap pre-filter — most lines carry neither marker
+        if (!line.includes('"tool_use') && !line.includes('"tool_result"'))
+            continue;
+        try {
+            const entry = JSON.parse(line);
+            const content = entry.message?.content;
+            if (!Array.isArray(content))
+                continue;
+            for (const block of content) {
+                if (block?.type === "tool_use" && typeof block.id === "string")
+                    uses.add(block.id);
+                if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+                    answered.add(block.tool_use_id);
+                }
+            }
+        }
+        catch {
+            // partial line at the window edge — skip
+        }
+    }
+    for (const id of uses) {
+        if (!answered.has(id))
+            return true;
+    }
+    return false;
+}
+/** Read the newest transcript's tail window as complete lines. */
+async function newestTranscriptTailLines(path) {
+    try {
+        const fh = await open(path, "r");
+        try {
+            const size = (await fh.stat()).size;
+            const window = Math.min(size, 256 * 1024); // tool_use turns can be large
+            const buf = Buffer.alloc(window);
+            await fh.read(buf, 0, window, size - window);
+            return buf
+                .toString("utf8")
+                .split("\n")
+                .filter((l) => l.trim() !== "");
+        }
+        finally {
+            await fh.close();
+        }
+    }
+    catch {
+        return [];
+    }
+}
+/** Age AND pending-tool state of the project's newest transcript. */
+async function newestTranscriptState(projectPath, now = Date.now(), base = join(homedir(), ".claude", "projects")) {
     const dir = join(base, projectSlug(projectPath));
     try {
         const names = (await readdir(dir)).filter((n) => n.endsWith(".jsonl"));
-        let newest = Number.NEGATIVE_INFINITY;
+        let newest = null;
         for (let i = 0; i < names.length; i += BATCH) {
-            const mtimes = await Promise.all(names.slice(i, i + BATCH).map(async (n) => {
+            const batch = await Promise.all(names.slice(i, i + BATCH).map(async (n) => {
                 try {
-                    return (await stat(join(dir, n))).mtimeMs;
+                    const p = join(dir, n);
+                    return { mtimeMs: (await stat(p)).mtimeMs, path: p };
                 }
                 catch {
-                    return null; // removed mid-scan
+                    return null;
                 }
             }));
-            for (const m of mtimes) {
-                if (m !== null && m > newest)
-                    newest = m;
+            for (const e of batch) {
+                if (e !== null && (newest === null || e.mtimeMs > newest.mtimeMs))
+                    newest = e;
             }
         }
-        return newest === Number.NEGATIVE_INFINITY ? null : Math.max(0, now - newest);
+        if (newest === null)
+            return { ageMs: null, pendingToolUse: false };
+        return {
+            ageMs: Math.max(0, now - newest.mtimeMs),
+            pendingToolUse: pendingToolUseInTail(await newestTranscriptTailLines(newest.path)),
+        };
     }
     catch {
-        return null;
+        return { ageMs: null, pendingToolUse: false };
     }
 }
 
@@ -9789,10 +9860,14 @@ let ClaudeProject = (() => {
                     }
                 }
             }
+            const transcript = instance !== undefined
+                ? await newestTranscriptState(project)
+                : { ageMs: null, pendingToolUse: false };
             const claude = projectClaudeState({
                 present: instance !== undefined,
                 titleWorking: title,
-                transcriptAgeMs: instance !== undefined ? await newestTranscriptAgeMs(project) : null,
+                transcriptAgeMs: transcript.ageMs,
+                pendingToolUse: transcript.pendingToolUse,
             });
             return svgToDataUri(buildClaudeProjectKeyImage({
                 project: project || "no target",
@@ -10476,6 +10551,8 @@ let FocusTmuxWindow = (() => {
                     const claude = status.state === "unknown"
                         ? "none"
                         : claudeStateForWindow(panes, status.session, status.window);
+                    if (settings.target === "apps:switchboard")
+                        appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
                     const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
                     if (this.lastImage.get(key.id) === image)
                         continue; // unchanged — save the round-trip

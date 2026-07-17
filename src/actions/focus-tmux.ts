@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs"; // TEMP TRACE
 import streamDeck, {
 	action,
 	type JsonValue,
@@ -141,6 +142,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					status.state === "unknown"
 						? "none"
 						: claudeStateForWindow(panes, status.session, status.window);
+				if (settings.target === "apps:switchboard") appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
 				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip
 				try {

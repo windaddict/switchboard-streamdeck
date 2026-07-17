@@ -25,7 +25,7 @@ import {
 	parsePaneTtys,
 	titleWorking,
 } from "../mac/claude-state.js";
-import { newestTranscriptAgeMs } from "../mac/claude-transcript.js";
+import { newestTranscriptState } from "../mac/claude-transcript.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
@@ -191,10 +191,15 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 			}
 		}
 
+		const transcript =
+			instance !== undefined
+				? await newestTranscriptState(project)
+				: { ageMs: null, pendingToolUse: false };
 		const claude = projectClaudeState({
 			present: instance !== undefined,
 			titleWorking: title,
-			transcriptAgeMs: instance !== undefined ? await newestTranscriptAgeMs(project) : null,
+			transcriptAgeMs: transcript.ageMs,
+			pendingToolUse: transcript.pendingToolUse,
 		});
 
 		return svgToDataUri(

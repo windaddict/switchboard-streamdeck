@@ -98,10 +98,16 @@ export function projectClaudeState(args: {
 	titleWorking: boolean | null;
 	/** Age of the newest transcript .jsonl in ms; null when none found. */
 	transcriptAgeMs: number | null;
+	/** Newest transcript ends on an unanswered tool_use (tool in flight).
+	 * Long shells write once at tool start then go quiet — without this a
+	 * shell reads "waiting" after ~30s while an agent (whose subagent
+	 * transcripts keep streaming) reads "working". */
+	pendingToolUse?: boolean;
 }): ClaudeState {
 	if (!args.present) return "none";
 	if (args.titleWorking === true) return "working";
 	if (args.titleWorking === false) return "waiting";
+	if (args.pendingToolUse === true) return "working";
 	if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
 		return "working";
 	}

@@ -87,6 +87,11 @@ describe("projectClaudeState", () => {
 			"waiting",
 		);
 	});
+	it("a pending tool call keeps WORKING through a long quiet shell (title unknown)", () => {
+		expect(
+			projectClaudeState({ present: true, titleWorking: null, transcriptAgeMs: 300_000, pendingToolUse: true }),
+		).toBe("working");
+	});
 	it("falls back to transcript freshness when no title is readable", () => {
 		expect(
 			projectClaudeState({ present: true, titleWorking: null, transcriptAgeMs: TRANSCRIPT_FRESH_MS - 1 }),
