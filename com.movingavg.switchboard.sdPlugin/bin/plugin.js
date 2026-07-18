@@ -8773,6 +8773,15 @@ class CoalescedRunner {
         }
     }
 }
+/**
+ * Adaptive poll gate: poll every tick while things are INTERESTING (a
+ * terminal is frontmost, something is hot, Claude is working), every Nth
+ * tick otherwise — most of the subprocess cost of polling is spent watching
+ * nothing change. Pure.
+ */
+function shouldPollThisTick(tick, interesting, idleEvery = 4) {
+    return interesting || tick % idleEvery === 0;
+}
 
 /** Small shared SVG helpers used by the key/touchscreen image builders. */
 /** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
@@ -9006,12 +9015,14 @@ function buildAllWindowsFeedback(windows, current) {
  * only while a session is actively working.
  */
 /**
- * Parse `ps -axo pid=,ppid=,tty=,command=` output. NOTE: enumerate with ps,
+ * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
+ * avoids `command=` (full argv extraction costs ~0.13s CPU per call across
+ * all processes); the argv check needed for shell-busy detection runs as a
+ * TARGETED second pass over claude children only. NOTE: enumerate with ps,
  * not pgrep — BSD pgrep silently omits its own ancestor processes.
  */
-function parsePsWorld(output) {
-    const claudes = [];
-    const shellToolParents = new Set();
+function parsePsProcs(output) {
+    const procs = [];
     for (const rawLine of output.split("\n")) {
         const line = rawLine.trim();
         if (line === "")
@@ -9021,23 +9032,40 @@ function parsePsWorld(output) {
             continue;
         const pid = Number.parseInt(fields[0], 10);
         const ppid = Number.parseInt(fields[1], 10);
-        const tty = fields[2];
-        const command = fields.slice(3).join(" ");
-        if (!Number.isFinite(pid))
+        if (!Number.isFinite(pid) || !Number.isFinite(ppid))
             continue;
-        const firstWord = command.split(" ", 1)[0];
-        const base = firstWord.slice(firstWord.lastIndexOf("/") + 1);
-        if (base === "claude" && tty !== "??") {
-            claudes.push({ pid, tty: `/dev/${tty}` });
-        }
-        if (Number.isFinite(ppid) && command.includes("shell-snapshots/snapshot-")) {
-            shellToolParents.add(ppid);
+        procs.push({ pid, ppid, tty: fields[2], comm: fields.slice(3).join(" ") });
+    }
+    return procs;
+}
+/** claude CLI processes (comm basename "claude") with a controlling tty. */
+function claudesFrom(procs) {
+    return procs
+        .filter((p) => p.comm.slice(p.comm.lastIndexOf("/") + 1) === "claude" && p.tty !== "??")
+        .map((p) => ({ pid: p.pid, tty: `/dev/${p.tty}` }));
+}
+/**
+ * Parse targeted `ps -o pid=,ppid=,command= -p <children>` output and return
+ * the PARENT pids that have a live shell-snapshot child — Claude Code runs
+ * every Bash tool (foreground or backgrounded) as a direct child via its
+ * shell-snapshot mechanism, so this is true exactly while "N shells still
+ * running". No shell-name assumptions: the argv marker is the invariant.
+ */
+function busyParentsFrom(confirmOutput) {
+    const busy = new Set();
+    for (const rawLine of confirmOutput.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split(/\s+/);
+        if (fields.length < 3)
+            continue;
+        const ppid = Number.parseInt(fields[1], 10);
+        if (Number.isFinite(ppid) && line.includes("shell-snapshots/snapshot-")) {
+            busy.add(ppid);
         }
     }
-    return {
-        claudes,
-        busyPids: new Set(claudes.filter((c) => shellToolParents.has(c.pid)).map((c) => c.pid)),
-    };
+    return busy;
 }
 /** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
 function parseLsofCwds(output) {
@@ -9189,27 +9217,105 @@ function run(file, args, exec) {
         });
     });
 }
-const PS_CLAUDE_ARGS = ["-axo", "pid=,ppid=,tty=,command="];
+/** Discovery is pgrep-based: pgrep walks the process table at ~zero CPU
+ * where a full `ps -axo` costs ~0.12s per call. Safe HERE because the plugin
+ * is never an ancestor of a claude process (BSD pgrep omits its own
+ * ancestors — that caveat applies to probes run from inside a session, not
+ * to this plugin). All ps calls are then TARGETED (-p) at a handful of pids. */
+const PGREP_CLAUDE_ARGS = ["-x", "claude"];
+function claudeDetailArgs(pids) {
+    return ["-o", "pid=,ppid=,tty=,comm=", "-p", pids.join(",")];
+}
+function childPidsArgs(pids) {
+    return ["-P", pids.join(",")];
+}
+/** Targeted argv read for shell-busy confirmation (few pids — cheap). */
+function confirmShellArgs(pids) {
+    return ["-o", "pid=,ppid=,command=", "-p", pids.join(",")];
+}
+/** A claude's cwd is effectively fixed for its lifetime; cache the lsof
+ * lookups per pid. Tolerated staleness: 60s (documented, plain TTL — no
+ * cleverness about invalidation it can't actually deliver). */
+const CWD_TTL_MS = 60_000;
+const cwdCache = new Map();
+/** Shared snapshot for ALL pollers: both key types poll every few seconds
+ * and would otherwise duplicate the scans. */
+const WORLD_TTL_MS = 2000;
+let worldCache = null;
+let worldInFlight = null;
 function lsofCwdArgs(pids) {
     return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
 /** All running Claude Code CLI instances with their ttys, project cwds, and
- * whether a shell tool is running under each. */
-async function scanClaudeInstances(exec = execFile) {
-    const ps = await run("/bin/ps", PS_CLAUDE_ARGS, exec);
-    const world = parsePsWorld(ps);
-    if (world.claudes.length === 0)
+ * whether a shell tool is running under each. TTL-cached so concurrent
+ * pollers share one scan; cwds cached per pid (60s). */
+function scanClaudeInstances(exec = execFile) {
+    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS) {
+        return Promise.resolve(worldCache.instances);
+    }
+    if (worldInFlight !== null) {
+        return worldInFlight;
+    }
+    const p = doScan(exec);
+    worldInFlight = p;
+    void p.finally(() => {
+        if (worldInFlight === p)
+            worldInFlight = null;
+    });
+    return p;
+}
+async function doScan(exec) {
+    const now = Date.now();
+    const pidsOut = await run("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
+    const pids = pidsOut
+        .split("\n")
+        .map((l) => Number.parseInt(l.trim(), 10))
+        .filter((n) => Number.isFinite(n));
+    if (pids.length === 0) {
+        worldCache = { at: now, instances: [] };
         return [];
-    const lsof = await run("/usr/sbin/lsof", lsofCwdArgs(world.claudes.map((p) => p.pid)), exec);
-    const cwds = parseLsofCwds(lsof);
-    return world.claudes
+    }
+    const procs = parsePsProcs(await run("/bin/ps", claudeDetailArgs(pids), exec));
+    const claudes = claudesFrom(procs);
+    if (claudes.length === 0) {
+        worldCache = { at: now, instances: [] };
+        return [];
+    }
+    const claudePids = new Set(claudes.map((c) => c.pid));
+    // Targeted argv confirm: which claudes have a live shell-snapshot child?
+    const kidsOut = await run("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
+    const children = kidsOut
+        .split("\n")
+        .map((l) => Number.parseInt(l.trim(), 10))
+        .filter((n) => Number.isFinite(n));
+    let busyPids = new Set();
+    if (children.length > 0) {
+        busyPids = busyParentsFrom(await run("/bin/ps", confirmShellArgs(children), exec));
+    }
+    // Phase 2b (cwds): lsof only for pids missing a fresh cache entry.
+    const need = claudes.filter((c) => {
+        const hit = cwdCache.get(c.pid);
+        return hit === undefined || now - hit.at >= CWD_TTL_MS;
+    });
+    if (need.length > 0) {
+        const cwds = parseLsofCwds(await run("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
+        for (const [pid, cwd] of cwds)
+            cwdCache.set(pid, { cwd, at: now });
+    }
+    for (const pid of [...cwdCache.keys()]) {
+        if (!claudePids.has(pid))
+            cwdCache.delete(pid); // dead pids out
+    }
+    const instances = claudes
         .map((p) => ({
         pid: p.pid,
         tty: p.tty,
-        cwd: cwds.get(p.pid) ?? "",
-        shellBusy: world.busyPids.has(p.pid),
+        cwd: cwdCache.get(p.pid)?.cwd ?? "",
+        shellBusy: busyPids.has(p.pid),
     }))
         .filter((i) => i.cwd !== "");
+    worldCache = { at: now, instances };
+    return instances;
 }
 /** Is a process with exactly this name running? (pgrep -x; used to avoid
  * AppleScript-launching a terminal app that isn't open.) */
@@ -9751,13 +9857,19 @@ let ClaudeProject = (() => {
         timer;
         refresher = new CoalescedRunner(() => this.doRefreshAll());
         spin = 0;
+        tick = 0;
+        /** Last tick saw a frontmost terminal / hot key / working Claude. */
+        interesting = true;
         lastImage = new Map();
         async onWillAppear(ev) {
             if (!ev.action.isKey())
                 return;
             this.visible.set(ev.action.id, ev.action);
             if (this.timer === undefined) {
-                this.timer = setInterval(() => void this.refreshAll(), POLL_MS$3);
+                this.timer = setInterval(() => {
+                    if (shouldPollThisTick(this.tick++, this.interesting))
+                        void this.refreshAll();
+                }, POLL_MS$3);
             }
             await this.refreshAll();
         }
@@ -9818,6 +9930,7 @@ let ClaudeProject = (() => {
             {
                 const snap = await this.snapshot();
                 this.spin++;
+                this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.shellBusy);
                 for (const key of this.visible.values()) {
                     const settings = await key.getSettings();
                     const project = (settings.project ?? "").trim();
@@ -10478,13 +10591,22 @@ let FocusTmuxWindow = (() => {
         timer;
         refresher = new CoalescedRunner(() => this.doRefreshAll());
         spin = 0; // poll tick counter — rotates the working spark
+        tick = 0; // interval counter for the adaptive idle gate
+        /** Last tick saw a frontmost terminal / hot key / working Claude. */
+        interesting = true;
         lastImage = new Map(); // skip identical repaints
         async onWillAppear(ev) {
             if (!ev.action.isKey())
                 return;
             this.visible.set(ev.action.id, ev.action);
             if (this.timer === undefined) {
-                this.timer = setInterval(() => void this.refreshAll(), POLL_MS$2);
+                this.timer = setInterval(() => {
+                    // Idle gate: when nothing is hot/working and no terminal is
+                    // frontmost, poll at a quarter cadence — the full subprocess
+                    // set spent most of its CPU watching nothing change.
+                    if (shouldPollThisTick(this.tick++, this.interesting))
+                        void this.refreshAll();
+                }, POLL_MS$2);
             }
             await this.refreshAll();
         }
@@ -10533,6 +10655,7 @@ let FocusTmuxWindow = (() => {
                     scanClaudeInstances(),
                 ]);
                 const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
+                let anyInteresting = iTermFrontmost;
                 // Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
                 const focusedTty = iTermFrontmost
                     ? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
@@ -10558,6 +10681,8 @@ let FocusTmuxWindow = (() => {
                     if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
                         claude = "working";
                     }
+                    if (status.state === "hot" || claude === "working")
+                        anyInteresting = true;
                     if (settings.target === "apps:switchboard")
                         appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
                     const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
@@ -10571,6 +10696,7 @@ let FocusTmuxWindow = (() => {
                         streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
                     }
                 }
+                this.interesting = anyInteresting;
             }
         }
         /** Short press: raise the iTerm2 window for the configured tmux window. */

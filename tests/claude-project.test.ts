@@ -3,48 +3,63 @@ import {
 	buildClaudeProjectKeyImage,
 	instancesForProject,
 	normalizeProjectPath,
+	busyParentsFrom,
+	childrenOf,
+	claudesFrom,
 	parseLsofCwds,
-	parsePsWorld,
+	parsePsProcs,
 	projectBasename,
 	projectClaudeState,
 	projectSlug,
 	TRANSCRIPT_FRESH_MS,
 } from "../src/mac/claude-project.js";
 
-describe("parsePsWorld", () => {
+describe("cheap ps scan (parsePsProcs / claudesFrom / childrenOf)", () => {
 	const PS = [
-		" 1120 1000 ttys019 claude --permission-mode auto",
+		" 1120 1000 ttys019 claude",
 		"14251 1000 ttys001 claude",
 		"  400 1000 ??      claude",
-		"  500 1000 ttys002 /Applications/Claude.app/Contents/MacOS/Claude",
+		"  500 1000 ttys002 Claude",
 		"  600 1000 ttys003 claude-something",
 		"  700 1000 ttys004 /usr/local/bin/claude",
-		" 3161 1120 ??      /bin/zsh -c source /Users/j/.claude/shell-snapshots/snapshot-zsh-17.sh && eval 'sleep 100'",
-		" 3200 9999 ??      /bin/zsh -c source /Users/j/.claude/shell-snapshots/snapshot-zsh-18.sh", 
+		" 3161 1120 ??      zsh",
+		" 3200 9999 ??      zsh",
 	].join("\n");
+	const procs = parsePsProcs(PS);
 	it("keeps claude processes with a real tty, /dev-prefixed", () => {
-		expect(parsePsWorld(PS).claudes).toEqual([
+		expect(claudesFrom(procs)).toEqual([
 			{ pid: 1120, tty: "/dev/ttys019" },
 			{ pid: 14251, tty: "/dev/ttys001" },
 			{ pid: 700, tty: "/dev/ttys004" },
 		]);
 	});
-	it("drops ttyless (??) processes and non-claude commands", () => {
-		const pids = parsePsWorld(PS).claudes.map((p) => p.pid);
-		expect(pids).not.toContain(400); // no tty
-		expect(pids).not.toContain(500); // desktop app binary named Claude
-		expect(pids).not.toContain(600); // prefix-named other tool
+	it("drops ttyless (??) processes and non-claude comms", () => {
+		const pids = claudesFrom(procs).map((p) => p.pid);
+		expect(pids).not.toContain(400);
+		expect(pids).not.toContain(500); // desktop app binary (capital C)
+		expect(pids).not.toContain(600);
 	});
-	it("marks a claude busy when a shell-snapshot child runs under it", () => {
-		const world = parsePsWorld(PS);
-		expect(world.busyPids.has(1120)).toBe(true); // pid 3161's parent
-		expect(world.busyPids.has(14251)).toBe(false);
-	});
-	it("a shell-snapshot child of a NON-claude parent marks nothing", () => {
-		expect(parsePsWorld(PS).busyPids.has(9999)).toBe(false);
+	it("collects direct children of claude pids for the confirm pass", () => {
+		expect(childrenOf(procs, new Set([1120, 14251, 700]))).toEqual([3161]);
 	});
 	it("tolerates empty output", () => {
-		expect(parsePsWorld("").claudes).toEqual([]);
+		expect(parsePsProcs("")).toEqual([]);
+	});
+});
+
+describe("busyParentsFrom (targeted argv confirm)", () => {
+	it("marks parents whose child argv carries the shell-snapshot marker", () => {
+		const OUT = [
+			"3161 1120 /bin/zsh -c source /Users/j/.claude/shell-snapshots/snapshot-zsh-17.sh && eval 'sleep 100'",
+			"3300 1120 node /some/mcp-server.js",
+			"3400 14251 /bin/zsh -c plain-shell-no-marker",
+		].join("\n");
+		const busy = busyParentsFrom(OUT);
+		expect(busy.has(1120)).toBe(true);
+		expect(busy.has(14251)).toBe(false); // shell child without the marker
+	});
+	it("empty confirm output marks nothing", () => {
+		expect(busyParentsFrom("").size).toBe(0);
 	});
 });
 

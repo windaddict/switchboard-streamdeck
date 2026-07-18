@@ -9,7 +9,7 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript, runJxa } from "../applescript/runner.js";
-import { CoalescedRunner } from "../mac/coalesce.js";
+import { CoalescedRunner, shouldPollThisTick } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import {
 	buildClaudeProjectKeyImage,
@@ -74,13 +74,18 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 	private timer?: ReturnType<typeof setInterval>;
 	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private spin = 0;
+	private tick = 0;
+	/** Last tick saw a frontmost terminal / hot key / working Claude. */
+	private interesting = true;
 	private readonly lastImage = new Map<string, string>();
 
 	override async onWillAppear(ev: WillAppearEvent<ClaudeProjectSettings>): Promise<void> {
 		if (!ev.action.isKey()) return;
 		this.visible.set(ev.action.id, ev.action);
 		if (this.timer === undefined) {
-			this.timer = setInterval(() => void this.refreshAll(), POLL_MS);
+			this.timer = setInterval(() => {
+				if (shouldPollThisTick(this.tick++, this.interesting)) void this.refreshAll();
+			}, POLL_MS);
 		}
 		await this.refreshAll();
 	}
@@ -148,6 +153,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		{
 			const snap = await this.snapshot();
 			this.spin++;
+			this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.shellBusy);
 
 			for (const key of this.visible.values()) {
 				const settings = await key.getSettings();

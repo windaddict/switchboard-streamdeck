@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CoalescedRunner } from "../src/mac/coalesce.js";
+import { CoalescedRunner, shouldPollThisTick } from "../src/mac/coalesce.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
@@ -70,5 +70,16 @@ describe("CoalescedRunner", () => {
 		expect(runs).toBe(1);
 		await r.request();
 		expect(runs).toBe(2);
+	});
+});
+
+describe("shouldPollThisTick", () => {
+	it("always polls while interesting", () => {
+		for (let t = 0; t < 8; t++) expect(shouldPollThisTick(t, true)).toBe(true);
+	});
+	it("polls every 4th tick when idle", () => {
+		expect([0, 1, 2, 3, 4, 5, 6, 7].map((t) => shouldPollThisTick(t, false))).toEqual([
+			true, false, false, false, true, false, false, false,
+		]);
 	});
 });

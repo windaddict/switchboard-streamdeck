@@ -42,3 +42,13 @@ export class CoalescedRunner {
 		}
 	}
 }
+
+/**
+ * Adaptive poll gate: poll every tick while things are INTERESTING (a
+ * terminal is frontmost, something is hot, Claude is working), every Nth
+ * tick otherwise — most of the subprocess cost of polling is spent watching
+ * nothing change. Pure.
+ */
+export function shouldPollThisTick(tick: number, interesting: boolean, idleEvery = 4): boolean {
+	return interesting || tick % idleEvery === 0;
+}

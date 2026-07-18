@@ -12,7 +12,7 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript, runJxa } from "../applescript/runner.js";
-import { CoalescedRunner } from "../mac/coalesce.js";
+import { CoalescedRunner, shouldPollThisTick } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import { scanClaudeInstances } from "../mac/claude-scan.js";
 import {
@@ -68,13 +68,21 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 	private timer?: ReturnType<typeof setInterval>;
 	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private spin = 0; // poll tick counter — rotates the working spark
+	private tick = 0; // interval counter for the adaptive idle gate
+	/** Last tick saw a frontmost terminal / hot key / working Claude. */
+	private interesting = true;
 	private readonly lastImage = new Map<string, string>(); // skip identical repaints
 
 	override async onWillAppear(ev: WillAppearEvent<FocusTmuxSettings>): Promise<void> {
 		if (!ev.action.isKey()) return;
 		this.visible.set(ev.action.id, ev.action);
 		if (this.timer === undefined) {
-			this.timer = setInterval(() => void this.refreshAll(), POLL_MS);
+			this.timer = setInterval(() => {
+				// Idle gate: when nothing is hot/working and no terminal is
+				// frontmost, poll at a quarter cadence — the full subprocess
+				// set spent most of its CPU watching nothing change.
+				if (shouldPollThisTick(this.tick++, this.interesting)) void this.refreshAll();
+			}, POLL_MS);
 		}
 		await this.refreshAll();
 	}
@@ -128,6 +136,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 				scanClaudeInstances(),
 			]);
 			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
+			let anyInteresting = iTermFrontmost;
 			// Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
 			const focusedTty = iTermFrontmost
 				? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
@@ -155,6 +164,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 				if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
 					claude = "working";
 				}
+				if (status.state === "hot" || claude === "working") anyInteresting = true;
 				if (settings.target === "apps:switchboard") appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
 				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip
@@ -165,6 +175,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					streamDeck.logger.debug(`tmux key image skipped: ${String(err)}`);
 				}
 			}
+			this.interesting = anyInteresting;
 		}
 	}
 

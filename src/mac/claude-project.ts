@@ -27,24 +27,22 @@ export interface ClaudeInstance {
 	shellBusy: boolean;
 }
 
-export interface PsWorld {
-	/** claude CLI processes with a controlling tty. */
-	claudes: Array<{ pid: number; tty: string }>;
-	/** claude pids that currently have a live SHELL TOOL child — Claude Code
-	 * runs every Bash tool (foreground or backgrounded) as a direct child via
-	 * its shell-snapshot mechanism, so this is true exactly while "N shells
-	 * still running". Detects the case where the turn has ended (title = ✳)
-	 * but a background shell keeps working. */
-	busyPids: Set<number>;
+export interface PsProc {
+	pid: number;
+	ppid: number;
+	tty: string;
+	comm: string;
 }
 
 /**
- * Parse `ps -axo pid=,ppid=,tty=,command=` output. NOTE: enumerate with ps,
+ * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
+ * avoids `command=` (full argv extraction costs ~0.13s CPU per call across
+ * all processes); the argv check needed for shell-busy detection runs as a
+ * TARGETED second pass over claude children only. NOTE: enumerate with ps,
  * not pgrep — BSD pgrep silently omits its own ancestor processes.
  */
-export function parsePsWorld(output: string): PsWorld {
-	const claudes: Array<{ pid: number; tty: string }> = [];
-	const shellToolParents = new Set<number>();
+export function parsePsProcs(output: string): PsProc[] {
+	const procs: PsProc[] = [];
 	for (const rawLine of output.split("\n")) {
 		const line = rawLine.trim();
 		if (line === "") continue;
@@ -52,22 +50,44 @@ export function parsePsWorld(output: string): PsWorld {
 		if (fields.length < 4) continue;
 		const pid = Number.parseInt(fields[0], 10);
 		const ppid = Number.parseInt(fields[1], 10);
-		const tty = fields[2];
-		const command = fields.slice(3).join(" ");
-		if (!Number.isFinite(pid)) continue;
-		const firstWord = command.split(" ", 1)[0];
-		const base = firstWord.slice(firstWord.lastIndexOf("/") + 1);
-		if (base === "claude" && tty !== "??") {
-			claudes.push({ pid, tty: `/dev/${tty}` });
-		}
-		if (Number.isFinite(ppid) && command.includes("shell-snapshots/snapshot-")) {
-			shellToolParents.add(ppid);
+		if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+		procs.push({ pid, ppid, tty: fields[2], comm: fields.slice(3).join(" ") });
+	}
+	return procs;
+}
+
+/** claude CLI processes (comm basename "claude") with a controlling tty. */
+export function claudesFrom(procs: PsProc[]): Array<{ pid: number; tty: string }> {
+	return procs
+		.filter((p) => p.comm.slice(p.comm.lastIndexOf("/") + 1) === "claude" && p.tty !== "??")
+		.map((p) => ({ pid: p.pid, tty: `/dev/${p.tty}` }));
+}
+
+/** Direct children of the given pids (candidates for the argv confirm pass). */
+export function childrenOf(procs: PsProc[], parents: ReadonlySet<number>): number[] {
+	return procs.filter((p) => parents.has(p.ppid)).map((p) => p.pid);
+}
+
+/**
+ * Parse targeted `ps -o pid=,ppid=,command= -p <children>` output and return
+ * the PARENT pids that have a live shell-snapshot child — Claude Code runs
+ * every Bash tool (foreground or backgrounded) as a direct child via its
+ * shell-snapshot mechanism, so this is true exactly while "N shells still
+ * running". No shell-name assumptions: the argv marker is the invariant.
+ */
+export function busyParentsFrom(confirmOutput: string): Set<number> {
+	const busy = new Set<number>();
+	for (const rawLine of confirmOutput.split("\n")) {
+		const line = rawLine.trim();
+		if (line === "") continue;
+		const fields = line.split(/\s+/);
+		if (fields.length < 3) continue;
+		const ppid = Number.parseInt(fields[1], 10);
+		if (Number.isFinite(ppid) && line.includes("shell-snapshots/snapshot-")) {
+			busy.add(ppid);
 		}
 	}
-	return {
-		claudes,
-		busyPids: new Set(claudes.filter((c) => shellToolParents.has(c.pid)).map((c) => c.pid)),
-	};
+	return busy;
 }
 
 /** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
