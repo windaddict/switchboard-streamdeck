@@ -10,6 +10,19 @@
  * (always readable via the tmux server), else the freshness of the newest
  * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
  * only while a session is actively working.
+ *
+ * Known limits (documented, not defects introduced here):
+ * - Two claude sessions in the SAME cwd share a project transcript dir; the
+ *   NEWEST .jsonl is read, so an idle session can briefly borrow a busy
+ *   same-project session's "working". Exact pid→session-file correlation
+ *   would need a per-pid lsof of open fds (cost); deferred while the common
+ *   case is one session per project.
+ * - While a session STREAMS its final text response under a ✳ title (no tool
+ *   coming), the transcript momentarily shows a completed assistant turn, so
+ *   a tmux key can read "waiting" for the few seconds of that stream. The
+ *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
+ *   us to an undocumented, version-fragile format — rejected as
+ *   disproportionate to a transient, self-correcting misread.
  */
 
 import type { ClaudeState } from "./claude-state.js";
@@ -141,21 +154,27 @@ export function projectClaudeState(args: {
 	titleWorking: boolean | null;
 	/** Age of the newest transcript .jsonl in ms; null when none found. */
 	transcriptAgeMs: number | null;
-	/** Newest transcript ends on an unanswered tool_use (tool in flight).
-	 * Long shells write once at tool start then go quiet — without this a
-	 * shell reads "waiting" after ~30s while an agent (whose subagent
-	 * transcripts keep streaming) reads "working". */
-	pendingToolUse?: boolean;
+	/** The transcript shows Claude OWING the next turn — Brewing (awaiting the
+	 * model after a prompt/tool result) or a tool running. This is the
+	 * authoritative "is it working" signal: the ✳ terminal title does NOT mean
+	 * "waiting for you", only "no tool actively executing", which is ALSO true
+	 * while Brewing. So this OUTRANKS the idle title. */
+	transcriptWorking?: boolean;
 	/** A shell tool is running under the claude process right now. OUTRANKS an
 	 * idle title: a backgrounded shell keeps running after the turn ends and
 	 * the title flips to ✳ ("Brewed … · 1 shell still running"). */
 	shellBusy?: boolean;
 }): ClaudeState {
 	if (!args.present) return "none";
-	if (args.titleWorking === true) return "working";
+	if (args.titleWorking === true) return "working"; // braille spinner: fast-path
 	if (args.shellBusy === true) return "working";
+	// The PRECISE transcript signal (Claude owes the next turn) overrides the ✳
+	// title — that is the Brewing fix. A mere fresh mtime does NOT override ✳,
+	// or every key would read "working" for ~30s after each turn completes.
+	if (args.transcriptWorking === true) return "working";
+	// ✳ title with a quiet, non-owing transcript = genuinely idle at the prompt.
 	if (args.titleWorking === false) return "waiting";
-	if (args.pendingToolUse === true) return "working";
+	// No readable title (non-tmux host): a fresh transcript means streaming.
 	if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
 		return "working";
 	}

@@ -117,9 +117,24 @@ describe("projectClaudeState", () => {
 			projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 300_000, shellBusy: true }),
 		).toBe("working");
 	});
-	it("a pending tool call keeps WORKING through a long quiet shell (title unknown)", () => {
+	it("BREWING outranks the ✳ idle title — transcript owes a turn, stale mtime (the reported bug)", () => {
 		expect(
-			projectClaudeState({ present: true, titleWorking: null, transcriptAgeMs: 300_000, pendingToolUse: true }),
+			projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 300_000, transcriptWorking: true }),
+		).toBe("working");
+	});
+	it("genuinely idle: ✳ title, transcript not owing, stale = waiting", () => {
+		expect(
+			projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 300_000, transcriptWorking: false }),
+		).toBe("waiting");
+	});
+	it("✳ title beats a merely-fresh mtime — no false 'working' for 30s after a turn finishes", () => {
+		expect(
+			projectClaudeState({ present: true, titleWorking: false, transcriptAgeMs: 0, transcriptWorking: false }),
+		).toBe("waiting");
+	});
+	it("no title (non-tmux host): a fresh transcript means streaming = working", () => {
+		expect(
+			projectClaudeState({ present: true, titleWorking: null, transcriptAgeMs: 5_000, transcriptWorking: false }),
 		).toBe("working");
 	});
 	it("falls back to transcript freshness when no title is readable", () => {

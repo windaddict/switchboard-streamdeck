@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { newestTranscriptAgeMs, newestTranscriptState, pendingToolUseInTail } from "../src/mac/claude-transcript.js";
+import { invalidateTranscriptMemo, newestTranscriptAgeMs, newestTranscriptState, transcriptOwesResponse } from "../src/mac/claude-transcript.js";
 import { projectSlug } from "../src/mac/claude-project.js";
 
 const PROJECT = "/Users/j/code/app";
@@ -41,43 +41,75 @@ describe("newestTranscriptAgeMs", () => {
 	});
 });
 
-describe("pendingToolUseInTail", () => {
+describe("transcriptOwesResponse", () => {
 	const use = (id: string) =>
 		JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash" }] } });
 	const result = (id: string) =>
 		JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id }] } });
+	const assistantText = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } });
+	const userPrompt = JSON.stringify({ type: "user", message: { content: "please do X" } });
 	const noise = JSON.stringify({ type: "bridge-session" });
 
-	it("unanswered tool_use = pending, even with noise entries after it (real transcript shape)", () => {
-		expect(pendingToolUseInTail([use("A"), noise, noise])).toBe(true);
+	it("BREWING: ends on a tool_result (user turn) — Claude owes the next turn (the reported bug)", () => {
+		expect(transcriptOwesResponse([use("A"), result("A"), noise, noise])).toBe(true);
 	});
-	it("answered pair = not pending", () => {
-		expect(pendingToolUseInTail([use("A"), result("A"), noise])).toBe(false);
+	it("BREWING: ends on a fresh user prompt — awaiting Claude's response", () => {
+		expect(transcriptOwesResponse([assistantText, userPrompt, noise])).toBe(true);
 	});
-	it("one answered, one in flight = pending", () => {
-		expect(pendingToolUseInTail([use("A"), result("A"), use("B"), noise])).toBe(true);
+	it("tool running: unanswered tool_use = working", () => {
+		expect(transcriptOwesResponse([use("A"), noise])).toBe(true);
+	});
+	it("IDLE: ends on a completed assistant turn (text, all tools answered)", () => {
+		expect(transcriptOwesResponse([use("A"), result("A"), assistantText, noise])).toBe(false);
+	});
+	it("F004: an OLD unanswered-looking tool from a prior turn does not override a later completed turn", () => {
+		// use(A) then a later user prompt then a completed assistant turn: A is
+		// before the last user, so it is not the current turn's pending tool.
+		expect(transcriptOwesResponse([use("A"), userPrompt, assistantText])).toBe(false);
+	});
+	it("pending tool in the CURRENT turn (after the last user) still works", () => {
+		expect(transcriptOwesResponse([userPrompt, use("B")])).toBe(true);
+	});
+	it("meta entries after the last turn do not flip the verdict", () => {
+		expect(transcriptOwesResponse([assistantText, noise, noise, noise])).toBe(false);
 	});
 	it("garbage / partial lines at the window edge are skipped", () => {
-		expect(pendingToolUseInTail(['{"truncated', use("A"), result("A")])).toBe(false);
+		expect(transcriptOwesResponse(['{"type":"user" truncated', assistantText])).toBe(false);
 	});
-	it("empty tail = not pending", () => {
-		expect(pendingToolUseInTail([])).toBe(false);
+	it("empty tail = not owing (let freshness/title decide)", () => {
+		expect(transcriptOwesResponse([])).toBe(false);
 	});
 });
 
 describe("newestTranscriptState", () => {
-	it("reports age and pending together from real files", async () => {
+	it("reports age and working together from real files (Brewing: dangling tool_result)", async () => {
 		const base = await makeBase();
-		const line = JSON.stringify({
-			type: "assistant",
-			message: { content: [{ type: "tool_use", id: "X", name: "Bash" }] },
-		});
+		const lines = [
+			JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "X", name: "Read" }] } }),
+			JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "X" }] } }),
+			JSON.stringify({ type: "bridge-session" }),
+		].join("\n");
 		const p = join(base, projectSlug(PROJECT), "s.jsonl");
-		await writeFile(p, line + "\n" + JSON.stringify({ type: "bridge-session" }) + "\n");
+		await writeFile(p, lines + "\n");
 		const t = new Date(Date.now() - 120_000);
 		await utimes(p, t, t);
 		const state = await newestTranscriptState(PROJECT, Date.now(), base);
-		expect(state.pendingToolUse).toBe(true); // stale mtime but tool in flight
+		expect(state.working).toBe(true); // stale mtime, all tools answered, but owes the next turn
 		expect(state.ageMs!).toBeGreaterThan(60_000);
+	});
+});
+
+describe("newestTranscriptState memo (F006)", () => {
+	it("re-parses when the transcript mtime advances (verdict tracks content)", async () => {
+		invalidateTranscriptMemo();
+		const base = await makeBase();
+		const p = join(base, projectSlug(PROJECT), "s.jsonl");
+		await writeFile(p, JSON.stringify({ type: "user", message: { content: "x" } }) + "\n");
+		const old = new Date(Date.now() - 10_000);
+		await utimes(p, old, old);
+		expect((await newestTranscriptState(PROJECT, Date.now(), base)).working).toBe(true); // owes
+		// Claude answered — new content, newer mtime -> memo invalidated by mtime.
+		await writeFile(p, JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } }) + "\n");
+		expect((await newestTranscriptState(PROJECT, Date.now(), base)).working).toBe(false); // idle
 	});
 });

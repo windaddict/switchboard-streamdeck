@@ -200,12 +200,12 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		const transcript =
 			instance !== undefined
 				? await newestTranscriptState(project)
-				: { ageMs: null, pendingToolUse: false };
+				: { ageMs: null, working: false };
 		const claude = projectClaudeState({
 			present: instance !== undefined,
 			titleWorking: title,
 			transcriptAgeMs: transcript.ageMs,
-			pendingToolUse: transcript.pendingToolUse,
+			transcriptWorking: transcript.working,
 			shellBusy: instance?.shellBusy === true,
 		});
 

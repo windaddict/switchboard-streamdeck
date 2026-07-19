@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs"; // TEMP TRACE
 import streamDeck, {
 	action,
 	type JsonValue,
@@ -19,8 +18,10 @@ import {
 	claudeStateForWindow,
 	LIST_PANE_TTYS_ARGS,
 	parsePaneTtys,
+	windowClaudeCwds,
 	windowShellBusy,
 } from "../mac/claude-state.js";
+import { newestTranscriptState } from "../mac/claude-transcript.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
@@ -145,6 +146,8 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 			const clients = parseClients(clientsRes.stdout);
 			const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
 			const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
+			const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
+			const transcriptWorking = new Map<string, boolean>(); // cwd -> working, deduped per tick
 
 			for (const key of this.visible.values()) {
 				const settings = await key.getSettings();
@@ -159,13 +162,28 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					status.state === "unknown"
 						? "none"
 						: claudeStateForWindow(panes, status.session, status.window);
-				// "Brewed … · 1 shell still running": the turn ended (title ✳ =
-				// waiting) but a backgrounded shell keeps working under claude.
-				if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
-					claude = "working";
+				// A ✳ title only means "no tool executing" — Claude also shows it
+				// while BREWING (awaiting the model after a prompt/tool result).
+				// Upgrade waiting→working when a backgrounded shell runs, or when
+				// this window's Claude transcript shows it owing the next turn.
+				if (claude === "waiting") {
+					if (windowShellBusy(panes, status.session, status.window, busyTtys)) {
+						claude = "working";
+					} else {
+						for (const cwd of windowClaudeCwds(panes, status.session, status.window, ttyToCwd)) {
+							let working = transcriptWorking.get(cwd);
+							if (working === undefined) {
+								working = (await newestTranscriptState(cwd)).working;
+								transcriptWorking.set(cwd, working);
+							}
+							if (working) {
+								claude = "working";
+								break;
+							}
+						}
+					}
 				}
 				if (status.state === "hot" || claude === "working") anyInteresting = true;
-				if (settings.target === "apps:switchboard") appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
 				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip
 				try {

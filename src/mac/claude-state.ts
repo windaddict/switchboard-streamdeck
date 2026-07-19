@@ -153,3 +153,34 @@ export function windowShellBusy(
 		(p) => p.session === session && p.windowName === windowName && busyTtys.has(p.tty),
 	);
 }
+
+/** A pane title that could belong to Claude (braille spinner OR the ✳ idle
+ * marker) — used only to LOCATE a claude pane for the cwd lookup, never to
+ * decide working/waiting. */
+function startsWithSpinnerOrStar(title: string): boolean {
+	const t = title.trim();
+	const cp = t.codePointAt(0);
+	if (cp === undefined) return false;
+	return cp === 0x2733 || (cp >= 0x2800 && cp <= 0x28ff);
+}
+
+/** The project cwds of EVERY claude pane in a window (panes whose command is
+ * claude OR whose title carries Claude's marker), via a tty→cwd map — so the
+ * tmux keys can read those projects' transcripts for the Brewing signal. A
+ * split window can host more than one claude; any working one should light
+ * the key, so all are returned (deduped). Empty when none matched. */
+export function windowClaudeCwds(
+	panes: Array<Pick<PaneTty, "tty" | "session" | "windowName" | "command" | "title">>,
+	session: string,
+	windowName: string,
+	ttyToCwd: ReadonlyMap<string, string>,
+): string[] {
+	const cwds = new Set<string>();
+	for (const p of panes) {
+		if (p.session !== session || p.windowName !== windowName) continue;
+		if (p.command !== "claude" && !startsWithSpinnerOrStar(p.title)) continue;
+		const cwd = ttyToCwd.get(p.tty);
+		if (cwd) cwds.add(cwd);
+	}
+	return [...cwds];
+}

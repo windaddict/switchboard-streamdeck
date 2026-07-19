@@ -11,7 +11,7 @@ import require$$0$1 from 'buffer';
 import require$$2 from 'util';
 import path, { join } from 'node:path';
 import { cwd } from 'node:process';
-import fs, { existsSync, readFileSync, appendFileSync } from 'node:fs';
+import fs, { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readdir, stat, open } from 'node:fs/promises';
@@ -9013,6 +9013,19 @@ function buildAllWindowsFeedback(windows, current) {
  * (always readable via the tmux server), else the freshness of the newest
  * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
  * only while a session is actively working.
+ *
+ * Known limits (documented, not defects introduced here):
+ * - Two claude sessions in the SAME cwd share a project transcript dir; the
+ *   NEWEST .jsonl is read, so an idle session can briefly borrow a busy
+ *   same-project session's "working". Exact pid→session-file correlation
+ *   would need a per-pid lsof of open fds (cost); deferred while the common
+ *   case is one session per project.
+ * - While a session STREAMS its final text response under a ✳ title (no tool
+ *   coming), the transcript momentarily shows a completed assistant turn, so
+ *   a tmux key can read "waiting" for the few seconds of that stream. The
+ *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
+ *   us to an undocumented, version-fragile format — rejected as
+ *   disproportionate to a transient, self-correcting misread.
  */
 /**
  * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
@@ -9109,13 +9122,18 @@ function projectClaudeState(args) {
     if (!args.present)
         return "none";
     if (args.titleWorking === true)
-        return "working";
+        return "working"; // braille spinner: fast-path
     if (args.shellBusy === true)
         return "working";
+    // The PRECISE transcript signal (Claude owes the next turn) overrides the ✳
+    // title — that is the Brewing fix. A mere fresh mtime does NOT override ✳,
+    // or every key would read "working" for ~30s after each turn completes.
+    if (args.transcriptWorking === true)
+        return "working";
+    // ✳ title with a quiet, non-owing transcript = genuinely idle at the prompt.
     if (args.titleWorking === false)
         return "waiting";
-    if (args.pendingToolUse === true)
-        return "working";
+    // No readable title (non-tmux host): a fresh transcript means streaming.
     if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
         return "working";
     }
@@ -9425,6 +9443,34 @@ function claudeStateForWindow(panes, session, windowName) {
 function windowShellBusy(panes, session, windowName, busyTtys) {
     return panes.some((p) => p.session === session && p.windowName === windowName && busyTtys.has(p.tty));
 }
+/** A pane title that could belong to Claude (braille spinner OR the ✳ idle
+ * marker) — used only to LOCATE a claude pane for the cwd lookup, never to
+ * decide working/waiting. */
+function startsWithSpinnerOrStar(title) {
+    const t = title.trim();
+    const cp = t.codePointAt(0);
+    if (cp === undefined)
+        return false;
+    return cp === 0x2733 || (cp >= 0x2800 && cp <= 0x28ff);
+}
+/** The project cwds of EVERY claude pane in a window (panes whose command is
+ * claude OR whose title carries Claude's marker), via a tty→cwd map — so the
+ * tmux keys can read those projects' transcripts for the Brewing signal. A
+ * split window can host more than one claude; any working one should light
+ * the key, so all are returned (deduped). Empty when none matched. */
+function windowClaudeCwds(panes, session, windowName, ttyToCwd) {
+    const cwds = new Set();
+    for (const p of panes) {
+        if (p.session !== session || p.windowName !== windowName)
+            continue;
+        if (p.command !== "claude" && !startsWithSpinnerOrStar(p.title))
+            continue;
+        const cwd = ttyToCwd.get(p.tty);
+        if (cwd)
+            cwds.add(cwd);
+    }
+    return [...cwds];
+}
 
 /**
  * Freshness of a project's newest Claude Code transcript. Sessions append to
@@ -9435,60 +9481,85 @@ function windowShellBusy(panes, session, windowName, busyTtys) {
  */
 const BATCH = 64;
 /**
- * Is there an in-flight tool call in a transcript tail? Claude Code appends
- * the assistant turn (with tool_use blocks) when a tool STARTS and the
- * tool_result only when it finishes — so during a long shell command the file
- * goes quiet with an UNANSWERED tool_use in its tail. Matching tool_use ids
- * to tool_result ids is essential: other entry types (bridge-session,
- * attachment, system) interleave after the tool_use, so "look at the last
- * line" never works (verified against live transcripts). Keeps "working"
- * honest through long tools on hosts where no tmux title is readable —
- * agents don't need this, their subagent transcripts keep the directory
- * fresh. Pure; exported for tests.
+ * Does the transcript tail show Claude OWING the next assistant turn — i.e.
+ * actively working, even when the terminal title reads ✳ and the file is
+ * frozen? The agent loop: a `user` message (a fresh prompt or a tool_result)
+ * is answered by an `assistant` turn; if that turn ends WITHOUT a tool call
+ * the conversation stops (idle); if it emits a tool_use, the tool runs and
+ * appends a tool_result (another `user` message), looping back. So Claude is
+ * working exactly when either:
+ *   (a) the last conversational (user/assistant) entry is a `user` message —
+ *       Claude has input it hasn't responded to yet (a prompt, or a just-
+ *       completed tool's result). THIS is the "Brewing" state that ✳-title +
+ *       frozen-transcript detection missed: after a tool result, Claude awaits
+ *       the model API and writes nothing until the first token; or
+ *   (b) an emitted tool_use has no matching tool_result (a tool is running).
+ * It is IDLE only when the last conversational entry is an assistant turn
+ * whose every tool_use is answered — Claude produced its final response and
+ * stopped. Meta entries (bridge-session, attachment, system, …) interleave
+ * and are ignored. Returns false on an unreadable/empty tail (let freshness
+ * or the title decide). Pure; exported for tests.
+ *
+ * Crash-safety note: a dead session can also end on a dangling tool_result,
+ * but the caller gates every "working" verdict on the claude PROCESS being
+ * alive, so a crashed session reads "none", never a stuck "working".
  */
-function pendingToolUseInTail(lines) {
-    const uses = new Set();
-    const answered = new Set();
+function transcriptOwesResponse(lines) {
+    const convs = [];
     for (const line of lines) {
-        // cheap pre-filter — most lines carry neither marker
-        if (!line.includes('"tool_use') && !line.includes('"tool_result"'))
+        if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"'))
             continue;
         try {
             const entry = JSON.parse(line);
-            const content = entry.message?.content;
-            if (!Array.isArray(content))
+            if (entry.type !== "user" && entry.type !== "assistant")
                 continue;
-            for (const block of content) {
-                if (block?.type === "tool_use" && typeof block.id === "string")
-                    uses.add(block.id);
-                if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
-                    answered.add(block.tool_use_id);
+            const uses = [];
+            const content = entry.message?.content;
+            if (Array.isArray(content)) {
+                for (const block of content) {
+                    if (block?.type === "tool_use" && typeof block.id === "string")
+                        uses.push(block.id);
                 }
             }
+            convs.push({ role: entry.type, uses });
         }
         catch {
             // partial line at the window edge — skip
         }
     }
-    for (const id of uses) {
-        if (!answered.has(id))
-            return true;
-    }
-    return false;
+    if (convs.length === 0)
+        return false;
+    // (a) the conversation ends on a user message — Claude owes the next turn
+    // (a fresh prompt, or a just-completed tool's result = the Brewing state).
+    if (convs[convs.length - 1].role === "user")
+        return true;
+    // (b) a tool is still running: an unanswered tool_use in the trailing
+    // assistant turn(s) after the last user message. (Answered tools produce a
+    // later user tool_result, which would have made the last role `user`.)
+    const lastUserIdx = convs.map((c) => c.role).lastIndexOf("user");
+    return convs.slice(lastUserIdx + 1).some((c) => c.uses.length > 0);
 }
-/** Read the newest transcript's tail window as complete lines. */
+/** Read the newest transcript's tail window as COMPLETE lines. Tool_use /
+ * tool_result turns can be large (a big file Read, verbose command output),
+ * so the window is generous; when the head is truncated (offset > 0) the
+ * first split fragment is a partial record and is dropped rather than fed to
+ * the parser as if whole. A single record exceeding the window is possible
+ * but extraordinarily rare (Claude Code caps tool output); the residual is a
+ * transient waiting misread, documented. */
+const TAIL_WINDOW = 1024 * 1024;
 async function newestTranscriptTailLines(path) {
     try {
         const fh = await open(path, "r");
         try {
             const size = (await fh.stat()).size;
-            const window = Math.min(size, 256 * 1024); // tool_use turns can be large
+            const window = Math.min(size, TAIL_WINDOW);
+            const offset = size - window;
             const buf = Buffer.alloc(window);
-            await fh.read(buf, 0, window, size - window);
-            return buf
-                .toString("utf8")
-                .split("\n")
-                .filter((l) => l.trim() !== "");
+            await fh.read(buf, 0, window, offset);
+            const lines = buf.toString("utf8").split("\n");
+            if (offset > 0 && lines.length > 0)
+                lines.shift(); // partial head record
+            return lines.filter((l) => l.trim() !== "");
         }
         finally {
             await fh.close();
@@ -9498,6 +9569,10 @@ async function newestTranscriptTailLines(path) {
         return [];
     }
 }
+/** Memo of the owes-response verdict keyed by transcript path, valid while its
+ * mtime is unchanged — an unchanged transcript can't change verdict, so the
+ * 1MB read+parse is skipped across ticks (both key pollers hit this). */
+const owesMemo = new Map();
 /** Age AND pending-tool state of the project's newest transcript. */
 async function newestTranscriptState(projectPath, now = Date.now(), base = join(homedir(), ".claude", "projects")) {
     const dir = join(base, projectSlug(projectPath));
@@ -9520,14 +9595,20 @@ async function newestTranscriptState(projectPath, now = Date.now(), base = join(
             }
         }
         if (newest === null)
-            return { ageMs: null, pendingToolUse: false };
-        return {
-            ageMs: Math.max(0, now - newest.mtimeMs),
-            pendingToolUse: pendingToolUseInTail(await newestTranscriptTailLines(newest.path)),
-        };
+            return { ageMs: null, working: false };
+        const memo = owesMemo.get(newest.path);
+        let working;
+        if (memo !== undefined && memo.mtimeMs === newest.mtimeMs) {
+            working = memo.working;
+        }
+        else {
+            working = transcriptOwesResponse(await newestTranscriptTailLines(newest.path));
+            owesMemo.set(newest.path, { mtimeMs: newest.mtimeMs, working });
+        }
+        return { ageMs: Math.max(0, now - newest.mtimeMs), working };
     }
     catch {
-        return { ageMs: null, pendingToolUse: false };
+        return { ageMs: null, working: false };
     }
 }
 
@@ -9974,12 +10055,12 @@ let ClaudeProject = (() => {
             }
             const transcript = instance !== undefined
                 ? await newestTranscriptState(project)
-                : { ageMs: null, pendingToolUse: false };
+                : { ageMs: null, working: false };
             const claude = projectClaudeState({
                 present: instance !== undefined,
                 titleWorking: title,
                 transcriptAgeMs: transcript.ageMs,
-                pendingToolUse: transcript.pendingToolUse,
+                transcriptWorking: transcript.working,
                 shellBusy: instance?.shellBusy === true,
             });
             return svgToDataUri(buildClaudeProjectKeyImage({
@@ -10664,6 +10745,8 @@ let FocusTmuxWindow = (() => {
                 const clients = parseClients(clientsRes.stdout);
                 const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
                 const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
+                const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
+                const transcriptWorking = new Map(); // cwd -> working, deduped per tick
                 for (const key of this.visible.values()) {
                     const settings = await key.getSettings();
                     const status = evaluateKeyStatus({
@@ -10676,15 +10759,30 @@ let FocusTmuxWindow = (() => {
                     let claude = status.state === "unknown"
                         ? "none"
                         : claudeStateForWindow(panes, status.session, status.window);
-                    // "Brewed … · 1 shell still running": the turn ended (title ✳ =
-                    // waiting) but a backgrounded shell keeps working under claude.
-                    if (claude === "waiting" && windowShellBusy(panes, status.session, status.window, busyTtys)) {
-                        claude = "working";
+                    // A ✳ title only means "no tool executing" — Claude also shows it
+                    // while BREWING (awaiting the model after a prompt/tool result).
+                    // Upgrade waiting→working when a backgrounded shell runs, or when
+                    // this window's Claude transcript shows it owing the next turn.
+                    if (claude === "waiting") {
+                        if (windowShellBusy(panes, status.session, status.window, busyTtys)) {
+                            claude = "working";
+                        }
+                        else {
+                            for (const cwd of windowClaudeCwds(panes, status.session, status.window, ttyToCwd)) {
+                                let working = transcriptWorking.get(cwd);
+                                if (working === undefined) {
+                                    working = (await newestTranscriptState(cwd)).working;
+                                    transcriptWorking.set(cwd, working);
+                                }
+                                if (working) {
+                                    claude = "working";
+                                    break;
+                                }
+                            }
+                        }
                     }
                     if (status.state === "hot" || claude === "working")
                         anyInteresting = true;
-                    if (settings.target === "apps:switchboard")
-                        appendFileSync("/tmp/sb-trace.log", `${new Date().toISOString()} state=${status.state} claude=${claude}\n`); // TEMP TRACE
                     const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
                     if (this.lastImage.get(key.id) === image)
                         continue; // unchanged — save the round-trip

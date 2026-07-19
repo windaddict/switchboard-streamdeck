@@ -6,6 +6,7 @@ import {
 	parsePanes,
 	parsePaneTtys,
 	titleWorking,
+	windowClaudeCwds,
 	windowShellBusy,
 } from "../src/mac/claude-state.js";
 
@@ -139,5 +140,25 @@ describe("windowShellBusy", () => {
 	it("false for other windows or no busy ttys", () => {
 		expect(windowShellBusy(panes, "dev", "other", new Set(["/dev/ttys019"]))).toBe(false);
 		expect(windowShellBusy(panes, "dev", "ea-system", new Set())).toBe(false);
+	});
+});
+
+describe("windowClaudeCwds", () => {
+	const panes = parsePaneTtys(
+		"/dev/ttys002|dev|1|ea-system|1|1|claude|✳ Get feedback\n/dev/ttys004|dev|1|ea-system|0|1|fish|~/ea\n/dev/ttys009|dev|1|ea-system|0|1|python3|⠐ working",
+	);
+	const ttyToCwd = new Map([
+		["/dev/ttys002", "/Users/j/ea-system"],
+		["/dev/ttys009", "/Users/j/other"],
+	]);
+	it("finds the claude pane cwd even under a ✳ idle title, and a title-marker pane too", () => {
+		expect(windowClaudeCwds(panes, "dev", "ea-system", ttyToCwd).sort()).toEqual([
+			"/Users/j/ea-system",
+			"/Users/j/other",
+		]);
+	});
+	it("empty when no claude pane in the window or cwds unknown", () => {
+		expect(windowClaudeCwds(panes, "dev", "other", ttyToCwd)).toEqual([]);
+		expect(windowClaudeCwds(panes, "dev", "ea-system", new Map())).toEqual([]);
 	});
 });
