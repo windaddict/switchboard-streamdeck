@@ -12,12 +12,12 @@
 #       `brew install --cask ./packaging/homebrew/switchboard.rb`.)
 
 cask "switchboard" do
-  version "1.3.2"
-  sha256 "12ae8aecec8d0f68e26b570905c28b47ef26778296fbedb0e982897fdb96584a"
+  version "1.4.0"
+  sha256 "4bb4512759faf3119a2f08edc88facf6f145c5ea1636b51a8c20e13633bbeaf1"
 
   url "https://github.com/windaddict/switchboard-streamdeck/releases/download/v#{version}/com.movingavg.switchboard.sdPlugin.zip"
   name "Switchboard"
-  desc "Stream Deck plugin with live Claude Code keys and fast window/tab switching"
+  desc "Stream Deck plugin with live Claude Code/Codex keys and fast window switching"
   homepage "https://github.com/windaddict/switchboard-streamdeck"
 
   depends_on macos: :monterey
