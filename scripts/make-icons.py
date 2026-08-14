@@ -28,6 +28,7 @@ AZURE = "#4E9CFF"  # macOS windows / apps / web family
 AMBER = "#F0A63C"  # BBEdit family
 TEAL = "#3EC9C4"  # files family
 CORAL = "#D97757"  # Claude family
+VIOLET = "#A78BFA"  # Codex family
 SIGNAL = "#F2FFF6"  # arrows / cursors
 MUTED = "#8B9490"  # secondary strokes
 
@@ -149,8 +150,18 @@ def glyph_claudeproject() -> str:
     )
 
 
+def glyph_codexproject() -> str:
+    """Terminal window with the nested-square Codex mark."""
+    return (
+        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
+        f'<rect x="25" y="20" width="22" height="22" rx="2" stroke="{VIOLET}" stroke-width="3" fill="none"/>'
+        f'<rect x="31" y="26" width="10" height="10" rx="1" stroke="{VIOLET}" stroke-width="3" fill="none"/>'
+    )
+
+
 ACTIONS = {
     "claudeproject": (glyph_claudeproject, CORAL),
+    "codexproject": (glyph_codexproject, VIOLET),
     "tmux": (glyph_tmux, PHOSPHOR),
     "tmuxpane": (glyph_tmuxpane, PHOSPHOR),
     "tmuxwindial": (glyph_tmuxwindial, PHOSPHOR),

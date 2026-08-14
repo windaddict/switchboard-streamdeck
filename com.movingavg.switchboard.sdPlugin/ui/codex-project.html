@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Codex Project</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Project folder">
+			<sdpi-textfield setting="project" placeholder="/Users/you/code/my-project"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			The live face follows one interactive Codex CLI session: blue with a moving
+			dot means working, amber means Codex is blocked on you, white means ready,
+			and gray means its state is unknown or more than one session matches. The
+			bar lights when your keystrokes would reach that exact session.<br /><br />
+			<b>Tip:</b> hold the key for &frac12;&nbsp;second while Codex is frontmost
+			to capture its project and session. Press to raise its iTerm2 or Terminal
+			window and, under tmux, select its exact pane.<br /><br />
+			<b>Requires:</b> Automation access for iTerm2 and/or Terminal for the hot
+			indicator, capture, and focusing (macOS prompts on first use). Process and
+			working-state detection itself needs no permission. Codex Desktop and
+			non-interactive <code>codex exec</code> jobs are not targets.
+		</div>
+	</body>
+</html>

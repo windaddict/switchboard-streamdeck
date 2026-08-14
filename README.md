@@ -1,10 +1,10 @@
 # Switchboard
 
-![Switchboard — a macOS Stream Deck plugin with twelve actions: live Claude Code project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
+![Switchboard — a macOS Stream Deck plugin with thirteen actions: live Claude Code and Codex project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
 
-*An operator's control surface for macOS — routing your attention across Claude Code sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
+*An operator's control surface for macOS — routing your attention across Claude Code and Codex sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code** projects from the deck — each key's spark shows working (amber, turning) vs. waiting for your input (white, still), wherever the session runs (tmux, iTerm2, or Terminal.app), and a press raises its window. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code** and **Codex CLI** projects from the deck, see whether each needs you, and press to raise its exact terminal session. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
 
 ---
 
@@ -20,10 +20,13 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 
 ## What it does
 
-Twelve actions, grouped by what they route your attention to.
+Thirteen actions, grouped by what they route your attention to.
 
 **Claude Code**
 - **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
+
+**Codex CLI**
+- **Codex Project** *(key)* — a live face for an interactive Codex CLI session in tmux, plain iTerm2, or Terminal.app: blue means working, amber means blocked on your approval/input, white means ready, and gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.
 
 **Safari**
 - **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards. Hold the key to capture the current front tab into the button.
@@ -50,7 +53,7 @@ Twelve actions, grouped by what they route your attention to.
 
 ## Live on the deck
 
-The **Focus tmux Window** and **Claude Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up in its session's color — with a block cursor — exactly when that window would receive your keystrokes. The spark in the corner tracks **Claude Code**: amber and turning while it works, still and white when it's finished and waiting for your next prompt. Claude Project keys carry the same face for a whole project, whether the session runs under tmux, plain iTerm2, or Terminal.app. The keys observe and focus — they infer state from the session's own signals and raise its window; they never drive Claude itself.
+The **Focus tmux Window**, **Claude Project**, and **Codex Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up exactly when that target would receive your keystrokes. Claude Project tracks Claude Code's working/waiting state; Codex Project distinguishes working, blocked on you, ready, and unknown, and binds to a captured session so two Codex sessions in one directory are never silently confused. Both project keys work under tmux, plain iTerm2, or Terminal.app and only observe and focus — they never drive the coding agent itself.
 
 ![Five states of a live tmux key: focused with Claude working, background with Claude working, background with Claude ready for input, background with no Claude, and a window that no longer exists](docs/tmux-live-keys.png)
 
@@ -153,7 +156,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 435 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 466 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

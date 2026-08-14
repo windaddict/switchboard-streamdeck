@@ -3,7 +3,7 @@
 	"Name": "Switchboard",
 	"Version": "1.3.2.0",
 	"Author": "Moving Average Labs",
-	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code is working or waiting in each project (tmux, iTerm2, or Terminal.app; press to raise it) — plus Safari tab jump with multi-account Gmail/Calendar presets, window tiling and cycling, tmux windows and panes, BBEdit documents, and opening the right file from a folder.",
+	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code and Codex CLI sessions are working or need you (tmux, iTerm2, or Terminal.app; press to raise them) — plus Safari tab jump, window tiling and cycling, tmux panes, BBEdit documents, and files.",
 	"Category": "Switchboard",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"Icon": "imgs/plugin/marketplace",
@@ -266,6 +266,23 @@
 			"States": [
 				{
 					"Image": "imgs/actions/claudeproject/key",
+					"ShowTitle": false
+				}
+			],
+			"UserTitleEnabled": false
+		},
+		{
+			"Name": "Codex Project",
+			"UUID": "com.movingavg.switchboard.codexproject",
+			"Icon": "imgs/actions/codexproject/icon",
+			"Tooltip": "Live face for an interactive Codex CLI session. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.",
+			"PropertyInspectorPath": "ui/codex-project.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/codexproject/key",
 					"ShowTitle": false
 				}
 			],

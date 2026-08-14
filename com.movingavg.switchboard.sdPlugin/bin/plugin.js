@@ -14,7 +14,7 @@ import { cwd } from 'node:process';
 import fs, { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readdir, stat, open } from 'node:fs/promises';
+import { readdir, stat, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
 /**!
@@ -8945,7 +8945,7 @@ function dotsSvg(count, activeIndex, hue) {
     return out;
 }
 /** Truncate a label so it fits the 200px touch strip. */
-function truncate$2(value, max = 16) {
+function truncate$3(value, max = 16) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /**
@@ -8968,8 +8968,8 @@ function buildBackgroundSvg(opts) {
         `<rect width="200" height="100" fill="url(#g)"/>` +
         `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
         `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$2(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$2(window))}</text>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$3(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$3(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         badgeSvg +
         `</svg>`);
@@ -9101,14 +9101,14 @@ function projectSlug(projectPath) {
     return projectPath.replace(/[^A-Za-z0-9]/g, "-");
 }
 /** Normalize a configured project path for matching (trailing slash off). */
-function normalizeProjectPath(p) {
+function normalizeProjectPath$1(p) {
     const trimmed = p.trim();
     return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
 /** The instances whose cwd is exactly the target project. */
 function instancesForProject(instances, projectPath) {
-    const target = normalizeProjectPath(projectPath);
-    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
+    const target = normalizeProjectPath$1(projectPath);
+    return instances.filter((i) => normalizeProjectPath$1(i.cwd) === target);
 }
 /** A transcript younger than this is "actively working". */
 const TRANSCRIPT_FRESH_MS = 30_000;
@@ -9139,18 +9139,18 @@ function projectClaudeState(args) {
     }
     return "waiting";
 }
-const MONO$1 = "Menlo, Monaco, monospace";
-function truncate$1(value, max) {
+const MONO$2 = "Menlo, Monaco, monospace";
+function truncate$2(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /** Last path segment as the display name ("" -> "?"). */
-function projectBasename(projectPath) {
-    const normalized = normalizeProjectPath(projectPath);
+function projectBasename$1(projectPath) {
+    const normalized = normalizeProjectPath$1(projectPath);
     const base = normalized.slice(normalized.lastIndexOf("/") + 1);
     return base || "?";
 }
 /** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
-const ORBIT$1 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
+const ORBIT$2 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
 /**
  * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
  * project name in mono (hue seeded per project, so each project wears a
@@ -9160,8 +9160,8 @@ const ORBIT$1 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.
  * colours only — the key rasterizer paints hsl() black.
  */
 function buildClaudeProjectKeyImage(args) {
-    const name = truncate$1(projectBasename(args.project), 9);
-    const hue = sessionHue(projectBasename(args.project));
+    const name = truncate$2(projectBasename$1(args.project), 9);
+    const hue = sessionHue(projectBasename$1(args.project));
     const spin = args.spin ?? 0;
     let bar;
     let nameFill;
@@ -9189,7 +9189,7 @@ function buildClaudeProjectKeyImage(args) {
     // Anchored at x=30, not center: the longest host label ("TERMINAL") must
     // clear the Claude spark in the top-right corner.
     const eyebrow = args.host
-        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$1(args.host.toUpperCase(), 8))}</text>`
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$2(args.host.toUpperCase(), 8))}</text>`
         : "";
     let spark = "";
     if (args.claude !== "none") {
@@ -9203,7 +9203,7 @@ function buildClaudeProjectKeyImage(args) {
             // The star is 6-fold symmetric, so its rotation collapses to a
             // two-frame wobble — motion you cannot see at key size. The orbiting
             // dot gives 12 genuinely distinct frames per revolution.
-            const [ox, oy] = ORBIT$1[spin % 12];
+            const [ox, oy] = ORBIT$2[spin % 12];
             spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
         }
     }
@@ -9215,7 +9215,7 @@ function buildClaudeProjectKeyImage(args) {
         `<rect width="72" height="72" fill="#0F1211"/>` +
         eyebrow +
         spark +
-        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
         bar +
         mark +
         `</svg>`);
@@ -9227,10 +9227,10 @@ function buildClaudeProjectKeyImage(args) {
  * its project cwd (~0.06s total, measured). Absolute binary paths — Stream
  * Deck launches plugins with a minimal PATH. `exec` injectable for tests.
  */
-const TIMEOUT_MS = 4000;
-function run(file, args, exec) {
+const TIMEOUT_MS$1 = 4000;
+function run$1(file, args, exec) {
     return new Promise((resolve) => {
-        exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => {
+        exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => {
             resolve(error ? "" : String(stdout ?? ""));
         });
     });
@@ -9258,7 +9258,7 @@ const CWD_TTL_MS = 60_000;
 const cwdCache = new Map();
 /** Shared snapshot for ALL pollers: both key types poll every few seconds
  * and would otherwise duplicate the scans. */
-const WORLD_TTL_MS = 2000;
+const WORLD_TTL_MS$1 = 2000;
 let worldCache = null;
 let worldInFlight = null;
 function lsofCwdArgs(pids) {
@@ -9268,13 +9268,13 @@ function lsofCwdArgs(pids) {
  * whether a shell tool is running under each. TTL-cached so concurrent
  * pollers share one scan; cwds cached per pid (60s). */
 function scanClaudeInstances(exec = execFile) {
-    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS) {
+    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$1) {
         return Promise.resolve(worldCache.instances);
     }
     if (worldInFlight !== null) {
         return worldInFlight;
     }
-    const p = doScan(exec);
+    const p = doScan$1(exec);
     worldInFlight = p;
     void p.finally(() => {
         if (worldInFlight === p)
@@ -9282,9 +9282,9 @@ function scanClaudeInstances(exec = execFile) {
     });
     return p;
 }
-async function doScan(exec) {
+async function doScan$1(exec) {
     const now = Date.now();
-    const pidsOut = await run("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
+    const pidsOut = await run$1("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
     const pids = pidsOut
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
@@ -9293,7 +9293,7 @@ async function doScan(exec) {
         worldCache = { at: now, instances: [] };
         return [];
     }
-    const procs = parsePsProcs(await run("/bin/ps", claudeDetailArgs(pids), exec));
+    const procs = parsePsProcs(await run$1("/bin/ps", claudeDetailArgs(pids), exec));
     const claudes = claudesFrom(procs);
     if (claudes.length === 0) {
         worldCache = { at: now, instances: [] };
@@ -9301,14 +9301,14 @@ async function doScan(exec) {
     }
     const claudePids = new Set(claudes.map((c) => c.pid));
     // Targeted argv confirm: which claudes have a live shell-snapshot child?
-    const kidsOut = await run("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
+    const kidsOut = await run$1("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
     const children = kidsOut
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
         .filter((n) => Number.isFinite(n));
     let busyPids = new Set();
     if (children.length > 0) {
-        busyPids = busyParentsFrom(await run("/bin/ps", confirmShellArgs(children), exec));
+        busyPids = busyParentsFrom(await run$1("/bin/ps", confirmShellArgs(children), exec));
     }
     // Phase 2b (cwds): lsof only for pids missing a fresh cache entry.
     const need = claudes.filter((c) => {
@@ -9316,7 +9316,7 @@ async function doScan(exec) {
         return hit === undefined || now - hit.at >= CWD_TTL_MS;
     });
     if (need.length > 0) {
-        const cwds = parseLsofCwds(await run("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
+        const cwds = parseLsofCwds(await run$1("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
         for (const [pid, cwd] of cwds)
             cwdCache.set(pid, { cwd, at: now });
     }
@@ -9339,7 +9339,7 @@ async function doScan(exec) {
  * AppleScript-launching a terminal app that isn't open.) */
 function processRunning(name, exec = execFile) {
     return new Promise((resolve) => {
-        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error) => {
+        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error) => {
             resolve(!error);
         });
     });
@@ -9907,7 +9907,7 @@ return "notfound"`;
 }
 
 /** How often the key faces re-check the live state. */
-const POLL_MS$3 = 2500;
+const POLL_MS$4 = 2500;
 /**
  * Live key face for a Claude Code PROJECT, host-independent: works whether
  * the session runs under tmux, plain iTerm2, or Terminal.app. The face shows
@@ -9950,7 +9950,7 @@ let ClaudeProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$3);
+                }, POLL_MS$4);
             }
             await this.refreshAll();
         }
@@ -10170,6 +10170,592 @@ let ClaudeProject = (() => {
             const settings = await key.getSettings();
             await key.setSettings({ ...settings, project: cwd });
             streamDeck.logger.info(`Claude Project captured ${cwd}.`);
+            await key.showOk();
+            await this.refreshAll();
+        }
+    });
+    return _classThis;
+})();
+
+/** Pure identity, rollout-state, tmux-target, and key-face logic for Codex Project. */
+/** Parse targeted `ps -o pid=,tty=,comm=,args=` output. */
+function parseCodexProcesses(output) {
+    const result = [];
+    for (const raw of output.split("\n")) {
+        const m = raw.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+        if (m === null)
+            continue;
+        const pid = Number.parseInt(m[1], 10);
+        if (!Number.isFinite(pid))
+            continue;
+        result.push({ pid, tty: m[2], comm: m[3], args: m[4] });
+    }
+    return result;
+}
+function basename(path) {
+    return path.slice(path.lastIndexOf("/") + 1);
+}
+/** Cheap candidate gate. The rollout's `originator` is the authoritative
+ * interactive-vs-exec discriminator: rendered ps argv cannot distinguish the
+ * subcommand `review` from an initial prompt beginning with the word review. */
+function isInteractiveCodex(p) {
+    if (p.tty === "??" || basename(p.comm) !== "codex")
+        return false;
+    const words = p.args.trim().split(/\s+/);
+    return words.length > 0 && basename(words[0]) === "codex";
+}
+/** Parse lsof field output (`-Fpcfn`) without ever retaining file contents. */
+function parseLsofEntries(output) {
+    const entries = [];
+    let pid = null;
+    let fd = "";
+    for (const line of output.split("\n")) {
+        if (line.startsWith("p")) {
+            const n = Number.parseInt(line.slice(1), 10);
+            pid = Number.isFinite(n) ? n : null;
+            fd = "";
+        }
+        else if (line.startsWith("f")) {
+            fd = line.slice(1);
+        }
+        else if (line.startsWith("n") && pid !== null) {
+            entries.push({ pid, fd, name: line.slice(1) });
+        }
+    }
+    return entries;
+}
+function isRolloutPath(path) {
+    return /\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[^/]+\.jsonl$/.test(path);
+}
+/** Session UUID is the final UUID-like component before `.jsonl`. */
+function rolloutSessionId(path) {
+    return path.match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)?.[1] ?? "";
+}
+const BLOCKED_EVENTS = new Set([
+    "approval_request", "approval_requested", "request_user_input", "user_input_requested",
+    "elicitation_request",
+]);
+const UNKNOWN_TERMINALS = new Set([
+    "task_error", "task_failed", "task_aborted", "task_interrupted", "stream_error",
+]);
+/** Last relevant complete rollout record decides state. Unknown is deliberate. */
+function codexStateFromRolloutLines(lines) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line.includes('"type"'))
+            continue;
+        try {
+            const row = JSON.parse(line);
+            if (row.type !== "event_msg")
+                continue;
+            const event = row.payload?.type ?? "";
+            if (event === "task_complete")
+                return "waiting";
+            if (BLOCKED_EVENTS.has(event))
+                return "blocked";
+            if (UNKNOWN_TERMINALS.has(event))
+                return "unknown";
+            if (event === "task_started")
+                return "working";
+        }
+        catch {
+            // A concurrent append or bounded partial record is not state evidence.
+        }
+    }
+    return "unknown";
+}
+/** Session metadata is at the head of every observed rollout. */
+function codexRolloutOriginator(lines) {
+    for (const line of lines) {
+        try {
+            const row = JSON.parse(line);
+            if (row.type === "session_meta")
+                return row.payload?.originator ?? "";
+        }
+        catch { /* partial record */ }
+    }
+    return "";
+}
+function normalizeProjectPath(path) {
+    const trimmed = path.trim();
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
+function codexInstancesForProject(instances, project) {
+    const target = normalizeProjectPath(project);
+    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
+}
+/** Prefer the captured identity. Never guess when several sessions share a cwd. */
+function selectCodexInstance(instances, project, sessionId) {
+    const mine = codexInstancesForProject(instances, project);
+    const captured = mine.find((i) => sessionId !== "" && i.sessionId === sessionId);
+    if (captured !== undefined)
+        return captured;
+    return mine.length === 1 ? mine[0] : null;
+}
+const LIST_CODEX_PANES_ARGS = [
+    "list-panes", "-a", "-F",
+    "#{pane_tty}|#{session_name}|#{window_id}|#{pane_id}|#{pane_active}|#{window_active}",
+];
+function parseCodexPanes(output) {
+    const result = [];
+    for (const raw of output.split("\n")) {
+        const f = raw.trim().split("|");
+        if (f.length < 6)
+            continue;
+        const tail = f.length - 4;
+        const windowId = f[tail];
+        const paneId = f[tail + 1];
+        if (!windowId.startsWith("@") || !paneId.startsWith("%"))
+            continue;
+        result.push({
+            tty: f[0],
+            session: f.slice(1, tail).join("|"),
+            windowId,
+            paneId,
+            receivesKeys: f[tail + 2] === "1" && f[tail + 3] === "1",
+        });
+    }
+    return result;
+}
+function codexTmuxFocusArgs(pane, clientTty) {
+    const commands = [];
+    if (clientTty !== "")
+        commands.push(["switch-client", "-c", clientTty, "-t", pane.session]);
+    commands.push(["select-window", "-t", pane.windowId]);
+    commands.push(["select-pane", "-t", pane.paneId]);
+    return commands;
+}
+function projectBasename(path) {
+    const p = normalizeProjectPath(path);
+    return p.slice(p.lastIndexOf("/") + 1) || "?";
+}
+function truncate$1(value, max) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+const MONO$1 = "Menlo, Monaco, monospace";
+const ORBIT$1 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+/** Codex sibling of the Claude live face. Hex colors only for key rasterizing. */
+function buildCodexProjectKeyImage(args) {
+    const name = truncate$1(projectBasename(args.project), 9);
+    const hue = sessionHue(projectBasename(args.project));
+    const active = args.state !== "none";
+    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
+    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
+    const bar = !active
+        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
+        : args.hot
+            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
+            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
+    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
+    let glyph = "";
+    if (active) {
+        const spin = args.spin ?? 0;
+        glyph = `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
+        if (args.state === "working") {
+            const [x, y] = ORBIT$1[spin % ORBIT$1.length];
+            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
+        }
+    }
+    const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+}
+
+/** Bounded, cached scan of interactive Codex CLI sessions. */
+const TIMEOUT_MS = 4000;
+const WORLD_TTL_MS = 2000;
+const TAIL_BYTES = 1024 * 1024;
+const HEAD_BYTES = 64 * 1024;
+let cache = null;
+let inFlight$1 = null;
+function run(file, args, exec) {
+    return new Promise((resolve) => {
+        exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
+    });
+}
+function codexPsArgs(pids) {
+    return ["-o", "pid=,tty=,comm=,args=", "-p", pids.join(",")];
+}
+function codexLsofArgs(pids) {
+    return ["-nP", "-a", "-p", pids.join(","), "-Fpcfn"];
+}
+async function rolloutLines(path) {
+    try {
+        const fh = await open(path, "r");
+        try {
+            const size = (await fh.stat()).size;
+            const headLength = Math.min(size, HEAD_BYTES);
+            const head = Buffer.alloc(headLength);
+            await fh.read(head, 0, headLength, 0);
+            const tailLength = Math.min(size, TAIL_BYTES);
+            const offset = size - tailLength;
+            const tail = Buffer.alloc(tailLength);
+            await fh.read(tail, 0, tailLength, offset);
+            const headLines = head.toString("utf8").split("\n");
+            headLines.pop(); // possibly partial final head record
+            const tailLines = tail.toString("utf8").split("\n");
+            if (offset > 0)
+                tailLines.shift();
+            return [...headLines, ...tailLines].filter((line) => line.trim() !== "");
+        }
+        finally {
+            await fh.close();
+        }
+    }
+    catch {
+        return [];
+    }
+}
+function scanCodexSnapshot(exec = execFile) {
+    if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS)
+        return Promise.resolve(cache.snapshot);
+    if (inFlight$1 !== null)
+        return inFlight$1;
+    const p = doScan(exec);
+    inFlight$1 = p;
+    void p.finally(() => { if (inFlight$1 === p)
+        inFlight$1 = null; });
+    return p;
+}
+async function doScan(exec) {
+    const now = Date.now();
+    const pgrep = await run("/usr/bin/pgrep", ["-x", "codex"], exec);
+    if (!pgrep.ok)
+        return rememberUnknown(now);
+    const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
+    if (pids.length === 0)
+        return remember(now, { status: "ok", instances: [] });
+    const ps = await run("/bin/ps", codexPsArgs(pids), exec);
+    if (!ps.ok)
+        return rememberUnknown(now);
+    const processes = parseCodexProcesses(ps.stdout).filter(isInteractiveCodex);
+    if (processes.length === 0)
+        return remember(now, { status: "ok", instances: [] });
+    const lsof = await run("/usr/sbin/lsof", codexLsofArgs(processes.map((p) => p.pid)), exec);
+    if (!lsof.ok)
+        return rememberUnknown(now);
+    const entries = parseLsofEntries(lsof.stdout);
+    let incomplete = false;
+    const instances = await Promise.all(processes.map(async (process) => {
+        const mine = entries.filter((e) => e.pid === process.pid);
+        const cwdRaw = mine.find((e) => e.fd === "cwd")?.name ?? "";
+        const rolloutPath = mine.find((e) => isRolloutPath(e.name))?.name ?? "";
+        if (cwdRaw === "" || rolloutPath === "") {
+            incomplete = true;
+            return null;
+        }
+        let cwd = cwdRaw;
+        try {
+            cwd = await realpath(cwdRaw);
+        }
+        catch { /* process may exit mid-scan */ }
+        const lines = await rolloutLines(rolloutPath);
+        const originator = codexRolloutOriginator(lines);
+        if (originator !== "codex-tui") {
+            if (originator === "")
+                incomplete = true;
+            return null;
+        }
+        return {
+            pid: process.pid,
+            tty: process.tty.startsWith("/dev/") ? process.tty : `/dev/${process.tty}`,
+            cwd,
+            rolloutPath,
+            sessionId: rolloutSessionId(rolloutPath),
+            state: codexStateFromRolloutLines(lines),
+        };
+    }));
+    return remember(now, { status: incomplete ? "unknown" : "ok", instances: instances.filter((i) => i !== null) });
+}
+function remember(at, snapshot) {
+    cache = { at, snapshot };
+    return snapshot;
+}
+function rememberUnknown(at) {
+    const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
+    return remember(at, { status: "unknown", instances: stale });
+}
+
+/**
+ * Pure logic for the "Open File" action: glob matching, picking a file from a
+ * directory listing by a strategy, and building `open` arguments. The actual
+ * filesystem read and process launch live in the action; everything here is
+ * pure and unit-testable.
+ */
+/**
+ * Expand a leading `~` to the home directory. Node's fs does not understand
+ * `~` (it's a shell convenience), so a directory like "~/Downloads" must be
+ * resolved before use. Non-tilde paths are returned unchanged.
+ */
+function expandHome(p, home) {
+    if (p === "~")
+        return home;
+    if (p.startsWith("~/"))
+        return `${home}${p.slice(1)}`;
+    return p;
+}
+/**
+ * Convert a filename glob (`*` = any run, `?` = one char) into an anchored,
+ * case-insensitive RegExp. All other regex metacharacters are matched literally.
+ */
+function globToRegExp(glob) {
+    const specials = /[.+^${}()|[\]\\]/;
+    let body = "";
+    for (const ch of glob) {
+        if (ch === "*")
+            body += ".*";
+        else if (ch === "?")
+            body += ".";
+        else
+            body += specials.test(ch) ? `\\${ch}` : ch;
+    }
+    return new RegExp(`^${body}$`, "i");
+}
+/**
+ * Pick one file from `entries` matching `pattern`, by `mode`:
+ *   - "modified": most recently modified (mtime)
+ *   - "created":  most recently created (birthtime)
+ *   - "name":     last in descending name order (handy for date-named files)
+ * Returns null when nothing matches.
+ */
+function selectFile(entries, pattern, mode) {
+    const re = globToRegExp(pattern.trim() || "*");
+    const matches = entries.filter((e) => re.test(e.name));
+    if (matches.length === 0)
+        return null;
+    const compare = mode === "created"
+        ? (a, b) => b.birthtimeMs - a.birthtimeMs
+        : mode === "name"
+            ? (a, b) => b.name.localeCompare(a.name)
+            : (a, b) => b.mtimeMs - a.mtimeMs;
+    return [...matches].sort(compare)[0] ?? null;
+}
+/**
+ * Build `open` CLI args for the chosen file. Default app: `open <file>`;
+ * BBEdit: `open -a BBEdit <file>`; a named/path app: `open -a <app> <file>`.
+ * Falls back to the default app when "app" is selected but none is provided.
+ */
+function buildOpenArgs(filePath, opener, app) {
+    if (opener === "bbedit")
+        return ["-a", "BBEdit", filePath];
+    if (opener === "app" && app && app.trim() !== "")
+        return ["-a", app.trim(), filePath];
+    return [filePath];
+}
+
+const POLL_MS$3 = 2500;
+/** Live key for one interactive Codex CLI session/project. */
+let CodexProject = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.codexproject" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        gate = new PressGate();
+        visible = new Map();
+        lastImage = new Map();
+        /** Identity used for the currently painted face; press must revalidate it. */
+        paintedSession = new Map();
+        refresher = new CoalescedRunner(() => this.doRefreshAll());
+        timer;
+        spin = 0;
+        tick = 0;
+        interesting = true;
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => {
+                    if (shouldPollThisTick(this.tick++, this.interesting))
+                        void this.refreshAll();
+                }, POLL_MS$3);
+            }
+            await this.refreshAll();
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+            this.lastImage.delete(ev.action.id);
+            this.paintedSession.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Codex Project capture failed: ${String(error)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return;
+            await this.focus(ev.action);
+        }
+        async snapshot() {
+            const tmux = findTmuxPath();
+            const [codex, panesResult, clientsResult, front] = await Promise.all([
+                scanCodexSnapshot(),
+                runTmux(LIST_CODEX_PANES_ARGS, tmux),
+                runTmux(LIST_CLIENTS_ARGS, tmux),
+                runJxa(FRONT_APP_BUNDLE_JXA),
+            ]);
+            const frontBundle = front.ok ? front.stdout.trim() : "";
+            let focusedTty = "";
+            if (frontBundle === ITERM_BUNDLE_ID)
+                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            else if (frontBundle === TERMINAL_BUNDLE_ID)
+                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            return {
+                instances: codex.instances,
+                panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
+                clients: parseClients(clientsResult.stdout),
+                frontBundle,
+                focusedTty,
+                scanStatus: codex.status,
+            };
+        }
+        refreshAll() { return this.refresher.request(); }
+        async canonicalProject(project) {
+            const normalized = normalizeProjectPath(expandHome(project, homedir()));
+            try {
+                return await realpath(normalized);
+            }
+            catch {
+                return normalized;
+            }
+        }
+        async doRefreshAll() {
+            if (this.visible.size === 0)
+                return;
+            const snap = await this.snapshot();
+            this.spin++;
+            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working" || i.state === "blocked");
+            for (const key of this.visible.values()) {
+                const settings = await key.getSettings();
+                const project = await this.canonicalProject((settings.project ?? "").trim());
+                const mine = project ? codexInstancesForProject(snap.instances, project) : [];
+                const instance = selectCodexInstance(mine, project, (settings.sessionId ?? "").trim());
+                if (instance === null)
+                    this.paintedSession.delete(key.id);
+                else
+                    this.paintedSession.set(key.id, instance.sessionId);
+                const pane = instance === null ? undefined : snap.panes.find((p) => p.tty === instance.tty);
+                let host = "";
+                let hot = false;
+                if (instance !== null && pane !== undefined) {
+                    host = "tmux";
+                    hot = pane.receivesKeys && snap.focusedTty !== "" && snap.clients.get(pane.session) === snap.focusedTty;
+                }
+                else if (instance !== null && instance.tty === snap.focusedTty) {
+                    hot = true;
+                    host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
+                }
+                const state = mine.length > 1 && instance === null
+                    ? "unknown"
+                    : instance?.state ?? (project !== "" && snap.scanStatus === "unknown" ? "unknown" : "none");
+                const image = svgToDataUri(buildCodexProjectKeyImage({ project: project || "no target", host, hot, state, spin: this.spin }));
+                if (this.lastImage.get(key.id) === image)
+                    continue;
+                try {
+                    await key.setImage(image);
+                    this.lastImage.set(key.id, image);
+                }
+                catch (error) {
+                    streamDeck.logger.debug(`Codex Project image skipped: ${String(error)}`);
+                }
+            }
+        }
+        async raiseTty(tty) {
+            if (await processRunning("iTerm2")) {
+                const result = await runAppleScript(buildITermRaiseScript(tty));
+                if (result.ok && result.stdout.includes("ok"))
+                    return true;
+            }
+            if (await processRunning(TERMINAL_PROCESS_NAME)) {
+                const result = await runAppleScript(buildTerminalRaiseScript(tty));
+                if (result.ok && result.stdout.includes("ok"))
+                    return true;
+            }
+            return false;
+        }
+        async focus(key) {
+            const settings = await key.getSettings();
+            const project = await this.canonicalProject((settings.project ?? "").trim());
+            if (project === "") {
+                await key.showAlert();
+                return;
+            }
+            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
+            const snap = await this.snapshot();
+            if (snap.scanStatus !== "ok") {
+                streamDeck.logger.warn("Codex Project: process scan unavailable; refusing stale focus.");
+                await key.showAlert();
+                return;
+            }
+            const instance = selectCodexInstance(snap.instances, project, expected);
+            if (instance === null || (expected !== "" && instance.sessionId !== expected)) {
+                streamDeck.logger.warn(`Codex Project: target missing or ambiguous for ${project}.`);
+                await key.showAlert();
+                return;
+            }
+            const pane = snap.panes.find((p) => p.tty === instance.tty);
+            if (pane !== undefined) {
+                const clientTty = snap.clients.get(pane.session) ?? "";
+                if (clientTty === "" || !(await this.raiseTty(clientTty))) {
+                    await key.showAlert();
+                    return;
+                }
+                const tmux = findTmuxPath();
+                for (const args of codexTmuxFocusArgs(pane, clientTty)) {
+                    const result = await runTmux(args, tmux);
+                    if (!result.ok) {
+                        streamDeck.logger.error(`Codex Project tmux ${args[0]} failed: ${result.stderr}`);
+                        await key.showAlert();
+                        return;
+                    }
+                }
+            }
+            else if (!(await this.raiseTty(instance.tty))) {
+                await key.showAlert();
+                return;
+            }
+            await key.showOk();
+            setTimeout(() => void this.refreshAll(), 450);
+        }
+        async capture(key) {
+            const snap = await this.snapshot();
+            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
+                await key.showAlert();
+                return;
+            }
+            let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
+            if (instance === undefined) {
+                for (const [session, clientTty] of snap.clients) {
+                    if (clientTty !== snap.focusedTty)
+                        continue;
+                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
+                    if (pane !== undefined)
+                        instance = snap.instances.find((i) => i.tty === pane.tty);
+                    break;
+                }
+            }
+            if (instance === undefined) {
+                await key.showAlert();
+                return;
+            }
+            const settings = await key.getSettings();
+            await key.setSettings({ ...settings, project: instance.cwd, sessionId: instance.sessionId });
+            this.paintedSession.set(key.id, instance.sessionId);
             await key.showOk();
             await this.refreshAll();
         }
@@ -11196,73 +11782,6 @@ let JumpToTab = (() => {
     });
     return _classThis;
 })();
-
-/**
- * Pure logic for the "Open File" action: glob matching, picking a file from a
- * directory listing by a strategy, and building `open` arguments. The actual
- * filesystem read and process launch live in the action; everything here is
- * pure and unit-testable.
- */
-/**
- * Expand a leading `~` to the home directory. Node's fs does not understand
- * `~` (it's a shell convenience), so a directory like "~/Downloads" must be
- * resolved before use. Non-tilde paths are returned unchanged.
- */
-function expandHome(p, home) {
-    if (p === "~")
-        return home;
-    if (p.startsWith("~/"))
-        return `${home}${p.slice(1)}`;
-    return p;
-}
-/**
- * Convert a filename glob (`*` = any run, `?` = one char) into an anchored,
- * case-insensitive RegExp. All other regex metacharacters are matched literally.
- */
-function globToRegExp(glob) {
-    const specials = /[.+^${}()|[\]\\]/;
-    let body = "";
-    for (const ch of glob) {
-        if (ch === "*")
-            body += ".*";
-        else if (ch === "?")
-            body += ".";
-        else
-            body += specials.test(ch) ? `\\${ch}` : ch;
-    }
-    return new RegExp(`^${body}$`, "i");
-}
-/**
- * Pick one file from `entries` matching `pattern`, by `mode`:
- *   - "modified": most recently modified (mtime)
- *   - "created":  most recently created (birthtime)
- *   - "name":     last in descending name order (handy for date-named files)
- * Returns null when nothing matches.
- */
-function selectFile(entries, pattern, mode) {
-    const re = globToRegExp(pattern.trim() || "*");
-    const matches = entries.filter((e) => re.test(e.name));
-    if (matches.length === 0)
-        return null;
-    const compare = mode === "created"
-        ? (a, b) => b.birthtimeMs - a.birthtimeMs
-        : mode === "name"
-            ? (a, b) => b.name.localeCompare(a.name)
-            : (a, b) => b.mtimeMs - a.mtimeMs;
-    return [...matches].sort(compare)[0] ?? null;
-}
-/**
- * Build `open` CLI args for the chosen file. Default app: `open <file>`;
- * BBEdit: `open -a BBEdit <file>`; a named/path app: `open -a <app> <file>`.
- * Falls back to the default app when "app" is selected but none is provided.
- */
-function buildOpenArgs(filePath, opener, app) {
-    if (opener === "bbedit")
-        return ["-a", "BBEdit", filePath];
-    if (opener === "app" && app && app.trim() !== "")
-        return ["-a", app.trim(), filePath];
-    return [filePath];
-}
 
 /**
  * Builds the Open File key image as an SVG: a document glyph with an optional
@@ -12649,6 +13168,7 @@ let WindowRing = (() => {
 streamDeck.logger.setLevel(LogLevel.INFO);
 streamDeck.actions.registerAction(new JumpToTab());
 streamDeck.actions.registerAction(new ClaudeProject());
+streamDeck.actions.registerAction(new CodexProject());
 streamDeck.actions.registerAction(new ScrollWindow());
 streamDeck.actions.registerAction(new SwitchApp());
 streamDeck.actions.registerAction(new FocusTmuxWindow());
