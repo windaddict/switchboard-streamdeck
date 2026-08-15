@@ -13,6 +13,22 @@
  */
 
 const chains = new Map<string, Promise<unknown>>();
+const exclusive = new Set<string>();
+
+/**
+ * Run at most one task for a key. A second request while the first is live is
+ * dropped instead of queued: focus presses describe "go there now", so a
+ * stale press must not fire seconds later after a slow cross-Space raise.
+ */
+export async function runExclusive<T>(key: string, task: () => Promise<T>): Promise<T | undefined> {
+	if (exclusive.has(key)) return undefined;
+	exclusive.add(key);
+	try {
+		return await task();
+	} finally {
+		exclusive.delete(key);
+	}
+}
 
 export function serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
 	const prev = chains.get(key) ?? Promise.resolve();

@@ -9632,10 +9632,19 @@ const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
 		return ""
 	end try
 end tell`;
+/** Parse the structured final line emitted by {@link buildITermRaiseScript}. */
+function parseITermFocusResult(output) {
+    const line = output.trim().split("\n").at(-1) ?? "";
+    const [status, windowId = "", tty = ""] = line.split("|");
+    if (status === "ok" || status === "notfound" || status === "timeout" || status === "error") {
+        return { status, windowId, tty };
+    }
+    return { status: "error", windowId, tty };
+}
 /**
  * Build AppleScript that activates iTerm and selects the window+tab+session
- * whose `tty` equals the given tty. The script returns "ok" if a match was
- * found and selected, otherwise "notfound".
+ * whose `tty` equals the given tty. Selection is verified by stable window id
+ * plus focused tty, with a bounded retry for cross-window/Space activation.
  *
  * The tty is escaped via {@link escapeForAppleScript} before interpolation so
  * that quotes/backslashes in the value cannot break out of the AppleScript
@@ -9653,22 +9662,75 @@ function buildITermRaiseScript(tty) {
         return "";
     }
     const escapedTty = escapeForAppleScript(tty);
-    return `tell application "iTerm"
-	activate
+    return `set targetTty to "${escapedTty}"
+set targetWindowId to ""
+
+tell application "iTerm"
+	-- Capture a stable window identity before activation changes window order.
 	repeat with w in windows
 		repeat with t in tabs of w
 			repeat with s in sessions of t
-				if (tty of s) is "${escapedTty}" then
-					select w
-					tell t to select
-					tell s to select
-					return "ok"
+				if (tty of s) is targetTty then
+					set targetWindowId to id of w
+					exit repeat
 				end if
 			end repeat
+			if targetWindowId is not "" then exit repeat
 		end repeat
+		if targetWindowId is not "" then exit repeat
+	end repeat
+
+	if targetWindowId is "" then return "notfound||"
+
+	activate
+	set observedWindowId to ""
+	set observedTty to ""
+	set cleanAttempts to 0
+	set lastErrorNumber to ""
+
+	-- Window activation is asynchronous across iTerm windows and Spaces.
+	-- Re-resolve by stable id on every attempt, wait for that window to become
+	-- current, then make tab/session selection the final write.
+	repeat with attempt from 1 to 30
+		try
+			set targetWindow to first window whose id is targetWindowId
+			try
+				if miniaturized of targetWindow then set miniaturized of targetWindow to false
+			end try
+			select targetWindow
+			delay 0.05
+			set observedWindowId to id of current window
+			if observedWindowId is targetWindowId then
+				set selectedTarget to false
+				set targetWindow to first window whose id is targetWindowId
+				repeat with t in tabs of targetWindow
+					repeat with s in sessions of t
+						if (tty of s) is targetTty then
+							tell t to select
+							tell s to select
+							set selectedTarget to true
+							exit repeat
+						end if
+					end repeat
+					if selectedTarget then exit repeat
+				end repeat
+				delay 0.05
+				set observedWindowId to id of current window
+				set observedTty to tty of current session of current tab of current window
+				if observedWindowId is targetWindowId and observedTty is targetTty and frontmost then
+					return "ok|" & observedWindowId & "|" & observedTty
+				end if
+			end if
+			set cleanAttempts to cleanAttempts + 1
+		on error errMsg number errNum
+			set lastErrorNumber to errNum as text
+			-- A window/session can disappear during the transition. The next
+			-- bounded attempt re-resolves it; final readback remains diagnostic.
+		end try
 	end repeat
 end tell
-return "notfound"`;
+if cleanAttempts is 0 and lastErrorNumber is not "" then return "error|" & lastErrorNumber & "|"
+return "timeout|" & observedWindowId & "|" & observedTty`;
 }
 
 /**
@@ -9779,6 +9841,31 @@ function parseClients(output) {
     }
     return clients;
 }
+/** Preserve every attached client tty per session instead of silently picking one. */
+function parseClientTtys(output) {
+    const clients = new Map();
+    for (const rawLine of output.split("\n")) {
+        const fields = rawLine.trim().split("|");
+        if (fields.length < 2 || fields[0] === "" || fields[1] === "")
+            continue;
+        const [tty, session] = fields;
+        const ttys = clients.get(session) ?? [];
+        if (!ttys.includes(tty))
+            ttys.push(tty);
+        clients.set(session, ttys);
+    }
+    return clients;
+}
+/** Prefer the already-focused client, otherwise preserve tmux's deterministic order. */
+function chooseClientTty(ttys, focusedTty) {
+    if (focusedTty !== "" && ttys.includes(focusedTty))
+        return focusedTty;
+    return ttys[0] ?? null;
+}
+/** Target one attached client and its exact tmux window. */
+function switchClientToWindowArgs(session, index, clientTty) {
+    return ["switch-client", "-c", clientTty, "-t", `${session}:${index}`];
+}
 /**
  * Reverse lookup on {@link parseClients}: which session is attached to the
  * given client tty? Null for "" or an unknown tty.
@@ -9850,10 +9937,6 @@ function resolveTarget$1(windows, target) {
     }
     return null;
 }
-/** The tmux args that select the given window: `select-window -t <session>:<index>`. */
-function selectWindowArgs(w) {
-    return ["select-window", "-t", `${w.session}:${w.index}`];
-}
 /** Human-readable dropdown label, e.g. `"dev: movingavg"`. */
 function tmuxWindowLabel(w) {
     return `${w.session}: ${w.name}`;
@@ -9861,6 +9944,52 @@ function tmuxWindowLabel(w) {
 /** Stable dropdown/target value, e.g. `"dev:movingavg"`. */
 function tmuxWindowValue(w) {
     return `${w.session}:${w.name}`;
+}
+
+/**
+ * Per-key async mutex: chains tasks for the same key so read-modify-write
+ * handlers (dial rotations that persist a cursor, run a subprocess, then
+ * render) can't interleave. Stream Deck delivers events serially, but async
+ * handlers overlap at their await points — two rotations could both read the
+ * same settings index and both write index+1. Tasks for DIFFERENT keys run
+ * concurrently; a rejected task never breaks the chain.
+ *
+ * The map is self-cleaning: when a key's chain fully settles it removes its
+ * own entry (only if it is still the tail). There is deliberately no external
+ * "release" — deleting a live chain would let a new event run concurrently
+ * with an in-flight task, recreating the exact race this exists to prevent.
+ */
+const chains = new Map();
+const exclusive = new Set();
+/**
+ * Run at most one task for a key. A second request while the first is live is
+ * dropped instead of queued: focus presses describe "go there now", so a
+ * stale press must not fire seconds later after a slow cross-Space raise.
+ */
+async function runExclusive(key, task) {
+    if (exclusive.has(key))
+        return undefined;
+    exclusive.add(key);
+    try {
+        return await task();
+    }
+    finally {
+        exclusive.delete(key);
+    }
+}
+function serialize(key, task) {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    let entry;
+    entry = next.then(() => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    }, () => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    });
+    chains.set(key, entry);
+    return next;
 }
 
 /**
@@ -9971,7 +10100,7 @@ let ClaudeProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return; // long press already captured
-            await this.focus(ev.action);
+            await runExclusive("iterm-focus", () => this.focus(ev.action));
         }
         /** One query set per tick: process scan, tmux pane/client maps, frontmost
          * app + its focused tty. Transcript freshness is checked per project. */
@@ -9996,7 +10125,7 @@ let ClaudeProject = (() => {
             return {
                 instances,
                 panes: panesRes.ok ? parsePaneTtys(panesRes.stdout) : [],
-                clients: parseClients(clientsRes.stdout),
+                clientTtys: parseClientTtys(clientsRes.stdout),
                 frontBundle,
                 focusedTty,
             };
@@ -10044,7 +10173,7 @@ let ClaudeProject = (() => {
                     hot =
                         pane.pane.receivesKeys &&
                             snap.focusedTty !== "" &&
-                            snap.clients.get(pane.pane.session) === snap.focusedTty;
+                            (snap.clientTtys.get(pane.pane.session) ?? []).includes(snap.focusedTty);
                 }
                 else {
                     hot = snap.focusedTty !== "" && instance.tty === snap.focusedTty;
@@ -10100,17 +10229,26 @@ let ClaudeProject = (() => {
             const { instance, pane } = this.paneFor(mine, snap.panes);
             const target = instance ?? mine[0];
             if (pane !== undefined) {
-                // tmux-hosted: raise the hosting iTerm window by CLIENT tty, then
-                // switch tmux to the exact window.
-                const clientTty = snap.clients.get(pane.session);
-                const raise = await runAppleScript(clientTty ? buildITermRaiseScript(clientTty) : 'tell application "iTerm" to activate');
-                if (!raise.ok) {
-                    streamDeck.logger.error(`Claude Project raise failed (${raise.code}): ${raise.stderr}`);
+                // tmux-hosted: raise and verify the hosting iTerm window+tab first,
+                // then switch that exact client to the requested tmux window.
+                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+                if (clientTty === null) {
+                    streamDeck.logger.warn(`Claude Project: tmux session ${pane.session} has no attached client.`);
+                    await key.showAlert();
+                    return;
+                }
+                if (clientTtys.length > 1)
+                    streamDeck.logger.debug(`Claude Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
+                const raise = await runAppleScript(buildITermRaiseScript(clientTty));
+                const focus = raise.ok ? parseITermFocusResult(raise.stdout) : { status: "error", windowId: "", tty: "" };
+                if (!raise.ok || focus.status !== "ok") {
+                    streamDeck.logger.error(`Claude Project iTerm focus failed (${raise.code}/${focus.status}): window=${focus.windowId || "?"} tty=${focus.tty || "?"} ${raise.stderr}`);
                     await key.showAlert();
                     return;
                 }
                 const tmux = findTmuxPath();
-                const selected = await runTmux(["select-window", "-t", `${pane.session}:${pane.windowIndex}`], tmux);
+                const selected = await runTmux(switchClientToWindowArgs(pane.session, pane.windowIndex, clientTty), tmux);
                 if (!selected.ok) {
                     streamDeck.logger.error(`Claude Project select-window failed: ${selected.stderr}`);
                     await key.showAlert();
@@ -10124,7 +10262,7 @@ let ClaudeProject = (() => {
             // are RUNNING — AppleScript launches the ones that aren't.
             if (await processRunning("iTerm2")) {
                 const raise = await runAppleScript(buildITermRaiseScript(target.tty));
-                if (raise.ok && raise.stdout.includes("ok")) {
+                if (raise.ok && parseITermFocusResult(raise.stdout).status === "ok") {
                     await key.showOk();
                     return;
                 }
@@ -10152,8 +10290,8 @@ let ClaudeProject = (() => {
             // tmux: the focused tty is a CLIENT tty; find the session it shows, then
             // the pane that would receive keys, then the claude on that pane tty.
             if (cwd === undefined) {
-                for (const [session, clientTty] of snap.clients) {
-                    if (clientTty !== snap.focusedTty)
+                for (const [session, clientTtys] of snap.clientTtys) {
+                    if (!clientTtys.includes(snap.focusedTty))
                         continue;
                     const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
                     if (pane !== undefined) {
@@ -10599,7 +10737,7 @@ let CodexProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return;
-            await this.focus(ev.action);
+            await runExclusive("iterm-focus", () => this.focus(ev.action));
         }
         async snapshot() {
             const tmux = findTmuxPath();
@@ -10618,7 +10756,7 @@ let CodexProject = (() => {
             return {
                 instances: codex.instances,
                 panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
-                clients: parseClients(clientsResult.stdout),
+                clientTtys: parseClientTtys(clientsResult.stdout),
                 frontBundle,
                 focusedTty,
                 scanStatus: codex.status,
@@ -10654,7 +10792,7 @@ let CodexProject = (() => {
                 let hot = false;
                 if (instance !== null && pane !== undefined) {
                     host = "tmux";
-                    hot = pane.receivesKeys && snap.focusedTty !== "" && snap.clients.get(pane.session) === snap.focusedTty;
+                    hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
                 }
                 else if (instance !== null && instance.tty === snap.focusedTty) {
                     hot = true;
@@ -10678,8 +10816,15 @@ let CodexProject = (() => {
         async raiseTty(tty) {
             if (await processRunning("iTerm2")) {
                 const result = await runAppleScript(buildITermRaiseScript(tty));
-                if (result.ok && result.stdout.includes("ok"))
-                    return true;
+                if (result.ok) {
+                    const focus = parseITermFocusResult(result.stdout);
+                    if (focus.status === "ok")
+                        return true;
+                    if (focus.status === "timeout") {
+                        streamDeck.logger.warn(`Codex Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
+                        return false;
+                    }
+                }
             }
             if (await processRunning(TERMINAL_PROCESS_NAME)) {
                 const result = await runAppleScript(buildTerminalRaiseScript(tty));
@@ -10710,8 +10855,16 @@ let CodexProject = (() => {
             }
             const pane = snap.panes.find((p) => p.tty === instance.tty);
             if (pane !== undefined) {
-                const clientTty = snap.clients.get(pane.session) ?? "";
-                if (clientTty === "" || !(await this.raiseTty(clientTty))) {
+                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+                if (clientTty === null) {
+                    streamDeck.logger.warn(`Codex Project: tmux session ${pane.session} has no attached client.`);
+                    await key.showAlert();
+                    return;
+                }
+                if (clientTtys.length > 1)
+                    streamDeck.logger.debug(`Codex Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
+                if (!(await this.raiseTty(clientTty))) {
                     await key.showAlert();
                     return;
                 }
@@ -10740,8 +10893,8 @@ let CodexProject = (() => {
             }
             let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
             if (instance === undefined) {
-                for (const [session, clientTty] of snap.clients) {
-                    if (clientTty !== snap.focusedTty)
+                for (const [session, clientTtys] of snap.clientTtys) {
+                    if (!clientTtys.includes(snap.focusedTty))
                         continue;
                     const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
                     if (pane !== undefined)
@@ -10891,35 +11044,6 @@ function bbeditSelectScript(id) {
 		return ""
 	end try
 end tell`;
-}
-
-/**
- * Per-key async mutex: chains tasks for the same key so read-modify-write
- * handlers (dial rotations that persist a cursor, run a subprocess, then
- * render) can't interleave. Stream Deck delivers events serially, but async
- * handlers overlap at their await points — two rotations could both read the
- * same settings index and both write index+1. Tasks for DIFFERENT keys run
- * concurrently; a rejected task never breaks the chain.
- *
- * The map is self-cleaning: when a key's chain fully settles it removes its
- * own entry (only if it is still the tail). There is deliberately no external
- * "release" — deleting a live chain would let a new event run concurrently
- * with an in-flight task, recreating the exact race this exists to prevent.
- */
-const chains = new Map();
-function serialize(key, task) {
-    const prev = chains.get(key) ?? Promise.resolve();
-    const next = prev.then(task, task);
-    let entry;
-    entry = next.then(() => {
-        if (chains.get(key) === entry)
-            chains.delete(key);
-    }, () => {
-        if (chains.get(key) === entry)
-            chains.delete(key);
-    });
-    chains.set(key, entry);
-    return next;
 }
 
 /**
@@ -11285,7 +11409,7 @@ let FocusTmuxWindow = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return; // long press already captured
-            await this.focus(ev.action);
+            await runExclusive("iterm-focus", () => this.focus(ev.action));
         }
         onWillDisappear(ev) {
             this.gate.cancel(ev.action.id);
@@ -11407,25 +11531,31 @@ let FocusTmuxWindow = (() => {
             }
             // Map the session to the iTerm2 window via its attached client tty.
             const clientsResult = await runTmux(LIST_CLIENTS_ARGS, tmux);
-            const tty = parseClients(clientsResult.stdout).get(match.session);
-            const raiseScript = tty ? buildITermRaiseScript(tty) : 'tell application "iTerm" to activate';
-            const raise = await runAppleScript(raiseScript);
-            if (!raise.ok) {
-                // A hard failure (permission denied, script error) must not paint ✓.
-                streamDeck.logger.error(`iTerm raise failed (${raise.code}): ${raise.stderr}`);
+            const ttys = parseClientTtys(clientsResult.stdout).get(match.session) ?? [];
+            const front = await runJxa(FRONT_APP_BUNDLE_JXA);
+            const focusedTty = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID
+                ? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
+                : "";
+            const tty = chooseClientTty(ttys, focusedTty);
+            if (tty === null) {
+                streamDeck.logger.warn(`Focus tmux: session ${match.session} has no attached client.`);
                 await key.showAlert();
                 return;
             }
-            if (raise.stdout.includes("notfound")) {
-                // Documented fallback: no iTerm session on that tty — iTerm was
-                // activated, which is the best available outcome, so still ✓.
-                streamDeck.logger.debug(`No iTerm session on tty ${tty ?? "?"}; activated iTerm only.`);
+            if (ttys.length > 1)
+                streamDeck.logger.debug(`Focus tmux: chose ${tty} from ${ttys.length} clients for ${match.session}.`);
+            const raise = await runAppleScript(buildITermRaiseScript(tty));
+            const focus = raise.ok ? parseITermFocusResult(raise.stdout) : { status: "error", windowId: "", tty: "" };
+            if (!raise.ok || focus.status !== "ok") {
+                streamDeck.logger.error(`iTerm focus failed (${raise.code}/${focus.status}): window=${focus.windowId || "?"} tty=${focus.tty || "?"} ${raise.stderr}`);
+                await key.showAlert();
+                return;
             }
             // Optionally switch tmux to the exact window (default on).
             if (settings.switchWindow !== false) {
-                const selected = await runTmux(selectWindowArgs(match), tmux);
+                const selected = await runTmux(switchClientToWindowArgs(match.session, match.index, tty), tmux);
                 if (!selected.ok) {
-                    streamDeck.logger.error(`tmux select-window failed: ${selected.stderr || "no server?"}`);
+                    streamDeck.logger.error(`tmux switch-client failed: ${selected.stderr || "no server?"}`);
                     await key.showAlert();
                     return;
                 }

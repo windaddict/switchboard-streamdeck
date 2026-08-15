@@ -2,9 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
 	parseWindows,
 	parseClients,
+	parseClientTtys,
+	chooseClientTty,
 	sessionForTty,
 	resolveTarget,
 	selectWindowArgs,
+	switchClientToWindowArgs,
 	tmuxWindowLabel,
 	tmuxWindowValue,
 	type TmuxWindow,
@@ -75,6 +78,31 @@ describe("parseClients", () => {
 		const input = "/dev/ttys000|dev\n\nnotvalid\n/dev/ttys007|apps\n";
 		const clients = parseClients(input);
 		expect(clients.size).toBe(2);
+	});
+});
+
+describe("parseClientTtys", () => {
+	it("preserves every distinct client for a session", () => {
+		const clients = parseClientTtys("/dev/ttys000|dev\n/dev/ttys009|dev\n/dev/ttys000|dev\n/dev/ttys007|apps\n");
+		expect(clients.get("dev")).toEqual(["/dev/ttys000", "/dev/ttys009"]);
+		expect(clients.get("apps")).toEqual(["/dev/ttys007"]);
+	});
+	it("skips malformed or empty identities", () => {
+		expect(parseClientTtys("bad\n|dev\n/dev/ttys001|\n").size).toBe(0);
+	});
+});
+
+describe("tmux client targeting", () => {
+	it("prefers an already focused client and otherwise keeps list order", () => {
+		const ttys = ["/dev/ttys001", "/dev/ttys009"];
+		expect(chooseClientTty(ttys, "/dev/ttys009")).toBe("/dev/ttys009");
+		expect(chooseClientTty(ttys, "/dev/ttys777")).toBe("/dev/ttys001");
+		expect(chooseClientTty([], "")).toBeNull();
+	});
+	it("targets one client and exact window", () => {
+		expect(switchClientToWindowArgs("dev", 2, "/dev/ttys009")).toEqual([
+			"switch-client", "-c", "/dev/ttys009", "-t", "dev:2",
+		]);
 	});
 });
 

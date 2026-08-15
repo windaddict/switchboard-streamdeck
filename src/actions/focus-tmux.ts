@@ -22,17 +22,20 @@ import {
 	windowShellBusy,
 } from "../mac/claude-state.js";
 import { newestTranscriptState } from "../mac/claude-transcript.js";
-import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
+import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parseITermFocusResult } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
 import {
 	parseClients,
+	parseClientTtys,
+	chooseClientTty,
 	parseWindows,
 	resolveTarget,
-	selectWindowArgs,
 	tmuxWindowLabel,
 	tmuxWindowValue,
+	switchClientToWindowArgs,
 } from "../mac/tmux.js";
+import { runExclusive } from "../mac/serialize.js";
 import { buildTmuxKeyImage, evaluateKeyStatus } from "../mac/tmux-key.js";
 import {
 	findTmuxPath,
@@ -98,7 +101,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<FocusTmuxSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return; // long press already captured
-		await this.focus(ev.action);
+		await runExclusive("iterm-focus", () => this.focus(ev.action));
 	}
 
 	override onWillDisappear(ev: WillDisappearEvent<FocusTmuxSettings>): void {
@@ -224,27 +227,30 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 		// Map the session to the iTerm2 window via its attached client tty.
 		const clientsResult = await runTmux(LIST_CLIENTS_ARGS, tmux);
-		const tty = parseClients(clientsResult.stdout).get(match.session);
-
-		const raiseScript = tty ? buildITermRaiseScript(tty) : 'tell application "iTerm" to activate';
-		const raise = await runAppleScript(raiseScript);
-		if (!raise.ok) {
-			// A hard failure (permission denied, script error) must not paint ✓.
-			streamDeck.logger.error(`iTerm raise failed (${raise.code}): ${raise.stderr}`);
-			await key.showAlert();
-			return;
+		const ttys = parseClientTtys(clientsResult.stdout).get(match.session) ?? [];
+		const front = await runJxa(FRONT_APP_BUNDLE_JXA);
+		const focusedTty = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID
+			? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
+			: "";
+		const tty = chooseClientTty(ttys, focusedTty);
+		if (tty === null) {
+			streamDeck.logger.warn(`Focus tmux: session ${match.session} has no attached client.`);
+			await key.showAlert(); return;
 		}
-		if (raise.stdout.includes("notfound")) {
-			// Documented fallback: no iTerm session on that tty — iTerm was
-			// activated, which is the best available outcome, so still ✓.
-			streamDeck.logger.debug(`No iTerm session on tty ${tty ?? "?"}; activated iTerm only.`);
+		if (ttys.length > 1) streamDeck.logger.debug(`Focus tmux: chose ${tty} from ${ttys.length} clients for ${match.session}.`);
+
+		const raise = await runAppleScript(buildITermRaiseScript(tty));
+		const focus = raise.ok ? parseITermFocusResult(raise.stdout) : { status: "error" as const, windowId: "", tty: "" };
+		if (!raise.ok || focus.status !== "ok") {
+			streamDeck.logger.error(`iTerm focus failed (${raise.code}/${focus.status}): window=${focus.windowId || "?"} tty=${focus.tty || "?"} ${raise.stderr}`);
+			await key.showAlert(); return;
 		}
 
 		// Optionally switch tmux to the exact window (default on).
 		if (settings.switchWindow !== false) {
-			const selected = await runTmux(selectWindowArgs(match), tmux);
+			const selected = await runTmux(switchClientToWindowArgs(match.session, match.index, tty), tmux);
 			if (!selected.ok) {
-				streamDeck.logger.error(`tmux select-window failed: ${selected.stderr || "no server?"}`);
+				streamDeck.logger.error(`tmux switch-client failed: ${selected.stderr || "no server?"}`);
 				await key.showAlert();
 				return;
 			}

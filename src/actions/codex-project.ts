@@ -26,10 +26,11 @@ import {
 	selectCodexInstance,
 } from "../mac/codex-project.js";
 import { CoalescedRunner, shouldPollThisTick } from "../mac/coalesce.js";
-import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
+import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parseITermFocusResult } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
-import { parseClients } from "../mac/tmux.js";
+import { chooseClientTty, parseClientTtys } from "../mac/tmux.js";
+import { runExclusive } from "../mac/serialize.js";
 import { findTmuxPath, LIST_CLIENTS_ARGS, runTmux } from "../mac/tmux-runner.js";
 import {
 	buildTerminalRaiseScript,
@@ -49,7 +50,7 @@ type CodexProjectSettings = {
 interface Snapshot {
 	instances: CodexInstance[];
 	panes: CodexPane[];
-	clients: Map<string, string>;
+	clientTtys: Map<string, string[]>;
 	frontBundle: string;
 	focusedTty: string;
 	scanStatus: "ok" | "unknown";
@@ -101,7 +102,7 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<CodexProjectSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return;
-		await this.focus(ev.action);
+		await runExclusive("iterm-focus", () => this.focus(ev.action));
 	}
 
 	private async snapshot(): Promise<Snapshot> {
@@ -119,7 +120,7 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 		return {
 			instances: codex.instances,
 			panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
-			clients: parseClients(clientsResult.stdout),
+			clientTtys: parseClientTtys(clientsResult.stdout),
 			frontBundle,
 			focusedTty,
 			scanStatus: codex.status,
@@ -150,7 +151,7 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 			let hot = false;
 			if (instance !== null && pane !== undefined) {
 				host = "tmux";
-				hot = pane.receivesKeys && snap.focusedTty !== "" && snap.clients.get(pane.session) === snap.focusedTty;
+				hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
 			} else if (instance !== null && instance.tty === snap.focusedTty) {
 				hot = true;
 				host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
@@ -168,7 +169,14 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 	private async raiseTty(tty: string): Promise<boolean> {
 		if (await processRunning("iTerm2")) {
 			const result = await runAppleScript(buildITermRaiseScript(tty));
-			if (result.ok && result.stdout.includes("ok")) return true;
+			if (result.ok) {
+				const focus = parseITermFocusResult(result.stdout);
+				if (focus.status === "ok") return true;
+				if (focus.status === "timeout") {
+					streamDeck.logger.warn(`Codex Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
+					return false;
+				}
+			}
 		}
 		if (await processRunning(TERMINAL_PROCESS_NAME)) {
 			const result = await runAppleScript(buildTerminalRaiseScript(tty));
@@ -196,8 +204,14 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 		}
 		const pane = snap.panes.find((p) => p.tty === instance.tty);
 		if (pane !== undefined) {
-			const clientTty = snap.clients.get(pane.session) ?? "";
-			if (clientTty === "" || !(await this.raiseTty(clientTty))) { await key.showAlert(); return; }
+			const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+			const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+			if (clientTty === null) {
+				streamDeck.logger.warn(`Codex Project: tmux session ${pane.session} has no attached client.`);
+				await key.showAlert(); return;
+			}
+			if (clientTtys.length > 1) streamDeck.logger.debug(`Codex Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
+			if (!(await this.raiseTty(clientTty))) { await key.showAlert(); return; }
 			const tmux = findTmuxPath();
 			for (const args of codexTmuxFocusArgs(pane, clientTty)) {
 				const result = await runTmux(args, tmux);
@@ -220,8 +234,8 @@ export class CodexProject extends SingletonAction<CodexProjectSettings> {
 		if (snap.scanStatus !== "ok" || snap.focusedTty === "") { await key.showAlert(); return; }
 		let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
 		if (instance === undefined) {
-			for (const [session, clientTty] of snap.clients) {
-				if (clientTty !== snap.focusedTty) continue;
+			for (const [session, clientTtys] of snap.clientTtys) {
+				if (!clientTtys.includes(snap.focusedTty)) continue;
 				const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
 				if (pane !== undefined) instance = snap.instances.find((i) => i.tty === pane.tty);
 				break;

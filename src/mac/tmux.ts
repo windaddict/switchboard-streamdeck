@@ -83,6 +83,31 @@ export function parseClients(output: string): Map<string, string> {
 	return clients;
 }
 
+/** Preserve every attached client tty per session instead of silently picking one. */
+export function parseClientTtys(output: string): Map<string, string[]> {
+	const clients = new Map<string, string[]>();
+	for (const rawLine of output.split("\n")) {
+		const fields = rawLine.trim().split("|");
+		if (fields.length < 2 || fields[0] === "" || fields[1] === "") continue;
+		const [tty, session] = fields;
+		const ttys = clients.get(session) ?? [];
+		if (!ttys.includes(tty)) ttys.push(tty);
+		clients.set(session, ttys);
+	}
+	return clients;
+}
+
+/** Prefer the already-focused client, otherwise preserve tmux's deterministic order. */
+export function chooseClientTty(ttys: readonly string[], focusedTty: string): string | null {
+	if (focusedTty !== "" && ttys.includes(focusedTty)) return focusedTty;
+	return ttys[0] ?? null;
+}
+
+/** Target one attached client and its exact tmux window. */
+export function switchClientToWindowArgs(session: string, index: number, clientTty: string): string[] {
+	return ["switch-client", "-c", clientTty, "-t", `${session}:${index}`];
+}
+
 /**
  * Reverse lookup on {@link parseClients}: which session is attached to the
  * given client tty? Null for "" or an unknown tty.

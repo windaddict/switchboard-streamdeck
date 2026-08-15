@@ -26,10 +26,11 @@ import {
 	titleWorking,
 } from "../mac/claude-state.js";
 import { newestTranscriptState } from "../mac/claude-transcript.js";
-import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT } from "../mac/iterm.js";
+import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parseITermFocusResult } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
-import { parseClients } from "../mac/tmux.js";
+import { chooseClientTty, parseClientTtys, switchClientToWindowArgs } from "../mac/tmux.js";
+import { runExclusive } from "../mac/serialize.js";
 import { findTmuxPath, LIST_CLIENTS_ARGS, runTmux } from "../mac/tmux-runner.js";
 import {
 	buildTerminalRaiseScript,
@@ -50,8 +51,8 @@ const POLL_MS = 2500;
 interface Snapshot {
 	instances: ClaudeInstance[];
 	panes: PaneTty[];
-	/** tmux session -> attached client tty. */
-	clients: Map<string, string>;
+	/** tmux session -> every attached client tty. */
+	clientTtys: Map<string, string[]>;
 	frontBundle: string;
 	/** tty of the focused iTerm session / Terminal tab ("" when unknown). */
 	focusedTty: string;
@@ -110,7 +111,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<ClaudeProjectSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return; // long press already captured
-		await this.focus(ev.action);
+		await runExclusive("iterm-focus", () => this.focus(ev.action));
 	}
 
 	/** One query set per tick: process scan, tmux pane/client maps, frontmost
@@ -137,7 +138,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		return {
 			instances,
 			panes: panesRes.ok ? parsePaneTtys(panesRes.stdout) : [],
-			clients: parseClients(clientsRes.stdout),
+			clientTtys: parseClientTtys(clientsRes.stdout),
 			frontBundle,
 			focusedTty,
 		};
@@ -188,7 +189,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 				hot =
 					pane.pane.receivesKeys &&
 					snap.focusedTty !== "" &&
-					snap.clients.get(pane.pane.session) === snap.focusedTty;
+					(snap.clientTtys.get(pane.pane.session) ?? []).includes(snap.focusedTty);
 			} else {
 				hot = snap.focusedTty !== "" && instance.tty === snap.focusedTty;
 				if (hot) {
@@ -254,20 +255,24 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		const target = instance ?? mine[0];
 
 		if (pane !== undefined) {
-			// tmux-hosted: raise the hosting iTerm window by CLIENT tty, then
-			// switch tmux to the exact window.
-			const clientTty = snap.clients.get(pane.session);
-			const raise = await runAppleScript(
-				clientTty ? buildITermRaiseScript(clientTty) : 'tell application "iTerm" to activate',
-			);
-			if (!raise.ok) {
-				streamDeck.logger.error(`Claude Project raise failed (${raise.code}): ${raise.stderr}`);
-				await key.showAlert();
-				return;
+			// tmux-hosted: raise and verify the hosting iTerm window+tab first,
+			// then switch that exact client to the requested tmux window.
+			const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+			const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+			if (clientTty === null) {
+				streamDeck.logger.warn(`Claude Project: tmux session ${pane.session} has no attached client.`);
+				await key.showAlert(); return;
+			}
+			if (clientTtys.length > 1) streamDeck.logger.debug(`Claude Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
+			const raise = await runAppleScript(buildITermRaiseScript(clientTty));
+			const focus = raise.ok ? parseITermFocusResult(raise.stdout) : { status: "error" as const, windowId: "", tty: "" };
+			if (!raise.ok || focus.status !== "ok") {
+				streamDeck.logger.error(`Claude Project iTerm focus failed (${raise.code}/${focus.status}): window=${focus.windowId || "?"} tty=${focus.tty || "?"} ${raise.stderr}`);
+				await key.showAlert(); return;
 			}
 			const tmux = findTmuxPath();
 			const selected = await runTmux(
-				["select-window", "-t", `${pane.session}:${pane.windowIndex}`],
+				switchClientToWindowArgs(pane.session, pane.windowIndex, clientTty),
 				tmux,
 			);
 			if (!selected.ok) {
@@ -284,7 +289,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		// are RUNNING — AppleScript launches the ones that aren't.
 		if (await processRunning("iTerm2")) {
 			const raise = await runAppleScript(buildITermRaiseScript(target.tty));
-			if (raise.ok && raise.stdout.includes("ok")) {
+			if (raise.ok && parseITermFocusResult(raise.stdout).status === "ok") {
 				await key.showOk();
 				return;
 			}
@@ -315,8 +320,8 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		// tmux: the focused tty is a CLIENT tty; find the session it shows, then
 		// the pane that would receive keys, then the claude on that pane tty.
 		if (cwd === undefined) {
-			for (const [session, clientTty] of snap.clients) {
-				if (clientTty !== snap.focusedTty) continue;
+			for (const [session, clientTtys] of snap.clientTtys) {
+				if (!clientTtys.includes(snap.focusedTty)) continue;
 				const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
 				if (pane !== undefined) {
 					cwd = snap.instances.find((i) => i.tty === pane.tty)?.cwd;

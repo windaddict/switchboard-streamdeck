@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serialize } from "../src/mac/serialize.js";
+import { runExclusive, serialize } from "../src/mac/serialize.js";
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -59,5 +59,21 @@ describe("serialize", () => {
 			}),
 		]);
 		expect(order).toEqual([1, 2]);
+	});
+});
+
+describe("runExclusive", () => {
+	it("drops a stale overlapping request and accepts a later one", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const first = runExclusive("focus", async () => { await gate; return "first"; });
+		await expect(runExclusive("focus", async () => "stale")).resolves.toBeUndefined();
+		release();
+		await expect(first).resolves.toBe("first");
+		await expect(runExclusive("focus", async () => "next")).resolves.toBe("next");
+	});
+	it("releases the key after a rejection", async () => {
+		await expect(runExclusive("focus-error", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+		await expect(runExclusive("focus-error", async () => "recovered")).resolves.toBe("recovered");
 	});
 });
