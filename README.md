@@ -156,7 +156,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 466 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 476 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install
