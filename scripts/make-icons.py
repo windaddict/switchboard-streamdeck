@@ -29,6 +29,7 @@ AMBER = "#F0A63C"  # BBEdit family
 TEAL = "#3EC9C4"  # files family
 CORAL = "#D97757"  # Claude family
 VIOLET = "#A78BFA"  # Codex family
+STEEL = "#B9C6D4"  # Cursor family
 SIGNAL = "#F2FFF6"  # arrows / cursors
 MUTED = "#8B9490"  # secondary strokes
 
@@ -159,9 +160,19 @@ def glyph_codexproject() -> str:
     )
 
 
+def glyph_cursorproject() -> str:
+    """Terminal window with Cursor's arrow-pointer mark."""
+    return (
+        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
+        f'<path d="M27 17l18 19-8.4.7 4.4 9.3-4.5 2.1-4.4-9.3-5.1 4.9z"'
+        f' stroke="{STEEL}" stroke-width="3" stroke-linejoin="round" fill="none"/>'
+    )
+
+
 ACTIONS = {
     "claudeproject": (glyph_claudeproject, CORAL),
     "codexproject": (glyph_codexproject, VIOLET),
+    "cursorproject": (glyph_cursorproject, STEEL),
     "tmux": (glyph_tmux, PHOSPHOR),
     "tmuxpane": (glyph_tmuxpane, PHOSPHOR),
     "tmuxwindial": (glyph_tmuxwindial, PHOSPHOR),

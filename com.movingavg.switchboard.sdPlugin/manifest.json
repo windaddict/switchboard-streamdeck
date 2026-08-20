@@ -287,6 +287,23 @@
 				}
 			],
 			"UserTitleEnabled": false
+		},
+		{
+			"Name": "Cursor Project",
+			"UUID": "com.movingavg.switchboard.cursorproject",
+			"Icon": "imgs/actions/cursorproject/icon",
+			"Tooltip": "Live face for an interactive Cursor CLI session. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.",
+			"PropertyInspectorPath": "ui/cursor-project.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/cursorproject/key",
+					"ShowTitle": false
+				}
+			],
+			"UserTitleEnabled": false
 		}
 	]
 }

@@ -8945,7 +8945,7 @@ function dotsSvg(count, activeIndex, hue) {
     return out;
 }
 /** Truncate a label so it fits the 200px touch strip. */
-function truncate$3(value, max = 16) {
+function truncate$4(value, max = 16) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /**
@@ -8968,8 +8968,8 @@ function buildBackgroundSvg(opts) {
         `<rect width="200" height="100" fill="url(#g)"/>` +
         `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
         `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$3(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$3(window))}</text>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$4(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$4(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         badgeSvg +
         `</svg>`);
@@ -9139,18 +9139,18 @@ function projectClaudeState(args) {
     }
     return "waiting";
 }
-const MONO$2 = "Menlo, Monaco, monospace";
-function truncate$2(value, max) {
+const MONO$3 = "Menlo, Monaco, monospace";
+function truncate$3(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /** Last path segment as the display name ("" -> "?"). */
-function projectBasename$1(projectPath) {
+function projectBasename$2(projectPath) {
     const normalized = normalizeProjectPath$1(projectPath);
     const base = normalized.slice(normalized.lastIndexOf("/") + 1);
     return base || "?";
 }
 /** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
-const ORBIT$2 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
+const ORBIT$3 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
 /**
  * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
  * project name in mono (hue seeded per project, so each project wears a
@@ -9160,8 +9160,8 @@ const ORBIT$2 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.
  * colours only — the key rasterizer paints hsl() black.
  */
 function buildClaudeProjectKeyImage(args) {
-    const name = truncate$2(projectBasename$1(args.project), 9);
-    const hue = sessionHue(projectBasename$1(args.project));
+    const name = truncate$3(projectBasename$2(args.project), 9);
+    const hue = sessionHue(projectBasename$2(args.project));
     const spin = args.spin ?? 0;
     let bar;
     let nameFill;
@@ -9189,7 +9189,7 @@ function buildClaudeProjectKeyImage(args) {
     // Anchored at x=30, not center: the longest host label ("TERMINAL") must
     // clear the Claude spark in the top-right corner.
     const eyebrow = args.host
-        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$2(args.host.toUpperCase(), 8))}</text>`
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$3}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$3(args.host.toUpperCase(), 8))}</text>`
         : "";
     let spark = "";
     if (args.claude !== "none") {
@@ -9203,7 +9203,7 @@ function buildClaudeProjectKeyImage(args) {
             // The star is 6-fold symmetric, so its rotation collapses to a
             // two-frame wobble — motion you cannot see at key size. The orbiting
             // dot gives 12 genuinely distinct frames per revolution.
-            const [ox, oy] = ORBIT$2[spin % 12];
+            const [ox, oy] = ORBIT$3[spin % 12];
             spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
         }
     }
@@ -9215,7 +9215,7 @@ function buildClaudeProjectKeyImage(args) {
         `<rect width="72" height="72" fill="#0F1211"/>` +
         eyebrow +
         spark +
-        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$3}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
         bar +
         mark +
         `</svg>`);
@@ -9227,10 +9227,10 @@ function buildClaudeProjectKeyImage(args) {
  * its project cwd (~0.06s total, measured). Absolute binary paths — Stream
  * Deck launches plugins with a minimal PATH. `exec` injectable for tests.
  */
-const TIMEOUT_MS$1 = 4000;
-function run$1(file, args, exec) {
+const TIMEOUT_MS$2 = 4000;
+function run$2(file, args, exec) {
     return new Promise((resolve) => {
-        exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => {
+        exec(file, args, { timeout: TIMEOUT_MS$2, env: UTF8_ENV }, (error, stdout) => {
             resolve(error ? "" : String(stdout ?? ""));
         });
     });
@@ -9258,7 +9258,7 @@ const CWD_TTL_MS = 60_000;
 const cwdCache = new Map();
 /** Shared snapshot for ALL pollers: both key types poll every few seconds
  * and would otherwise duplicate the scans. */
-const WORLD_TTL_MS$1 = 2000;
+const WORLD_TTL_MS$2 = 2000;
 let worldCache = null;
 let worldInFlight = null;
 function lsofCwdArgs(pids) {
@@ -9268,13 +9268,13 @@ function lsofCwdArgs(pids) {
  * whether a shell tool is running under each. TTL-cached so concurrent
  * pollers share one scan; cwds cached per pid (60s). */
 function scanClaudeInstances(exec = execFile) {
-    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$1) {
+    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$2) {
         return Promise.resolve(worldCache.instances);
     }
     if (worldInFlight !== null) {
         return worldInFlight;
     }
-    const p = doScan$1(exec);
+    const p = doScan$2(exec);
     worldInFlight = p;
     void p.finally(() => {
         if (worldInFlight === p)
@@ -9282,9 +9282,9 @@ function scanClaudeInstances(exec = execFile) {
     });
     return p;
 }
-async function doScan$1(exec) {
+async function doScan$2(exec) {
     const now = Date.now();
-    const pidsOut = await run$1("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
+    const pidsOut = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
     const pids = pidsOut
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
@@ -9293,7 +9293,7 @@ async function doScan$1(exec) {
         worldCache = { at: now, instances: [] };
         return [];
     }
-    const procs = parsePsProcs(await run$1("/bin/ps", claudeDetailArgs(pids), exec));
+    const procs = parsePsProcs(await run$2("/bin/ps", claudeDetailArgs(pids), exec));
     const claudes = claudesFrom(procs);
     if (claudes.length === 0) {
         worldCache = { at: now, instances: [] };
@@ -9301,14 +9301,14 @@ async function doScan$1(exec) {
     }
     const claudePids = new Set(claudes.map((c) => c.pid));
     // Targeted argv confirm: which claudes have a live shell-snapshot child?
-    const kidsOut = await run$1("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
+    const kidsOut = await run$2("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
     const children = kidsOut
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
         .filter((n) => Number.isFinite(n));
     let busyPids = new Set();
     if (children.length > 0) {
-        busyPids = busyParentsFrom(await run$1("/bin/ps", confirmShellArgs(children), exec));
+        busyPids = busyParentsFrom(await run$2("/bin/ps", confirmShellArgs(children), exec));
     }
     // Phase 2b (cwds): lsof only for pids missing a fresh cache entry.
     const need = claudes.filter((c) => {
@@ -9316,7 +9316,7 @@ async function doScan$1(exec) {
         return hit === undefined || now - hit.at >= CWD_TTL_MS;
     });
     if (need.length > 0) {
-        const cwds = parseLsofCwds(await run$1("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
+        const cwds = parseLsofCwds(await run$2("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
         for (const [pid, cwd] of cwds)
             cwdCache.set(pid, { cwd, at: now });
     }
@@ -9339,7 +9339,7 @@ async function doScan$1(exec) {
  * AppleScript-launching a terminal app that isn't open.) */
 function processRunning(name, exec = execFile) {
     return new Promise((resolve) => {
-        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error) => {
+        exec("/usr/bin/pgrep", ["-x", name], { timeout: TIMEOUT_MS$2, env: UTF8_ENV }, (error) => {
             resolve(!error);
         });
     });
@@ -10036,7 +10036,7 @@ return "notfound"`;
 }
 
 /** How often the key faces re-check the live state. */
-const POLL_MS$4 = 2500;
+const POLL_MS$5 = 2500;
 /**
  * Live key face for a Claude Code PROJECT, host-independent: works whether
  * the session runs under tmux, plain iTerm2, or Terminal.app. The face shows
@@ -10079,7 +10079,7 @@ let ClaudeProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$4);
+                }, POLL_MS$5);
             }
             await this.refreshAll();
         }
@@ -10463,19 +10463,19 @@ function codexTmuxFocusArgs(pane, clientTty) {
     commands.push(["select-pane", "-t", pane.paneId]);
     return commands;
 }
-function projectBasename(path) {
+function projectBasename$1(path) {
     const p = normalizeProjectPath(path);
     return p.slice(p.lastIndexOf("/") + 1) || "?";
 }
-function truncate$1(value, max) {
+function truncate$2(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-const MONO$1 = "Menlo, Monaco, monospace";
-const ORBIT$1 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+const MONO$2 = "Menlo, Monaco, monospace";
+const ORBIT$2 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
 /** Codex sibling of the Claude live face. Hex colors only for key rasterizing. */
 function buildCodexProjectKeyImage(args) {
-    const name = truncate$1(projectBasename(args.project), 9);
-    const hue = sessionHue(projectBasename(args.project));
+    const name = truncate$2(projectBasename$1(args.project), 9);
+    const hue = sessionHue(projectBasename$1(args.project));
     const active = args.state !== "none";
     const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
     const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
@@ -10484,30 +10484,30 @@ function buildCodexProjectKeyImage(args) {
         : args.hot
             ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
             : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
+    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
     let glyph = "";
     if (active) {
         const spin = args.spin ?? 0;
         glyph = `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
         if (args.state === "working") {
-            const [x, y] = ORBIT$1[spin % ORBIT$1.length];
+            const [x, y] = ORBIT$2[spin % ORBIT$2.length];
             glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
         }
     }
     const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }
 
 /** Bounded, cached scan of interactive Codex CLI sessions. */
-const TIMEOUT_MS = 4000;
-const WORLD_TTL_MS = 2000;
-const TAIL_BYTES = 1024 * 1024;
+const TIMEOUT_MS$1 = 4000;
+const WORLD_TTL_MS$1 = 2000;
+const TAIL_BYTES$1 = 1024 * 1024;
 const HEAD_BYTES = 64 * 1024;
-let cache = null;
-let inFlight$1 = null;
-function run(file, args, exec) {
+let cache$1 = null;
+let inFlight$2 = null;
+function run$1(file, args, exec) {
     return new Promise((resolve) => {
-        exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
+        exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
     });
 }
 function codexPsArgs(pids) {
@@ -10524,7 +10524,7 @@ async function rolloutLines(path) {
             const headLength = Math.min(size, HEAD_BYTES);
             const head = Buffer.alloc(headLength);
             await fh.read(head, 0, headLength, 0);
-            const tailLength = Math.min(size, TAIL_BYTES);
+            const tailLength = Math.min(size, TAIL_BYTES$1);
             const offset = size - tailLength;
             const tail = Buffer.alloc(tailLength);
             await fh.read(tail, 0, tailLength, offset);
@@ -10544,33 +10544,33 @@ async function rolloutLines(path) {
     }
 }
 function scanCodexSnapshot(exec = execFile) {
-    if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS)
-        return Promise.resolve(cache.snapshot);
-    if (inFlight$1 !== null)
-        return inFlight$1;
-    const p = doScan(exec);
-    inFlight$1 = p;
-    void p.finally(() => { if (inFlight$1 === p)
-        inFlight$1 = null; });
+    if (cache$1 !== null && Date.now() - cache$1.at < WORLD_TTL_MS$1)
+        return Promise.resolve(cache$1.snapshot);
+    if (inFlight$2 !== null)
+        return inFlight$2;
+    const p = doScan$1(exec);
+    inFlight$2 = p;
+    void p.finally(() => { if (inFlight$2 === p)
+        inFlight$2 = null; });
     return p;
 }
-async function doScan(exec) {
+async function doScan$1(exec) {
     const now = Date.now();
-    const pgrep = await run("/usr/bin/pgrep", ["-x", "codex"], exec);
+    const pgrep = await run$1("/usr/bin/pgrep", ["-x", "codex"], exec);
     if (!pgrep.ok)
-        return rememberUnknown(now);
+        return rememberUnknown$1(now);
     const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
     if (pids.length === 0)
-        return remember(now, { status: "ok", instances: [] });
-    const ps = await run("/bin/ps", codexPsArgs(pids), exec);
+        return remember$1(now, { status: "ok", instances: [] });
+    const ps = await run$1("/bin/ps", codexPsArgs(pids), exec);
     if (!ps.ok)
-        return rememberUnknown(now);
+        return rememberUnknown$1(now);
     const processes = parseCodexProcesses(ps.stdout).filter(isInteractiveCodex);
     if (processes.length === 0)
-        return remember(now, { status: "ok", instances: [] });
-    const lsof = await run("/usr/sbin/lsof", codexLsofArgs(processes.map((p) => p.pid)), exec);
+        return remember$1(now, { status: "ok", instances: [] });
+    const lsof = await run$1("/usr/sbin/lsof", codexLsofArgs(processes.map((p) => p.pid)), exec);
     if (!lsof.ok)
-        return rememberUnknown(now);
+        return rememberUnknown$1(now);
     const entries = parseLsofEntries(lsof.stdout);
     let incomplete = false;
     const instances = await Promise.all(processes.map(async (process) => {
@@ -10602,15 +10602,15 @@ async function doScan(exec) {
             state: codexStateFromRolloutLines(lines),
         };
     }));
-    return remember(now, { status: incomplete ? "unknown" : "ok", instances: instances.filter((i) => i !== null) });
+    return remember$1(now, { status: incomplete ? "unknown" : "ok", instances: instances.filter((i) => i !== null) });
 }
-function remember(at, snapshot) {
-    cache = { at, snapshot };
+function remember$1(at, snapshot) {
+    cache$1 = { at, snapshot };
     return snapshot;
 }
-function rememberUnknown(at) {
-    const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
-    return remember(at, { status: "unknown", instances: stale });
+function rememberUnknown$1(at) {
+    const stale = cache$1?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
+    return remember$1(at, { status: "unknown", instances: stale });
 }
 
 /**
@@ -10680,7 +10680,7 @@ function buildOpenArgs(filePath, opener, app) {
     return [filePath];
 }
 
-const POLL_MS$3 = 2500;
+const POLL_MS$4 = 2500;
 /** Live key for one interactive Codex CLI session/project. */
 let CodexProject = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.codexproject" })];
@@ -10715,7 +10715,7 @@ let CodexProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$3);
+                }, POLL_MS$4);
             }
             await this.refreshAll();
         }
@@ -10887,6 +10887,823 @@ let CodexProject = (() => {
         }
         async capture(key) {
             const snap = await this.snapshot();
+            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
+                await key.showAlert();
+                return;
+            }
+            let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
+            if (instance === undefined) {
+                for (const [session, clientTtys] of snap.clientTtys) {
+                    if (!clientTtys.includes(snap.focusedTty))
+                        continue;
+                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
+                    if (pane !== undefined)
+                        instance = snap.instances.find((i) => i.tty === pane.tty);
+                    break;
+                }
+            }
+            if (instance === undefined) {
+                await key.showAlert();
+                return;
+            }
+            const settings = await key.getSettings();
+            await key.setSettings({ ...settings, project: instance.cwd, sessionId: instance.sessionId });
+            this.paintedSession.set(key.id, instance.sessionId);
+            await key.showOk();
+            await this.refreshAll();
+        }
+    });
+    return _classThis;
+})();
+
+/**
+ * WHAT IT'S FOR: the pure decision layer behind the Cursor Project key — the
+ * one place that answers "which running Cursor CLI session is this key's
+ * project, and is it working, blocked on me, or idle?" so the action shell
+ * stays a thin wire between Stream Deck events and tested logic.
+ *
+ * Cursor's CLI (`cursor-agent`) looks superficially like Codex but records
+ * state very differently, and three of the Codex signals do NOT port. Each
+ * difference below was measured against cursor-agent 2026.08.11-e8db854, and
+ * the comments say what was observed rather than what seemed likely:
+ *
+ *   - `ps -o comm=` is TRUNCATED to 16 characters for these processes (it
+ *     comes back as `/Users/johnknox/`), so identity must be read from `args`.
+ *   - There is no `originator` field and no state marker in the terminal
+ *     title (the title is the chat's name, identical whether the agent is
+ *     working, blocked, or idle), so neither Codex's nor Claude Code's
+ *     identity trick is available.
+ *   - Transcript records are appended AFTER a tool runs, not when the model
+ *     asks for it. While a session sits on an approval prompt its transcript
+ *     is byte-identical to a session waiting on the model. Tail SHAPE
+ *     therefore cannot decide working-vs-blocked, and this module does not
+ *     try to; see {@link cursorStateFromTranscriptLines}.
+ *
+ * Privacy: transcripts hold the operator's prompts and command text. A bounded
+ * tail of those bytes is necessarily parsed here, but the ONLY fields retained
+ * or returned are the structural ones (`type`, `role`); no message content
+ * leaves this module, and none is ever logged. That is a minimisation, not an
+ * isolation guarantee — the bytes do pass through this process's memory.
+ */
+/** Parse targeted `ps -o pid=,ppid=,tty=,args=` output. `comm` is deliberately
+ * absent: it truncates at 16 chars for cursor-agent and is useless here. */
+function parseCursorProcesses(output) {
+    const result = [];
+    for (const raw of output.split("\n")) {
+        const m = raw.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+        if (m === null)
+            continue;
+        const pid = Number.parseInt(m[1], 10);
+        const ppid = Number.parseInt(m[2], 10);
+        if (!Number.isFinite(pid) || !Number.isFinite(ppid))
+            continue;
+        result.push({ pid, ppid, tty: m[3], args: m[4] });
+    }
+    return result;
+}
+/** The installed-version path every cursor-agent process carries in argv,
+ * whichever of the two interchangeable symlinks (`agent`, `cursor-agent`) the
+ * operator typed. Anchored to the real layout so an unrelated process that
+ * merely mentions "cursor-agent" (an editor open on a file of that name, a
+ * grep) cannot enter the scan. */
+const CURSOR_ARGV = /(^|\/)\.local\/share\/cursor-agent\/versions\/[^/\s]+\//;
+/** Cheap candidate gate: a real controlling tty (a TUI session, not a daemon)
+ * plus the installed-version path in argv. */
+function isCursorProcess(p) {
+    return p.tty !== "??" && p.tty !== "?" && CURSOR_ARGV.test(p.args);
+}
+/** A worker is launched as the versioned `node` binary directly; an operator's
+ * session is launched through the `bin/agent` or `bin/cursor-agent` wrapper.
+ * Matched from the start of argv but WITHOUT assuming the path is
+ * whitespace-free: a home directory containing a space (`/Users/Jane Doe/…`)
+ * used to make this fail, leaving the worker in the list and rendering every
+ * key on that machine permanently ambiguous. */
+const WORKER_ARGV = /^\/[^\n]*?\/\.local\/share\/cursor-agent\/versions\/[^/]+\/node(\s|$)/;
+/**
+ * Drop cursor-agent's own worker child. Every interactive session forks a
+ * long-lived `.../versions/<v>/node .../index.js` helper that matches the
+ * same argv pattern, shares the session's tty AND its chat store — left in,
+ * it would masquerade as a second session on the same project and force every
+ * key to the deliberately-ambiguous `unknown` face.
+ *
+ * BOTH conditions are required: the process is parented by another candidate
+ * AND its argv has the worker's shape. Parentage alone would also swallow a
+ * genuine session that happens to have been started from inside another
+ * session's terminal, which is a real session the operator may want a key for.
+ */
+function withoutWorkerChildren(procs) {
+    const pids = new Set(procs.map((p) => p.pid));
+    return procs.filter((p) => !(pids.has(p.ppid) && WORKER_ARGV.test(p.args)));
+}
+/** Is this an open file inside a session's chat store? */
+function isCursorChatPath(path) {
+    // Deliberately not anchored on the literal `.cursor` segment: lsof reports
+    // the RESOLVED path, so a symlinked or relocated config directory would
+    // otherwise stop every session being recognised. The remaining shape —
+    // a 32-hex project hash, a session UUID, and a store.db file — is specific
+    // enough, and only files held open by a confirmed cursor-agent are tested.
+    return /\/chats\/[0-9a-f]{32}\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\/store\.db(-wal|-shm)?$/i.test(path);
+}
+/** The chat-store directory holding a session's files, or "" if not one. */
+function cursorChatDir(path) {
+    return isCursorChatPath(path) ? path.slice(0, path.lastIndexOf("/")) : "";
+}
+/** Session UUID = the final path component of the chat-store directory. */
+function cursorSessionId(chatDir) {
+    return chatDir.match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i)?.[1] ?? "";
+}
+/**
+ * The single chat directory a process is using, or "" when the evidence is
+ * not unambiguous. A process holds store.db, -wal and -shm open at once, so
+ * several entries are normal and must collapse to ONE directory; zero matches
+ * (a session still starting) and two distinct directories (a session being
+ * switched) both mean "don't claim to know which conversation this is".
+ */
+function soleChatDir(paths) {
+    const dirs = new Set();
+    for (const p of paths) {
+        const dir = cursorChatDir(p);
+        if (dir !== "")
+            dirs.add(dir);
+    }
+    return dirs.size === 1 ? [...dirs][0] : "";
+}
+/**
+ * Working/idle from the transcript, using ONLY the turn terminator.
+ *
+ * Cursor closes every turn with a `{"type":"turn_ended","status":...}` record
+ * and appends tool records after the fact, so the presence of a terminator at
+ * the tail is the one thing the file reliably says: terminator = the prompt is
+ * idle; no terminator = a turn is still in flight. It cannot tell whether an
+ * in-flight turn is computing or holding for approval — that needs the
+ * terminal itself ({@link paneShowsApprovalPrompt}).
+ *
+ * An empty transcript means a session that has not been prompted yet, which
+ * is idle. Lines that exist but do not parse are NOT evidence of anything, so
+ * they yield `unknown` rather than a confident face. A turn that ended with
+ * `status: "error"` still left the prompt idle, so it reads `waiting`.
+ *
+ * Pure; reads only `type`, `role` and `status` — never message content.
+ */
+function cursorStateFromTranscriptLines(lines) {
+    let sawLine = false;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (line === "")
+            continue;
+        sawLine = true;
+        let row;
+        try {
+            row = JSON.parse(line);
+        }
+        catch {
+            continue; // a concurrent append or a clipped window edge is not evidence
+        }
+        if (row.type === "turn_ended")
+            return "waiting";
+        if (row.role === "user" || row.role === "assistant")
+            return "working";
+    }
+    return sawLine ? "unknown" : "waiting";
+}
+/**
+ * Does this terminal pane show Cursor's command-approval prompt?
+ *
+ * This is the ONLY direct evidence that a session is blocked on the operator;
+ * no file Cursor writes distinguishes that from ordinary work. Matching is
+ * deliberately narrow and fails SAFE: unrecognised wording yields false, so
+ * the key falls back to `working` and can never invent an amber "needs you"
+ * light that isn't real.
+ */
+function paneShowsApprovalPrompt(paneText) {
+    // "Run this command?" alone is a phrase that could plausibly appear in
+    // ordinary scrolled output, so it only counts alongside the choice line
+    // that Cursor renders directly beneath it. The inline status marker is
+    // specific enough to stand on its own.
+    if (paneText.includes("Waiting for approval"))
+        return true;
+    return paneText.includes("Run this command?") && paneText.includes("Run (once)");
+}
+/**
+ * tmux args capturing one pane's VISIBLE screen — deliberately no scrollback.
+ *
+ * An approval prompt is on screen for exactly as long as it is waiting, so the
+ * live screen is sufficient evidence. Including history is not merely
+ * unnecessary but wrong: an already-answered prompt lingers in the scrollback,
+ * and matching it would hold the key amber while the agent is busy working.
+ */
+function capturePaneArgs(paneId) {
+    return ["capture-pane", "-p", "-t", paneId];
+}
+function cursorInstancesForProject(instances, project) {
+    const target = normalizeProjectPath(project);
+    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
+}
+/**
+ * Resolve the key's target session.
+ *
+ * Once a key has captured a session id that id is binding: if that exact
+ * session is gone, the answer is "no target", NEVER the other session that
+ * happens to share the folder. Quietly re-pointing at a same-cwd neighbour
+ * would send the operator's keystrokes and window focus to a conversation
+ * they never captured. Without a captured id a lone session is unambiguous;
+ * two or more are not, and yield null so the caller can paint `unknown`.
+ */
+function selectCursorInstance(instances, project, sessionId) {
+    const mine = cursorInstancesForProject(instances, project);
+    if (sessionId !== "") {
+        const matches = mine.filter((i) => i.sessionId === sessionId);
+        return matches.length === 1 ? matches[0] : null;
+    }
+    return mine.length === 1 ? mine[0] : null;
+}
+/**
+ * Compose the face a key should show from every piece of evidence at once.
+ *
+ * Pure and tested because it is where the honesty rules live: a key must never
+ * look confident on thin evidence. Two cases in particular are easy to get
+ * wrong and are handled explicitly here rather than in the action shell:
+ *
+ *   - A scan that could not identify every candidate process is not proof that
+ *     the ONE session found is the only one in this folder. If the key has no
+ *     captured session id — the thing that would make it unambiguous — the
+ *     honest face is `unknown`, not that session's state.
+ *   - Only an in-flight turn can be blocked; an idle prompt showing leftover
+ *     approval text on screen must not turn the key amber.
+ */
+function decideCursorFace(args) {
+    if (!args.hasTarget)
+        return "none";
+    if (args.instanceState === null) {
+        // A trustworthy scan that did not turn up the captured session means that
+        // session has exited — "no target". Reporting `unknown` because OTHER
+        // sessions share the folder would contradict the binding-capture rule in
+        // {@link selectCursorInstance}: those neighbours are not this key's.
+        if (args.scanStatus !== "ok")
+            return "unknown";
+        if (args.hasCapturedId)
+            return "none";
+        return args.matchCount > 1 ? "unknown" : "none";
+    }
+    if (args.scanStatus !== "ok" && !args.hasCapturedId)
+        return "unknown";
+    if (args.instanceState === "working" && args.blockedOnPane)
+        return "blocked";
+    return args.instanceState;
+}
+/** The pane hosting a session, matched by tty. */
+function paneForTty(panes, tty) {
+    return panes.find((p) => p.tty === tty);
+}
+function projectBasename(path) {
+    const p = normalizeProjectPath(path);
+    return p.slice(p.lastIndexOf("/") + 1) || "?";
+}
+function truncate$1(value, max) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+const MONO$1 = "Menlo, Monaco, monospace";
+const ORBIT$1 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+/**
+ * Cursor sibling of the Claude and Codex live faces. Hex colours only — the
+ * KEY rasterizer paints `hsl()` as black, so every colour goes through
+ * {@link hslToHex} (a unit test asserts no `hsl(` literal survives).
+ */
+function buildCursorProjectKeyImage(args) {
+    const name = truncate$1(projectBasename(args.project), 9);
+    const hue = sessionHue(projectBasename(args.project));
+    const active = args.state !== "none";
+    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
+    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
+    const bar = !active
+        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
+        : args.hot
+            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
+            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
+    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
+    let glyph = "";
+    if (active) {
+        const spin = args.spin ?? 0;
+        // Cursor's mark reads as an arrow pointer, distinguishing it at a glance
+        // from Codex's square and Claude's asterisk on a crowded deck.
+        glyph = `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+        if (args.state === "working") {
+            const [x, y] = ORBIT$1[spin % ORBIT$1.length];
+            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
+        }
+        if (args.state === "blocked")
+            glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
+    }
+    const mark = `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.1" stroke-linejoin="round"/>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+}
+
+/**
+ * WHAT IT'S FOR: the one place that asks the machine "which interactive
+ * Cursor CLI sessions exist right now, in which folders, and what is each
+ * doing?" — so every visible Cursor Project key repaints from a single
+ * bounded snapshot instead of each key shelling out for itself.
+ *
+ * Shape of a scan: `pgrep` narrows to candidate pids, one targeted `ps`
+ * reads their argv and parent, one batched `lsof` maps each to its working
+ * directory and chat store, and the newest transcript tail supplies the
+ * working/idle verdict. Every external command runs with an absolute path
+ * (Stream Deck gives plugins a minimal PATH) and `UTF8_ENV` (its environment
+ * has no LANG, and the C locale mangles non-ASCII output).
+ *
+ * The snapshot carries a `status`. When any probe fails the scan reports
+ * `unknown` and downgrades remembered sessions rather than serving a
+ * confident, stale answer — a key that focuses the wrong terminal window is
+ * worse than a key that admits it doesn't know.
+ *
+ * Privacy: transcripts contain the operator's prompts and command text. Only
+ * a bounded tail is read, only `type`/`role` are parsed out of it, and no
+ * transcript content is ever returned or logged.
+ */
+const TIMEOUT_MS = 4000;
+const WORLD_TTL_MS = 2000;
+/** Enough to hold the last turn's records; bounds how much prompt text is
+ * ever paged in. A record larger than the window yields unparsable fragments,
+ * which the state parser treats as no evidence rather than as a verdict. */
+const TAIL_BYTES = 256 * 1024;
+const PROJECT_BATCH = 32;
+let cache = null;
+let inFlight$1 = null;
+/** Bumped by every invalidation. A scan carries the generation it started in
+ * and declines to publish its result if that generation has since moved on —
+ * without it, a slow scan begun before a press could land AFTER the press's
+ * fresh scan and leave the cache holding older data. */
+let generation$1 = 0;
+/** Session id → transcript path. A session's transcript never moves, so this
+ * spares the per-tick directory walk once a session has been seen. */
+const transcriptPaths = new Map();
+function run(file, args, exec) {
+    return new Promise((resolve) => {
+        exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => {
+            const e = error;
+            // A process cut short by the timeout is NOT reporting an exit status,
+            // even though Node may still surface a numeric `code`.
+            const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
+            const code = terminated ? null : e?.code;
+            resolve({ ok: error === null, stdout: String(stdout ?? ""), exitCode: typeof code === "number" ? code : null });
+        });
+    });
+}
+/** pgrep's documented contract: exit 1 means "nothing matched" — a definite,
+ * trustworthy answer. Any other non-zero exit (or a signal/timeout, which
+ * surfaces as a non-numeric code) means the probe itself failed, and must NOT
+ * be reported as "no Cursor sessions are running". */
+function pgrepFoundNothing(result) {
+    return !result.ok && result.exitCode === 1 && result.stdout.trim() === "";
+}
+/** Candidate discovery. Matches the installed-version path that every
+ * cursor-agent process carries, whichever symlink name was typed; the strict
+ * argv/tty/parent filtering happens in the pure layer. */
+const PGREP_CURSOR_ARGS = ["-f", "cursor-agent/versions"];
+function cursorPsArgs(pids) {
+    return ["-o", "pid=,ppid=,tty=,args=", "-p", pids.join(",")];
+}
+function cursorLsofArgs(pids) {
+    return ["-nP", "-a", "-p", pids.join(","), "-Fpcfn"];
+}
+function isMissing(error) {
+    const code = error?.code;
+    return code === "ENOENT" || code === "ENOTDIR";
+}
+async function findTranscriptPath(sessionId, base) {
+    if (sessionId === "")
+        return { status: "failed" };
+    const key = `${base}\u0000${sessionId}`;
+    const memo = transcriptPaths.get(key);
+    if (memo !== undefined)
+        return { status: "found", path: memo };
+    let names;
+    try {
+        names = await readdir(base);
+    }
+    catch (error) {
+        // No projects folder at all = Cursor has never run here, which is a real
+        // "absent". Anything else (EACCES, EIO) is a failed probe.
+        return isMissing(error) ? { status: "absent" } : { status: "failed" };
+    }
+    let probeFailed = false;
+    for (let i = 0; i < names.length; i += PROJECT_BATCH) {
+        const found = await Promise.all(names.slice(i, i + PROJECT_BATCH).map(async (name) => {
+            const path = join(base, name, "agent-transcripts", sessionId, `${sessionId}.jsonl`);
+            try {
+                return (await stat(path)).isFile() ? path : null;
+            }
+            catch (error) {
+                if (!isMissing(error))
+                    probeFailed = true;
+                return null;
+            }
+        }));
+        for (const path of found) {
+            if (path !== null) {
+                transcriptPaths.set(key, path);
+                return { status: "found", path };
+            }
+        }
+    }
+    // Not found, but at least one directory could not be checked — so "not
+    // found" is not something we actually established.
+    return probeFailed ? { status: "failed" } : { status: "absent" };
+}
+/**
+ * Read the transcript's trailing window as COMPLETE lines, or null when the
+ * file cannot be turned into usable evidence.
+ *
+ * The null case matters: an empty array means "this session has written
+ * nothing yet", which the state parser reads as idle. A failed open/read, or a
+ * window that lands entirely inside one oversized final record, must NOT be
+ * allowed to masquerade as that — it is an absence of evidence, and painting a
+ * confident "idle" from it would be exactly the lie this module avoids
+ * elsewhere. When the head is clipped the first fragment is dropped rather
+ * than handed to the parser as though it were a whole record.
+ */
+async function transcriptTailLines(path) {
+    try {
+        const fh = await open(path, "r");
+        try {
+            const size = (await fh.stat()).size;
+            if (size === 0)
+                return [];
+            const window = Math.min(size, TAIL_BYTES);
+            const offset = size - window;
+            const buf = Buffer.alloc(window);
+            await fh.read(buf, 0, window, offset);
+            const text = buf.toString("utf8");
+            const lines = text.split("\n");
+            if (offset > 0)
+                lines.shift();
+            // A file not ending in a newline is mid-append: its final fragment is
+            // a partial record. Left in, it fails to parse and the reader falls
+            // back to the PREVIOUS record — which can be the last turn's
+            // terminator, reporting "idle" just as a new turn begins.
+            if (!text.endsWith("\n"))
+                lines.pop();
+            const usable = lines.filter((line) => line.trim() !== "");
+            // A non-empty file that yielded no whole line: one record is larger
+            // than the window, so the tail says nothing we can rely on.
+            return usable.length === 0 ? null : usable;
+        }
+        finally {
+            await fh.close();
+        }
+    }
+    catch {
+        return null;
+    }
+}
+function invalidateCursorScan() {
+    cache = null;
+    inFlight$1 = null;
+    generation$1++;
+}
+/** Where Cursor files its per-project transcripts. A parameter so tests can
+ * point at a fixture tree instead of the operator's real, populated one. */
+const CURSOR_PROJECTS_BASE = join(homedir(), ".cursor", "projects");
+function scanCursorSnapshot(exec = execFile, projectsBase = CURSOR_PROJECTS_BASE) {
+    if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS)
+        return Promise.resolve(cache.snapshot);
+    if (inFlight$1 !== null)
+        return inFlight$1;
+    const p = doScan(exec, projectsBase, generation$1);
+    inFlight$1 = p;
+    void p.finally(() => { if (inFlight$1 === p)
+        inFlight$1 = null; });
+    return p;
+}
+async function doScan(exec, projectsBase, gen) {
+    const now = Date.now();
+    const pgrep = await run("/usr/bin/pgrep", PGREP_CURSOR_ARGS, exec);
+    if (pgrepFoundNothing(pgrep))
+        return remember(now, gen, { status: "ok", instances: [] });
+    if (!pgrep.ok)
+        return rememberUnknown(now, gen);
+    const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
+    if (pids.length === 0)
+        return remember(now, gen, { status: "ok", instances: [] });
+    const ps = await run("/bin/ps", cursorPsArgs(pids), exec);
+    if (!ps.ok)
+        return rememberUnknown(now, gen);
+    const processes = withoutWorkerChildren(parseCursorProcesses(ps.stdout).filter(isCursorProcess));
+    if (processes.length === 0)
+        return remember(now, gen, { status: "ok", instances: [] });
+    const lsof = await run("/usr/sbin/lsof", cursorLsofArgs(processes.map((p) => p.pid)), exec);
+    if (!lsof.ok)
+        return rememberUnknown(now, gen);
+    const entries = parseLsofEntries(lsof.stdout);
+    let incomplete = false;
+    const instances = await Promise.all(processes.map(async (process) => {
+        const mine = entries.filter((e) => e.pid === process.pid);
+        const cwdRaw = mine.find((e) => e.fd === "cwd")?.name ?? "";
+        const chatDir = soleChatDir(mine.map((e) => e.name));
+        // A session still opening its store, or one mid-switch between two
+        // chats, cannot be identified — say so instead of picking one.
+        if (cwdRaw === "" || chatDir === "") {
+            incomplete = true;
+            return null;
+        }
+        let cwd = cwdRaw;
+        try {
+            cwd = await realpath(cwdRaw);
+        }
+        catch { /* process may exit mid-scan */ }
+        const sessionId = cursorSessionId(chatDir);
+        const transcript = await findTranscriptPath(sessionId, projectsBase);
+        // Only a SUCCESSFUL search that found nothing means "not prompted yet",
+        // which is genuinely idle. A failed search is an absence of evidence.
+        let state;
+        if (transcript.status === "absent") {
+            state = "waiting";
+        }
+        else if (transcript.status === "failed") {
+            state = "unknown";
+        }
+        else {
+            const lines = await transcriptTailLines(transcript.path);
+            state = lines === null ? "unknown" : cursorStateFromTranscriptLines(lines);
+        }
+        const instance = {
+            pid: process.pid,
+            tty: process.tty.startsWith("/dev/") ? process.tty : `/dev/${process.tty}`,
+            cwd,
+            chatDir,
+            sessionId,
+            state,
+        };
+        return instance;
+    }));
+    return remember(now, gen, {
+        status: incomplete ? "unknown" : "ok",
+        instances: instances.filter((i) => i !== null),
+    });
+}
+function remember(at, gen, snapshot) {
+    // Still return the snapshot to whoever awaited THIS scan; just don't let a
+    // superseded scan become the cached view of the world.
+    if (gen !== generation$1)
+        return snapshot;
+    cache = { at, snapshot };
+    // Sessions come and go; keep the memo from growing without bound.
+    if (transcriptPaths.size > 64) {
+        const live = new Set(snapshot.instances.map((i) => i.sessionId));
+        for (const memoKey of [...transcriptPaths.keys()]) {
+            const id = memoKey.slice(memoKey.indexOf("\u0000") + 1);
+            if (!live.has(id))
+                transcriptPaths.delete(memoKey);
+        }
+    }
+    return snapshot;
+}
+function rememberUnknown(at, gen) {
+    const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
+    return remember(at, gen, { status: "unknown", instances: stale });
+}
+
+const POLL_MS$3 = 2500;
+/** Live key for one interactive Cursor CLI session/project. */
+let CursorProject = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.cursorproject" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        gate = new PressGate();
+        visible = new Map();
+        lastImage = new Map();
+        /** Session identity the last refresh RESOLVED for this key (set even if the
+         * subsequent setImage was skipped). A press treats it as a hint only — focus()
+         * revalidates it against a fresh scan before acting. */
+        paintedSession = new Map();
+        refresher = new CoalescedRunner(() => this.doRefreshAll());
+        timer;
+        spin = 0;
+        tick = 0;
+        interesting = true;
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => {
+                    if (shouldPollThisTick(this.tick++, this.interesting))
+                        void this.refreshAll();
+                }, POLL_MS$3);
+            }
+            await this.refreshAll();
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+            this.lastImage.delete(ev.action.id);
+            this.paintedSession.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Cursor Project capture failed: ${String(error)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return;
+            await runExclusive("iterm-focus", () => this.focus(ev.action));
+        }
+        async snapshot() {
+            const tmux = findTmuxPath();
+            const [cursor, panesResult, clientsResult, front] = await Promise.all([
+                scanCursorSnapshot(),
+                runTmux(LIST_CODEX_PANES_ARGS, tmux),
+                runTmux(LIST_CLIENTS_ARGS, tmux),
+                runJxa(FRONT_APP_BUNDLE_JXA),
+            ]);
+            const frontBundle = front.ok ? front.stdout.trim() : "";
+            let focusedTty = "";
+            if (frontBundle === ITERM_BUNDLE_ID)
+                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            else if (frontBundle === TERMINAL_BUNDLE_ID)
+                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            return {
+                instances: cursor.instances,
+                panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
+                clientTtys: parseClientTtys(clientsResult.stdout),
+                frontBundle,
+                focusedTty,
+                scanStatus: cursor.status,
+            };
+        }
+        /** A snapshot taken deliberately fresh, for the moment a press acts on it —
+         * the cached one may be up to a poll old, and a window raise must not be
+         * aimed at a session that has since exited or moved. */
+        freshSnapshot() {
+            invalidateCursorScan();
+            return this.snapshot();
+        }
+        refreshAll() { return this.refresher.request(); }
+        async canonicalProject(project) {
+            const normalized = normalizeProjectPath(expandHome(project, homedir()));
+            try {
+                return await realpath(normalized);
+            }
+            catch {
+                return normalized;
+            }
+        }
+        /**
+         * Is this session holding for the operator's approval? Nothing Cursor
+         * writes to disk separates that from ordinary work, so the terminal itself
+         * is the only evidence — which means the answer is available for
+         * tmux-hosted sessions only. Anything unrecognised leaves the state as
+         * `working`, so a wording change can never manufacture a false alarm.
+         */
+        async blockedOnApproval(pane, tmux) {
+            const result = await runTmux(capturePaneArgs(pane.paneId), tmux);
+            if (!result.ok) {
+                streamDeck.logger.debug(`Cursor Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+                return false;
+            }
+            return paneShowsApprovalPrompt(result.stdout);
+        }
+        async doRefreshAll() {
+            if (this.visible.size === 0)
+                return;
+            const snap = await this.snapshot();
+            const tmux = findTmuxPath();
+            this.spin++;
+            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working");
+            for (const key of this.visible.values()) {
+                const settings = await key.getSettings();
+                const project = await this.canonicalProject((settings.project ?? "").trim());
+                const mine = project ? cursorInstancesForProject(snap.instances, project) : [];
+                const instance = selectCursorInstance(mine, project, (settings.sessionId ?? "").trim());
+                if (instance === null)
+                    this.paintedSession.delete(key.id);
+                else
+                    this.paintedSession.set(key.id, instance.sessionId);
+                const pane = instance === null ? undefined : paneForTty(snap.panes, instance.tty);
+                let host = "";
+                let hot = false;
+                if (instance !== null && pane !== undefined) {
+                    host = "tmux";
+                    hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
+                }
+                else if (instance !== null && instance.tty === snap.focusedTty) {
+                    hot = true;
+                    host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
+                }
+                // Scraping the pane costs a tmux call, so only ask when the answer could
+                // change the face: an in-flight turn hosted in a pane we can read.
+                const blockedOnPane = instance !== null && instance.state === "working" && pane !== undefined
+                    && await this.blockedOnApproval(pane, tmux);
+                const state = decideCursorFace({
+                    hasTarget: project !== "",
+                    matchCount: mine.length,
+                    instanceState: instance?.state ?? null,
+                    scanStatus: snap.scanStatus,
+                    hasCapturedId: (settings.sessionId ?? "").trim() !== "",
+                    blockedOnPane,
+                });
+                const image = svgToDataUri(buildCursorProjectKeyImage({ project: project || "no target", host, hot, state, spin: this.spin }));
+                if (this.lastImage.get(key.id) === image)
+                    continue;
+                try {
+                    await key.setImage(image);
+                    this.lastImage.set(key.id, image);
+                }
+                catch (error) {
+                    streamDeck.logger.debug(`Cursor Project image skipped: ${String(error)}`);
+                }
+            }
+        }
+        async raiseTty(tty) {
+            if (await processRunning("iTerm2")) {
+                const result = await runAppleScript(buildITermRaiseScript(tty));
+                if (result.ok) {
+                    const focus = parseITermFocusResult(result.stdout);
+                    if (focus.status === "ok")
+                        return true;
+                    if (focus.status === "timeout") {
+                        streamDeck.logger.warn(`Cursor Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
+                        return false;
+                    }
+                }
+            }
+            if (await processRunning(TERMINAL_PROCESS_NAME)) {
+                const result = await runAppleScript(buildTerminalRaiseScript(tty));
+                if (result.ok && result.stdout.includes("ok"))
+                    return true;
+            }
+            return false;
+        }
+        async focus(key) {
+            const settings = await key.getSettings();
+            const project = await this.canonicalProject((settings.project ?? "").trim());
+            if (project === "") {
+                await key.showAlert();
+                return;
+            }
+            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
+            const snap = await this.freshSnapshot();
+            if (snap.scanStatus !== "ok") {
+                streamDeck.logger.warn("Cursor Project: process scan unavailable; refusing stale focus.");
+                await key.showAlert();
+                return;
+            }
+            const instance = selectCursorInstance(snap.instances, project, expected);
+            if (instance === null || (expected !== "" && instance.sessionId !== expected)) {
+                streamDeck.logger.warn(`Cursor Project: target missing or ambiguous for ${project}.`);
+                await key.showAlert();
+                return;
+            }
+            const pane = paneForTty(snap.panes, instance.tty);
+            if (pane !== undefined) {
+                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+                if (clientTty === null) {
+                    streamDeck.logger.warn(`Cursor Project: tmux session ${pane.session} has no attached client.`);
+                    await key.showAlert();
+                    return;
+                }
+                if (clientTtys.length > 1)
+                    streamDeck.logger.debug(`Cursor Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
+                if (!(await this.raiseTty(clientTty))) {
+                    await key.showAlert();
+                    return;
+                }
+                const tmux = findTmuxPath();
+                for (const args of codexTmuxFocusArgs(pane, clientTty)) {
+                    const result = await runTmux(args, tmux);
+                    if (!result.ok) {
+                        streamDeck.logger.error(`Cursor Project tmux ${args[0]} failed: ${result.stderr}`);
+                        await key.showAlert();
+                        return;
+                    }
+                }
+            }
+            else if (!(await this.raiseTty(instance.tty))) {
+                await key.showAlert();
+                return;
+            }
+            await key.showOk();
+            setTimeout(() => void this.refreshAll(), 450);
+        }
+        async capture(key) {
+            const snap = await this.freshSnapshot();
             if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
                 await key.showAlert();
                 return;
@@ -13299,6 +14116,7 @@ streamDeck.logger.setLevel(LogLevel.INFO);
 streamDeck.actions.registerAction(new JumpToTab());
 streamDeck.actions.registerAction(new ClaudeProject());
 streamDeck.actions.registerAction(new CodexProject());
+streamDeck.actions.registerAction(new CursorProject());
 streamDeck.actions.registerAction(new ScrollWindow());
 streamDeck.actions.registerAction(new SwitchApp());
 streamDeck.actions.registerAction(new FocusTmuxWindow());

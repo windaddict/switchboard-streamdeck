@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Cursor Project</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Project folder">
+			<sdpi-textfield setting="project" placeholder="/Users/you/code/my-project"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			The live face follows one interactive Cursor CLI (<code>cursor-agent</code>)
+			session: blue with a moving dot means a turn is running, amber means Cursor
+			is waiting for you to approve a command, white means the prompt is idle, and
+			gray means its state is unknown or more than one session matches. The bar
+			lights when your keystrokes would reach that exact session.<br /><br />
+			<b>Tip:</b> hold the key for &frac12;&nbsp;second while Cursor is frontmost
+			to capture its project and session. Press to raise its iTerm2 or Terminal
+			window and, under tmux, select its exact pane.<br /><br />
+			<b>Requires:</b> Automation access for iTerm2 and/or Terminal for the hot
+			indicator, capture, and focusing (macOS prompts on first use). Finding
+			sessions and reading their state needs no permission.<br /><br />
+			<b>Amber is tmux-only.</b> Cursor writes nothing to disk that separates
+			&ldquo;waiting for your approval&rdquo; from &ldquo;still thinking&rdquo;, so
+			the only evidence is the terminal itself &mdash; which this key can read for
+			tmux-hosted sessions. In a bare iTerm2 or Terminal window an approval prompt
+			shows as blue (running) instead. If a future Cursor release reworks that
+			prompt, amber simply stops appearing; it never shows a false alarm.<br /><br />
+			Cursor&rsquo;s editor/Desktop sessions are not targets &mdash; only the CLI.
+		</div>
+	</body>
+</html>
