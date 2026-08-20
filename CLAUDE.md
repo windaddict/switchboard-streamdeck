@@ -6,7 +6,7 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Twelve actions today (the manifest is the
+that script before ever renaming again. Fourteen actions today (the manifest is the
 source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
@@ -21,6 +21,9 @@ src/
   mac/                      # PURE, tested logic (no SDK, no I/O)
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
+  mac/cursor-*.ts           # Cursor CLI detection: cursor-scan (pgrep -f the installed
+                            #   versions path -> ps -o pid=,ppid=,tty=,args= -> lsof), cursor-project
+                            #   (identity + turn_ended state + approval-prompt scrape + key face)
   mac/claude-*.ts           # Claude Code detection: claude-scan (ps→batched lsof +
                             #   shell-snapshot busy children = "N shells still running"; pgrep
                             #   misses ancestors), claude-state (title marker: braille=working,
@@ -72,7 +75,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 435 tests today
+npm test              # vitest (pure modules) — 528 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -173,6 +176,34 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 - **README figures are code-generated.** docs/tmux-live-keys.png, claude-project-keys.png,
   claude-spark.gif, and dial-strips.png render FROM the real image builders (tsx snippet +
   inkscape) — regenerate them whenever a key-face design changes, or the README silently lies.
+- **Cursor CLI (`cursor-agent`) breaks three assumptions Codex taught us.** All
+  measured against 2026.08.11-e8db854, all of them cost time here:
+  (a) **`ps -o comm=` is TRUNCATED** to 16 chars for these processes (it returns
+  `/Users/johnknox/`), so identity must be read from `args` — Codex's
+  `basename(comm) === "codex"` gate does not port.
+  (b) **Every session forks a long-lived `node .../index.js` worker child** that
+  matches the same argv pattern AND shares the session's tty and chat store. Left
+  in, one session looks like two and every key goes ambiguous-gray; filter any
+  candidate whose ppid is also a candidate (`withoutWorkerChildren`).
+  (c) **Transcript records are appended AFTER a tool runs, not when it is
+  requested.** While Cursor holds on an approval prompt its transcript contains
+  only the user's message — byte-identical to "still thinking". Tail SHAPE
+  therefore cannot decide working-vs-blocked; only the explicit
+  `{"type":"turn_ended","status":…}` terminator is trustworthy, and it means
+  "the prompt is idle".
+- **Cursor's blocked state is only visible on screen.** Nothing on disk separates
+  "waiting for your approval" from "still thinking", so `cursor-project.ts`
+  matches Cursor's approval block in `tmux capture-pane` output — which makes
+  amber **tmux-only**, and it fails SAFE: unrecognised wording degrades to
+  "working", never to a false "needs you".
+- **Cursor's project-folder names are lossy — never derive one from a cwd.** A
+  long path is truncated and given a hash suffix
+  (`private-tmp-claude-501-Users-johnknox-code-switchbo-157e277`). Look transcripts
+  up by the exact session UUID, enumerating `~/.cursor/projects/*` (`findTranscriptPath`).
+- **A scan that reads `~/…` by default is untestable — inject the base path.** The
+  first cursor-scan tests silently read the OPERATOR'S REAL `~/.cursor/projects`
+  and passed/failed on live data; `scanCursorSnapshot(exec, projectsBase)` takes the
+  root so fixtures stay hermetic. Same trap applies to any future home-dir probe.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:

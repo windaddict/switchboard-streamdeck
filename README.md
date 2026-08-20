@@ -1,10 +1,10 @@
 # Switchboard
 
-![Switchboard — a macOS Stream Deck plugin with thirteen actions: live Claude Code and Codex project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
+![Switchboard — a macOS Stream Deck plugin with fourteen actions: live Claude Code, Codex, and Cursor project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
 
-*An operator's control surface for macOS — routing your attention across Claude Code and Codex sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
+*An operator's control surface for macOS — routing your attention across Claude Code, Codex, and Cursor sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code** and **Codex CLI** projects from the deck, see whether each needs you, and press to raise its exact terminal session. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code**, **Codex CLI**, and **Cursor CLI** projects from the deck, see whether each needs you, and press to raise its exact terminal session. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
 
 ---
 
@@ -20,13 +20,16 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 
 ## What it does
 
-Thirteen actions, grouped by what they route your attention to.
+Fourteen actions, grouped by what they route your attention to.
 
 **Claude Code**
 - **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
 
 **Codex CLI**
 - **Codex Project** *(key)* — a live face for an interactive Codex CLI session in tmux, plain iTerm2, or Terminal.app: blue means working, amber means blocked on your approval/input, white means ready, and gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.
+
+**Cursor CLI**
+- **Cursor Project** *(key)* — a live face for an interactive Cursor CLI (`cursor-agent`) session in tmux, plain iTerm2, or Terminal.app: blue means a turn is running, amber means Cursor is waiting for you to approve a command, white means the prompt is idle, and gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session. (Amber is tmux-only — see below.)
 
 **Safari**
 - **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards. Hold the key to capture the current front tab into the button.
@@ -53,7 +56,9 @@ Thirteen actions, grouped by what they route your attention to.
 
 ## Live on the deck
 
-The **Focus tmux Window**, **Claude Project**, and **Codex Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up exactly when that target would receive your keystrokes. Claude Project tracks Claude Code's working/waiting state; Codex Project distinguishes working, blocked on you, ready, and unknown, and binds to a captured session so two Codex sessions in one directory are never silently confused. Both project keys work under tmux, plain iTerm2, or Terminal.app and only observe and focus — they never drive the coding agent itself.
+The **Focus tmux Window**, **Claude Project**, **Codex Project**, and **Cursor Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up exactly when that target would receive your keystrokes. Claude Project tracks Claude Code's working/waiting state; Codex Project and Cursor Project each distinguish working, blocked on you, ready, and unknown, and bind to a captured session so two sessions in one directory are never silently confused. All three project keys work under tmux, plain iTerm2, or Terminal.app and only observe and focus — they never drive the coding agent itself.
+
+One honest limit on **Cursor Project**: Cursor writes nothing to disk that separates "waiting for your approval" from "still thinking", so that amber state is read from the terminal itself and is therefore available for **tmux-hosted sessions only**. Elsewhere an approval prompt reads as blue (running). Detection is deliberately narrow, so a future Cursor release that rewords its prompt makes amber stop appearing rather than start lying.
 
 ![Five states of a live tmux key: focused with Claude working, background with Claude working, background with Claude ready for input, background with no Claude, and a window that no longer exists](docs/tmux-live-keys.png)
 
@@ -156,7 +161,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 476 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 528 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install
