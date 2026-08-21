@@ -17,6 +17,7 @@ import {
 	soleChatDir,
 	withoutWorkerChildren,
 } from "../src/mac/cursor-project.js";
+import { deprecationBadge } from "../src/mac/deprecation.js";
 
 const VERSION_DIR = "/Users/j/.local/share/cursor-agent/versions/2026.08.11-e8db854";
 const CHAT = "/Users/j/.cursor/chats/b731b9d461b221a50ec0c5d38ce51d2c/3d9825b5-d39c-45c3-9261-c9f33b9246c1";
@@ -226,6 +227,19 @@ describe("Cursor key face", () => {
 		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
 			for (const hot of [true, false]) {
 				expect(buildCursorProjectKeyImage({ ...args, hot, state })).not.toContain("hsl(");
+			}
+		}
+	});
+
+	/** Superseded by AI Project: every face carries the shared marker, and it
+	 * must not reintroduce hsl() (the key rasterizer paints that black).
+	 * Delete this test with the action. */
+	it("carries the deprecation badge on every state, still hex-only", () => {
+		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
+			for (const hot of [true, false]) {
+				const svg = buildCursorProjectKeyImage({ ...args, hot, state });
+				expect(svg).toContain(deprecationBadge());
+				expect(svg).not.toContain("hsl(");
 			}
 		}
 	});

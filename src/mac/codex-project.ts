@@ -1,5 +1,6 @@
 /** Pure identity, rollout-state, tmux-target, and key-face logic for Codex Project. */
 
+import { deprecationBadge } from "./deprecation.js";
 import { hslToHex } from "./svg.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
 
@@ -230,5 +231,6 @@ export function buildCodexProjectKeyImage(args: {
 		}
 	}
 	const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+	// Deprecation marker — superseded by AI Project; remove with this action.
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }

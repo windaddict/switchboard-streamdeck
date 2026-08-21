@@ -28,6 +28,7 @@
  * isolation guarantee — the bytes do pass through this process's memory.
  */
 
+import { deprecationBadge } from "./deprecation.js";
 import { hslToHex } from "./svg.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
 
@@ -353,5 +354,6 @@ export function buildCursorProjectKeyImage(args: {
 		if (args.state === "blocked") glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
 	}
 	const mark = `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.1" stroke-linejoin="round"/>`;
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+	// Deprecation marker — superseded by AI Project; remove with this action.
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }

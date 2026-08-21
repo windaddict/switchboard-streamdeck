@@ -13,6 +13,7 @@ import {
 	projectSlug,
 	TRANSCRIPT_FRESH_MS,
 } from "../src/mac/claude-project.js";
+import { deprecationBadge } from "../src/mac/deprecation.js";
 
 describe("cheap ps scan (parsePsProcs / claudesFrom / childrenOf)", () => {
 	const PS = [
@@ -191,5 +192,17 @@ describe("buildClaudeProjectKeyImage", () => {
 		expect(svg).toContain("a&amp;b");
 		expect(svg).toContain(">TMUX</text>");
 		expect(svg).not.toContain("hsl(");
+	});
+	/** Superseded by AI Project: every face carries the shared marker, and it
+	 * must not reintroduce hsl() (the key rasterizer paints that black).
+	 * Delete this test with the action. */
+	it("carries the deprecation badge on every state, still hex-only", () => {
+		for (const claude of ["none", "working", "waiting"] as const) {
+			for (const hot of [true, false]) {
+				const svg = buildClaudeProjectKeyImage({ ...base, claude, hot });
+				expect(svg).toContain(deprecationBadge());
+				expect(svg).not.toContain("hsl(");
+			}
+		}
 	});
 });

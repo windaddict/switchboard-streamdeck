@@ -26,6 +26,7 @@
  */
 
 import type { ClaudeState } from "./claude-state.js";
+import { deprecationBadge } from "./deprecation.js";
 import { hslToHex } from "./svg.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
 
@@ -274,6 +275,8 @@ export function buildClaudeProjectKeyImage(args: {
 	return (
 		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
 		`<rect width="72" height="72" fill="#0F1211"/>` +
+		// Deprecation marker — superseded by AI Project; remove with this action.
+		deprecationBadge() +
 		eyebrow +
 		spark +
 		`<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +

@@ -14,6 +14,7 @@ import {
 	rolloutSessionId,
 	selectCodexInstance,
 } from "../src/mac/codex-project.js";
+import { deprecationBadge } from "../src/mac/deprecation.js";
 
 const event = (type: string) => JSON.stringify({ type: "event_msg", payload: { type } });
 
@@ -122,5 +123,17 @@ describe("Codex key face", () => {
 		const svg = buildCodexProjectKeyImage({ ...base, state: "waiting" });
 		expect(svg).toContain("a&amp;b");
 		expect(svg).not.toContain("hsl(");
+	});
+	/** Superseded by AI Project: every face carries the shared marker, and it
+	 * must not reintroduce hsl() (the key rasterizer paints that black).
+	 * Delete this test with the action. */
+	it("carries the deprecation badge on every state, still hex-only", () => {
+		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
+			for (const hot of [true, false]) {
+				const svg = buildCodexProjectKeyImage({ ...base, state, hot });
+				expect(svg).toContain(deprecationBadge());
+				expect(svg).not.toContain("hsl(");
+			}
+		}
 	});
 });
