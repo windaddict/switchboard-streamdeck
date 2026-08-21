@@ -116,12 +116,18 @@ export function buildTmuxKeyImage(
 		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
 		: "";
 
-	// Claude Code spark (top-right): amber and slowly rotating while WORKING,
+	// Claude Code spark (top-right): blue and slowly rotating while WORKING,
 	// still signal-white when finished and WAITING for input, absent when no
 	// claude runs in the window. Drawn as paths — no font-fallback risk.
+	//
+	// Blue, not amber, so ONE colour language holds across every key that
+	// outlives this release: blue = working (leave it alone), amber = stopped
+	// and waiting on you (go here now), white = idle at the prompt. Amber for
+	// "busy" here and amber for "needs you" on the AI Project key would be the
+	// worst kind of clash — the two call for opposite actions.
 	let spark = "";
 	if (claude !== "none") {
-		const color = claude === "working" ? "#F0A63C" : "#F2FFF6";
+		const color = claude === "working" ? "#4E9CFF" : "#F2FFF6";
 		const angle = claude === "working" ? (spin % 12) * 30 : 0;
 		spark =
 			`<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
@@ -132,7 +138,7 @@ export function buildTmuxKeyImage(
 			// two-frame wobble — motion you cannot see at key size. The orbiting
 			// dot gives 12 genuinely distinct frames per revolution.
 			const [ox, oy] = ORBIT[spin % 12];
-			spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
+			spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#4E9CFF"/>`;
 		}
 	}
 

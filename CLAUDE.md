@@ -180,9 +180,16 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   `str.replace` targeting a "What it does" bullet also matched the README intro and
   shipped it broken (bullet spliced mid-sentence) for two releases. Re-read the
   rendered section after any scripted edit.
-- **README figures are code-generated.** docs/tmux-live-keys.png, claude-project-keys.png,
-  claude-spark.gif, and dial-strips.png render FROM the real image builders (tsx snippet +
-  inkscape) — regenerate them whenever a key-face design changes, or the README silently lies.
+- **ONE colour language across the keys: blue = working, amber = waiting on YOU,
+  white = idle.** The tmux key's Claude spark was amber-for-working, which meant
+  the opposite of amber on the agent keys — two states demanding opposite actions
+  sharing a colour on one deck. It is blue now. The two superseded per-agent keys
+  keep the old scheme and die with it; don't "fix" them.
+- **README figures are code-generated.** docs/tmux-live-keys.png and claude-spark.gif now
+  regenerate together via `python3 scripts/make-tmux-figure.py` (tsx -> the REAL
+  buildTmuxKeyImage -> inkscape -> magick); claude-project-keys.png and
+  dial-strips.png are still ad-hoc. Regenerate whenever a key face changes, or the
+  README silently lies — the spark figures did exactly that until the recolour.
 - **Cursor CLI (`cursor-agent`) breaks three assumptions Codex taught us.** All
   measured against 2026.08.11-e8db854, all of them cost time here:
   (a) **`ps -o comm=` is TRUNCATED** to 16 chars for these processes (it returns

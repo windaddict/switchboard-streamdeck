@@ -108,10 +108,14 @@ describe("buildTmuxKeyImage — Claude Code spark", () => {
 		expect(buildTmuxKeyImage(status, "none")).not.toContain("M56 12h10");
 		expect(buildTmuxKeyImage(status)).not.toContain("M56 12h10"); // default
 	});
-	it("working: amber spark rotated by the poll tick", () => {
+	/** Blue, not amber. One colour language across every surviving key: blue =
+	 * working (leave it alone), amber = stopped and waiting on you, white =
+	 * idle. Amber here would mean the opposite of amber on the AI Project key. */
+	it("working: blue spark rotated by the poll tick", () => {
 		const svg = buildTmuxKeyImage(status, "working", 3);
-		expect(svg).toContain('stroke="#F0A63C"');
+		expect(svg).toContain('stroke="#4E9CFF"');
 		expect(svg).toContain('transform="rotate(90 61 12)"');
+		expect(svg).not.toContain("#F0A63C"); // amber is reserved for needs-you
 	});
 	it("working shows the orbiting dot, and it MOVES between ticks (visible motion)", () => {
 		const a = buildTmuxKeyImage(status, "working", 0);
@@ -129,6 +133,6 @@ describe("buildTmuxKeyImage — Claude Code spark", () => {
 	});
 	it("the spark rides every key state, including hot", () => {
 		const svg = buildTmuxKeyImage({ state: "hot", session: "dev", window: "movingavg" }, "working");
-		expect(svg).toContain("#F0A63C");
+		expect(svg).toContain("#4E9CFF");
 	});
 });
