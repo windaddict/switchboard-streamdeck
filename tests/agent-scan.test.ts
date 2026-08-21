@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentInstance } from "../src/mac/agent-project.js";
 import {
+	type AgentExecFileLike,
 	type AgentPane,
 	agentInstancesFor,
 	agentPaneForTty,
@@ -14,8 +15,12 @@ import {
 	LIST_AGENT_PANES_ARGS,
 	paneTitlesByTty,
 	parseAgentPanes,
+	scanAgents,
 	selectAgentInstance,
 } from "../src/mac/agent-scan.js";
+import { invalidateClaudeScan } from "../src/mac/claude-scan.js";
+import { invalidateCodexScan } from "../src/mac/codex-scan.js";
+import { invalidateCursorScan } from "../src/mac/cursor-scan.js";
 
 const inst = (
 	kind: AgentInstance["kind"],
@@ -254,5 +259,134 @@ describe("The tmux key's agent spark", () => {
 		const inst = [at("codex", "/dev/ttys003", "working")];
 		expect(agentSparkForWindow(inst, panes, "dev", "movingavg")).toBe("none");
 		expect(agentSparkForWindow(inst, panes, "other", "copybug")).toBe("none");
+	});
+});
+
+describe("scanAgents (the unified scan itself)", () => {
+	// A nonexistent path: newestTranscriptState must fail closed against it
+	// (empty/no directory) rather than accidentally reading the operator's
+	// real ~/.claude/projects — the documented trap in this repo.
+	const FIXTURE_CLAUDE_BASE = "/nonexistent/switchboard-test-fixture/claude-projects";
+	type Cb = (error: Error | null, stdout: string, stderr: string) => void;
+	const isClaudeDetailPs = (args: readonly string[]) => args[0] === "-o" && String(args[1]).startsWith("pid=,ppid=,tty=");
+
+	beforeEach(() => {
+		invalidateClaudeScan();
+		invalidateCodexScan();
+		invalidateCursorScan();
+	});
+
+	/** One claude at pid 1 / ttys001 / cwd "/Users/j/code/app", no busy shell —
+	 * everything scanAgents' claude branch needs downstream of pgrep. */
+	function claudeOnlyExec(onLsof?: () => void) {
+		return vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/usr/bin/pgrep" && args[1] === "claude") return cb(null, "1\n", "");
+			if (file === "/usr/bin/pgrep") return cb(null, "", ""); // child-busy probe: none
+			if (file === "/bin/ps" && isClaudeDetailPs(args)) return cb(null, "1 9 ttys001 claude\n", "");
+			if (file === "/bin/ps") return cb(null, "", ""); // confirm-shell probe: none
+			onLsof?.();
+			return cb(null, "p1\nfcwd\nn/Users/j/code/app\n", "");
+		});
+	}
+
+	/** Proves the three per-kind branches are dispatched TOGETHER, not one
+	 * after another: codex's pgrep is held open, and claude's pgrep is
+	 * observed to have already fired before it is released. A test that only
+	 * asserted all three scans eventually happened would not catch a
+	 * regression back to sequential dispatch. */
+	it("scans the requested kinds concurrently and returns codex, cursor, claude order", async () => {
+		let releaseCodex: (() => void) | null = null;
+		const gate = new Promise<void>((r) => { releaseCodex = r; });
+		let claudePgrepCalled = false;
+		const exec = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file !== "/usr/bin/pgrep") return;
+			if (args[1] === "codex") { void gate.then(() => cb(null, "", "")); return; }
+			if (args[1] === "claude") { claudePgrepCalled = true; cb(Object.assign(new Error("x"), { code: 1 }), "", ""); return; }
+			cb(Object.assign(new Error("x"), { code: 1 }), "", ""); // cursor: nothing matched
+		});
+		const resultP = scanAgents(
+			["codex", "cursor", "claude"],
+			new Map(),
+			exec as unknown as AgentExecFileLike,
+			{ claudeProjectsBase: FIXTURE_CLAUDE_BASE },
+		);
+		// Claude's pgrep already fired even though codex's is still gated open —
+		// the three branches were dispatched together, not sequentially.
+		expect(claudePgrepCalled).toBe(true);
+		releaseCodex!();
+		const result = await resultP;
+		expect(result).toEqual({ status: "ok", failedKinds: [], instances: [] });
+	});
+
+	it("accepts pane titles as a promise and still applies Claude's title signal", async () => {
+		const exec = claudeOnlyExec();
+		// A braille spinner frame + space is Claude Code's WORKING title marker.
+		const titlesP = Promise.resolve(new Map([["/dev/ttys001", "⠁ doing stuff"]]));
+		const result = await scanAgents(["claude"], titlesP, exec as unknown as AgentExecFileLike, {
+			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+		});
+		expect(result.status).toBe("ok");
+		expect(result.instances).toHaveLength(1);
+		expect(result.instances[0]).toMatchObject({ kind: "claude", tty: "/dev/ttys001", state: "working" });
+	});
+
+	it("claudeState: an unwatched claude project is returned with state 'unknown' and full identity", async () => {
+		const exec = claudeOnlyExec();
+		const result = await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, {
+			claudeState: new Set(), // nothing watched
+			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+		});
+		expect(result.status).toBe("ok");
+		expect(result.instances).toEqual([
+			{ kind: "claude", pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", sessionId: "", state: "unknown" },
+		]);
+	});
+
+	/** Invariant 3, pinned against the concurrent rewrite: a kind that fails
+	 * must land in `failedKinds` without dragging down a kind that answered
+	 * fine, whichever order the two branches actually settle in. */
+	it("a failed kind still lands in failedKinds when scans run concurrently, without contaminating the kind that succeeded", async () => {
+		const exec = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/usr/bin/pgrep" && args[1] === "codex") return cb(new Error("broken"), "", ""); // codex probe fails
+			if (file === "/usr/bin/pgrep" && args[1] === "claude") return cb(Object.assign(new Error("x"), { code: 1 }), "", "");
+			return cb(Object.assign(new Error("x"), { code: 1 }), "", "");
+		});
+		const result = await scanAgents(["codex", "claude"], new Map(), exec as unknown as AgentExecFileLike, {
+			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+		});
+		expect(result.status).toBe("unknown");
+		expect(result.failedKinds).toEqual(["codex"]);
+		expect(kindTrusted(result, "claude")).toBe(true);
+	});
+
+	/** A1, threaded end-to-end through the shared scanAgents surface (not just
+	 * claude-scan directly): `fresh` must still bypass claude-scan's 60s
+	 * per-pid cwd memo, not merely its 2s world cache. */
+	it("fresh + a warm cwdCache still probes every pid (A1)", async () => {
+		let lsofCalls = 0;
+		const exec = claudeOnlyExec(() => lsofCalls++);
+		await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, { claudeProjectsBase: FIXTURE_CLAUDE_BASE });
+		expect(lsofCalls).toBe(1);
+		await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, {
+			fresh: true,
+			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+		});
+		expect(lsofCalls).toBe(2); // re-probed despite the memo being warm
+	});
+
+	/** A6: a rejecting pane-titles promise must degrade Claude's title signal
+	 * to the transcript fallback, never fail the whole scan. */
+	it("degrades gracefully when the pane-titles promise rejects", async () => {
+		const exec = claudeOnlyExec();
+		const rejecting: Promise<Map<string, string>> = Promise.reject(new Error("tmux probe failed"));
+		// Prevent an unhandled-rejection warning from the promise itself — the
+		// production caller's own `.catch` (A6) does the same on its side;
+		// scanAgents must ALSO guard its own await, independently.
+		rejecting.catch(() => {});
+		const result = await scanAgents(["claude"], rejecting, exec as unknown as AgentExecFileLike, {
+			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+		});
+		expect(result.status).toBe("ok");
+		expect(result.instances).toHaveLength(1); // did not throw/reject the whole scan
 	});
 });

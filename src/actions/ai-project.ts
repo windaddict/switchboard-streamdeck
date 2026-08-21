@@ -14,11 +14,13 @@ import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import {
 	agentForFocusedTty,
+	agentTickInteresting,
 	type AgentHost,
 	type AgentInstance,
 	type AgentKind,
 	type AgentState,
 	blockedEvidenceFor,
+	blockedProbeForMissingPane,
 	buildAgentProjectKeyImage,
 	decideAgentFace,
 	paneShowsAgentPrompt,
@@ -29,7 +31,7 @@ import {
 	agentPaneForTty,
 	agentTmuxFocusArgs,
 	captureAgentPaneArgs,
-	invalidateAgentScans,
+	type ClaudeStateSelector,
 	kindsToScan,
 	kindTrusted,
 	LIST_AGENT_PANES_ARGS,
@@ -77,6 +79,10 @@ interface Snapshot {
 	 * general — but if panes came back, tmux is plainly alive and a failure here
 	 * means the client map is missing, not empty. */
 	clientsOk: boolean;
+	/** Did `list-panes` answer? (A4) A failure here is NOT the same as "no
+	 * matching pane" — see {@link blockedProbeForMissingPane}, which is what
+	 * this field exists to feed. */
+	panesOk: boolean;
 }
 
 const POLL_MS = 2500;
@@ -95,9 +101,6 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	private readonly gate = new PressGate();
 	private readonly visible = new Map<string, KeyAction<AiProjectSettings>>();
 	private readonly lastImage = new Map<string, string>();
-	/** Session identity the last refresh RESOLVED for this key. A press treats
-	 * it as a hint only — focus() revalidates against a fresh scan. */
-	private readonly paintedSession = new Map<string, string>();
 	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private timer?: ReturnType<typeof setInterval>;
 	private spin = 0;
@@ -119,7 +122,6 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		this.gate.cancel(ev.action.id);
 		this.visible.delete(ev.action.id);
 		this.lastImage.delete(ev.action.id);
-		this.paintedSession.delete(ev.action.id);
 		if (this.visible.size === 0 && this.timer !== undefined) {
 			clearInterval(this.timer);
 			this.timer = undefined;
@@ -154,21 +156,41 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		return [...kinds];
 	}
 
-	private async snapshot(kinds: readonly AgentKind[]): Promise<Snapshot> {
+	/**
+	 * One parallel probe burst instead of a chain: panes, clients, and the
+	 * frontmost app all start together; the focused-tty AppleScript (which
+	 * used to run strictly AFTER the frontmost-app probe, and after that the
+	 * whole agent scan) is chained off the frontmost-app result INSIDE its own
+	 * branch, so it overlaps the scan instead of adding to its latency. Pane
+	 * titles are handed to {@link scanAgents} as a PROMISE for the same
+	 * reason: Claude's working/idle marker lives in the terminal title, so the
+	 * scan still needs it, but listing panes and scanning no longer serialize.
+	 */
+	private async snapshot(
+		kinds: readonly AgentKind[],
+		opts: { fresh?: boolean; claudeState?: ClaudeStateSelector } = {},
+	): Promise<Snapshot> {
 		const tmux = findTmuxPath();
-		const [panesResult, clientsResult, front] = await Promise.all([
-			runTmux(LIST_AGENT_PANES_ARGS, tmux),
-			runTmux(LIST_CLIENTS_ARGS, tmux),
-			runJxa(FRONT_APP_BUNDLE_JXA),
+		const panesP = runTmux(LIST_AGENT_PANES_ARGS, tmux);
+		const clientsP = runTmux(LIST_CLIENTS_ARGS, tmux);
+		const frontP = runJxa(FRONT_APP_BUNDLE_JXA);
+		// CONTRACT (A6): must never reject — a failed pane listing degrades
+		// Claude's title signal to the transcript fallback, never the scan.
+		const titlesP = panesP
+			.then((r) => (r.ok ? paneTitlesByTty(parseAgentPanes(r.stdout)) : new Map<string, string>()))
+			.catch(() => new Map<string, string>());
+		const agentsP = scanAgents(kinds, titlesP, undefined, { fresh: opts.fresh, claudeState: opts.claudeState });
+		const focusedTtyP = frontP.then(async (front) => {
+			const frontBundle = front.ok ? front.stdout.trim() : "";
+			if (frontBundle === ITERM_BUNDLE_ID) return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+			if (frontBundle === TERMINAL_BUNDLE_ID) return (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+			return "";
+		});
+		const [panesResult, clientsResult, front, focusedTty, agents] = await Promise.all([
+			panesP, clientsP, frontP, focusedTtyP, agentsP,
 		]);
 		const panes = panesResult.ok ? parseAgentPanes(panesResult.stdout) : [];
-		// Pane titles must be gathered BEFORE scanning: Claude's working/idle
-		// marker lives in its terminal title and the scan cannot see it.
-		const agents = await scanAgents(kinds, paneTitlesByTty(panes));
 		const frontBundle = front.ok ? front.stdout.trim() : "";
-		let focusedTty = "";
-		if (frontBundle === ITERM_BUNDLE_ID) focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-		else if (frontBundle === TERMINAL_BUNDLE_ID) focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
 		return {
 			instances: agents.instances,
 			panes,
@@ -178,6 +200,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			scanStatus: agents.status,
 			failedKinds: agents.failedKinds,
 			clientsOk: clientsResult.ok,
+			panesOk: panesResult.ok,
 		};
 	}
 
@@ -192,26 +215,38 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	 * Is this session holding for the operator? Only asked when the terminal is
 	 * the ONLY place that answer exists — Codex records it in its own log and so
 	 * never needs scraping, and outside tmux there is no screen we can read.
+	 *
+	 * `captured` is a Map of PROMISES, not settled results (A4/6d.3): per-key
+	 * bodies now run concurrently, so two keys can race to ask for the same
+	 * pane in the same tick — storing the promise lets the second one share
+	 * the first one's in-flight capture instead of firing a duplicate.
 	 */
 	private async blockedOnApproval(
 		kind: AgentKind,
 		host: AgentHost,
 		pane: AgentPane | undefined,
 		tmux: string,
-		captured: Map<string, { ok: boolean; text: string }>,
+		captured: Map<string, Promise<{ ok: boolean; text: string }>>,
+		panesOk: boolean,
+		clientsOk: boolean,
 	): Promise<"clear" | "blocked" | "failed"> {
-		// "clear" is the honest answer where the question does not arise: Codex
-		// records blocking in its own log, and outside tmux there is no screen to
-		// read — neither is a FAILED probe.
-		if (pane === undefined || blockedEvidenceFor(kind, host) !== "terminal") return "clear";
-		// Several keys can watch the same pane; capture it once per tick.
-		let shot = captured.get(pane.paneId);
-		if (shot === undefined) {
-			const result = await runTmux(captureAgentPaneArgs(pane.paneId), tmux);
-			shot = { ok: result.ok, text: result.stdout };
-			captured.set(pane.paneId, shot);
-			if (!result.ok) streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+		if (pane === undefined) {
+			// A4: "no pane" is ambiguous by itself — see the pure decision this
+			// defers to for why panesOk/clientsOk tell it apart from a genuine
+			// pane-listing failure.
+			return blockedProbeForMissingPane(kind, panesOk, clientsOk);
 		}
+		if (blockedEvidenceFor(kind, host) !== "terminal") return "clear";
+		// Several keys can watch the same pane; capture it once per tick.
+		let shotP = captured.get(pane.paneId);
+		if (shotP === undefined) {
+			shotP = runTmux(captureAgentPaneArgs(pane.paneId), tmux).then((result) => {
+				if (!result.ok) streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+				return { ok: result.ok, text: result.stdout };
+			});
+			captured.set(pane.paneId, shotP);
+		}
+		const shot = await shotP;
 		// A probe that errored has NOT told us the agent is unblocked.
 		if (!shot.ok) return "failed";
 		return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
@@ -220,20 +255,46 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	private async doRefreshAll(): Promise<void> {
 		if (this.visible.size === 0) return;
 		const entries = await this.readKeys();
-		const snap = await this.snapshot(this.wantedKinds(entries));
+		const kinds = this.wantedKinds(entries);
+
+		// Canonicalize each DISTINCT raw project string once (a home-dir
+		// realpath, cheap but not free) — doing it per key duplicated the work
+		// across every key sharing a project, and doing it AFTER the scan (as
+		// this used to) meant the watched-Claude-project set below could not
+		// exist yet when the scan needed it.
+		const rawProjects = [...new Set(entries.map((e) => (e.settings.project ?? "").trim()))];
+		const canonicalByRaw = new Map<string, string>(
+			await Promise.all(rawProjects.map(async (raw): Promise<[string, string]> => [raw, await this.canonicalProject(raw)])),
+		);
+
+		// Claude alone pays for a transcript read per instance (F4); spend it
+		// only on projects a visible key is actually watching. A key bound to
+		// Codex or Cursor gets its state for free from the scan itself.
+		const watchedClaudeProjects = new Set<string>();
+		for (const { settings } of entries) {
+			if (settings.agent !== "claude") continue;
+			const raw = (settings.project ?? "").trim();
+			if (raw === "") continue;
+			const canonical = canonicalByRaw.get(raw);
+			if (canonical !== undefined && canonical !== "") watchedClaudeProjects.add(normalizeProjectPath(canonical));
+		}
+
+		const snap = await this.snapshot(kinds, { claudeState: watchedClaudeProjects });
 		const tmux = findTmuxPath();
 		this.spin++;
-		this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working" || i.state === "blocked");
-		// One capture-pane per pane per tick, however many keys watch it.
-		const captured = new Map<string, { ok: boolean; text: string }>();
-		for (const { key, settings } of entries) {
+		// One capture-pane per pane per tick, however many keys watch it,
+		// shared via its PROMISE — see blockedOnApproval.
+		const captured = new Map<string, Promise<{ ok: boolean; text: string }>>();
+		const blockedProbes: Array<"clear" | "blocked" | "failed"> = [];
+
+		// Per-key bodies run CONCURRENTLY (F5): each does its own setImage,
+		// guarded by the existing lastImage dedupe.
+		await Promise.all(entries.map(async ({ key, settings }) => {
 			const kind = settings.agent;
-			const project = await this.canonicalProject((settings.project ?? "").trim());
+			const project = canonicalByRaw.get((settings.project ?? "").trim()) ?? "";
 			const sessionId = (settings.sessionId ?? "").trim();
 			const mine = kind !== undefined && project !== "" ? agentInstancesFor(snap.instances, kind, project) : [];
 			const instance = kind === undefined ? null : selectAgentInstance(snap.instances, kind, project, sessionId);
-			if (instance === null) this.paintedSession.delete(key.id);
-			else this.paintedSession.set(key.id, instance.sessionId);
 			const pane = instance === null ? undefined : agentPaneForTty(snap.panes, instance.tty);
 			let host: AgentHost = "";
 			let hot = false;
@@ -245,8 +306,9 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 				host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
 			}
 			const blockedProbe = instance !== null && kind !== undefined
-				? await this.blockedOnApproval(kind, host, pane, tmux, captured)
+				? await this.blockedOnApproval(kind, host, pane, tmux, captured, snap.panesOk, snap.clientsOk)
 				: "clear" as const;
+			blockedProbes.push(blockedProbe);
 			const state: AgentState = decideAgentFace({
 				kind: kind ?? "claude", // only reached when hasTarget is false
 				hasTarget: kind !== undefined && project !== "",
@@ -266,10 +328,18 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 				state,
 				spin: this.spin,
 			}));
-			if (this.lastImage.get(key.id) === image) continue;
+			if (this.lastImage.get(key.id) === image) return;
 			try { await key.setImage(image); this.lastImage.set(key.id, image); }
 			catch (error) { streamDeck.logger.debug(`AI Project image skipped: ${String(error)}`); }
-		}
+		}));
+
+		// Computed AFTER the per-key pass (F7): needs this tick's blocked-probe
+		// verdicts, which only exist once every key has been evaluated.
+		this.interesting = agentTickInteresting({
+			focusedTty: snap.focusedTty,
+			instances: snap.instances,
+			blockedProbes,
+		});
 	}
 
 	private async raiseTty(tty: string): Promise<boolean> {
@@ -296,12 +366,24 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		const kind = settings.agent;
 		const project = await this.canonicalProject((settings.project ?? "").trim());
 		if (kind === undefined || project === "") { await key.showAlert(); return; }
-		const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
-		// Genuinely fresh: every scanner caches for ~2s, so without dropping those
-		// caches first this would act on a view of the world up to a poll old and
-		// could raise a window for a session that has already exited.
-		invalidateAgentScans([kind]);
-		const snap = await this.snapshot([kind]);
+		// A3: settings are what capture() commits, so they are the single source
+		// of truth for what this key targets — there used to be a second,
+		// separately-written `paintedSession` map read here instead, and making
+		// the per-key refresh loop concurrent (above) turned its race with
+		// doRefreshAll's writes into a real bug: a refresh that read a key's
+		// settings before a capture committed could overwrite paintedSession
+		// AFTERWARDS, and focus() would prefer that stale value over the
+		// freshly captured one. Reading settings directly has no such race.
+		const expected = (settings.sessionId ?? "").trim();
+		// `fresh: true` asks every scanner for the machine's state right now,
+		// bypassing their shared ~2s caches (and Claude's separate 60s cwd
+		// memo) — without it this would act on a view of the world up to a
+		// poll old and could raise a window for a session that has already
+		// exited. `claudeState: new Set()` skips Claude's transcript read
+		// entirely: a raise only needs to know WHICH session is still there,
+		// not whether it is working, so there is nothing to buy by paying for
+		// that read on the press path.
+		const snap = await this.snapshot([kind], { fresh: true, claudeState: new Set() });
 		if (!kindTrusted(snap, kind)) {
 			streamDeck.logger.warn("AI Project: agent scan unavailable; refusing stale focus.");
 			await key.showAlert();
@@ -367,8 +449,9 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		// not yet know which agent it is dealing with.
 		// Capture must consider every kind, and every kind must have answered:
 		// binding to the wrong agent is not recoverable by looking again.
-		invalidateAgentScans(kindsToScan(undefined));
-		const snap = await this.snapshot(kindsToScan(undefined));
+		// `fresh: true` asks the machine now rather than acting on a snapshot
+		// up to a poll old.
+		const snap = await this.snapshot(kindsToScan(undefined), { fresh: true });
 		if (snap.scanStatus !== "ok" || snap.focusedTty === "") { await key.showAlert(); return; }
 		// tmux is clearly alive (it listed panes) but would not list its clients,
 		// so the client->pane translation below cannot run. Falling back to the
@@ -398,7 +481,6 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		}
 		const settings = await key.getSettings();
 		await key.setSettings({ ...settings, agent: instance.kind, project, sessionId: instance.sessionId });
-		this.paintedSession.set(key.id, instance.sessionId);
 		await key.showOk();
 		await this.refreshAll();
 	}

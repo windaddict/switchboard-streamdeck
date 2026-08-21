@@ -27,6 +27,30 @@
  * Scanning is per-kind on purpose: a key that has already captured its agent
  * asks for exactly one kind, so the steady-state cost is identical to the old
  * dedicated keys. Only the capture gesture pays for all three.
+ *
+ * The three per-kind branches run CONCURRENTLY (`Promise.all`), each kind's
+ * `failedKinds` contribution computed entirely inside its own branch and only
+ * merged afterward — so a Codex probe failing can never contaminate Claude's
+ * or Cursor's own trustworthiness, whether the branches finish in order or not.
+ *
+ * FRESH-SCAN CONTRACT: `{ fresh: true }` (see {@link ScanAgentsOptions}) is
+ * for a caller on the press path that needs the machine's state right now,
+ * not whatever the shared 2s cache happens to hold. It is threaded straight
+ * into each underlying scanner's own `fresh` option — this module adds no
+ * caching of its own to bypass. The EXACT guarantee inherited from every
+ * scanner beneath it: a scan that STARTED earlier can never overwrite the
+ * result of one that started later (ordered by an internal start-sequence
+ * counter, not a timestamp — see claude-scan.ts). It does NOT guarantee the
+ * published snapshot is the single latest possible observation of the world.
+ *
+ * CLAUDE-STATE SELECTOR: resolving Claude's state costs a transcript read per
+ * instance, which nothing else needs — Codex and Cursor's state comes free
+ * from their own scanners. `claudeState` (default `"all"`) lets a caller that
+ * only watches SOME Claude projects (the AI Project key, once its taught
+ * targets are known) skip that read for every unwatched instance, which is
+ * returned with state `"unknown"` instead. A caller that has no such
+ * distinction to make (Focus tmux Window, which needs every instance's state
+ * to compute a window's spark) passes nothing and gets `"all"`.
  */
 
 import { execFile as nodeExecFile } from "node:child_process";
@@ -40,12 +64,12 @@ import {
 // Shared plumbing that outlives the superseded Codex action: the scanner
 // itself depends on it, so it is not going away with the key face.
 import { normalizeProjectPath } from "./codex-project.js";
-import { invalidateClaudeScan, scanClaudeSnapshot } from "./claude-scan.js";
+import { scanClaudeSnapshot } from "./claude-scan.js";
 import { projectClaudeState } from "./claude-project.js";
 import { titleWorking } from "./claude-state.js";
 import { newestTranscriptState } from "./claude-transcript.js";
-import { invalidateCodexScan, scanCodexSnapshot } from "./codex-scan.js";
-import { invalidateCursorScan, scanCursorSnapshot } from "./cursor-scan.js";
+import { scanCodexSnapshot } from "./codex-scan.js";
+import { scanCursorSnapshot } from "./cursor-scan.js";
 
 /** The shared execFile shape the three scanners already accept. */
 export type AgentExecFileLike = (
@@ -79,6 +103,25 @@ export function kindTrusted(snapshot: { failedKinds: readonly AgentKind[] }, kin
  * title, which only the caller (which lists panes anyway) can see. */
 export type PaneTitles = ReadonlyMap<string, string>;
 
+/** Which Claude projects are worth the cost of resolving a real state for.
+ * `"all"` is the default — every instance gets a state. A `Set` names
+ * canonical project paths (the same normalised form {@link agentInstancesFor}
+ * compares); any Claude instance NOT in it is returned with state `"unknown"`
+ * and no transcript read at all. */
+export type ClaudeStateSelector = "all" | ReadonlySet<string>;
+
+export interface ScanAgentsOptions {
+	/** Forwarded verbatim to every underlying scanner's own `fresh` option —
+	 * see the FRESH-SCAN CONTRACT in the module header. */
+	fresh?: boolean;
+	/** Default `"all"` — see the module header's CLAUDE-STATE SELECTOR note. */
+	claudeState?: ClaudeStateSelector;
+	/** Where Claude Code's per-project transcripts live. Threaded into
+	 * {@link newestTranscriptState}; omit to use its own default
+	 * (`~/.claude/projects`) — tests pass a fixture path instead. */
+	claudeProjectsBase?: string;
+}
+
 function normalizeTty(tty: string): string {
 	if (tty === "" || tty === "??" || tty === "?") return "";
 	return tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
@@ -94,12 +137,15 @@ function normalizeTty(tty: string): string {
  * title while an approval prompt is on screen (measured), so nothing here can
  * see that — the caller supplies it from the terminal.
  */
-async function claudeState(
+async function computeClaudeState(
 	cwd: string,
 	paneTitle: string | undefined,
 	shellBusy: boolean,
+	projectsBase: string | undefined,
 ): Promise<Exclude<AgentState, "none">> {
-	const transcript = await newestTranscriptState(cwd);
+	const transcript = projectsBase === undefined
+		? await newestTranscriptState(cwd)
+		: await newestTranscriptState(cwd, Date.now(), projectsBase);
 	const state = projectClaudeState({
 		present: true,
 		titleWorking: paneTitle === undefined ? null : titleWorking(paneTitle),
@@ -111,94 +157,145 @@ async function claudeState(
 	return state === "none" ? "unknown" : state;
 }
 
+/** One kind's contribution: whether ITS OWN probe failed, and the instances it
+ * found. Kept separate per kind and merged only after every branch has
+ * finished (see {@link scanAgents}), so a kind that fails cannot contaminate
+ * another's `failedKinds` verdict just because they ran concurrently. */
+interface KindResult {
+	failed: boolean;
+	instances: AgentInstance[];
+}
+
+async function scanCodexBranch(exec: AgentExecFileLike, fresh: boolean): Promise<KindResult> {
+	const snap = await scanCodexSnapshot(exec as never, fresh ? { fresh: true } : undefined);
+	return {
+		failed: snap.status !== "ok",
+		instances: snap.instances.map((i) => ({
+			kind: "codex" as const,
+			pid: i.pid,
+			tty: normalizeTty(i.tty),
+			cwd: i.cwd,
+			sessionId: i.sessionId,
+			state: i.state,
+		})),
+	};
+}
+
+async function scanCursorBranch(exec: AgentExecFileLike, fresh: boolean): Promise<KindResult> {
+	const snap = await scanCursorSnapshot(exec as never, undefined, fresh ? { fresh: true } : undefined);
+	return {
+		failed: snap.status !== "ok",
+		instances: snap.instances.map((i) => ({
+			kind: "cursor" as const,
+			pid: i.pid,
+			tty: normalizeTty(i.tty),
+			cwd: i.cwd,
+			sessionId: i.sessionId,
+			state: i.state,
+		})),
+	};
+}
+
+async function scanClaudeBranch(
+	exec: AgentExecFileLike,
+	fresh: boolean,
+	paneTitles: PaneTitles | Promise<PaneTitles>,
+	claudeState: ClaudeStateSelector,
+	claudeProjectsBase: string | undefined,
+): Promise<KindResult> {
+	const snap = await scanClaudeSnapshot(exec as never, fresh ? { fresh: true } : undefined);
+	// Identity (kind/pid/tty/cwd) depends only on the scan, not on the pane
+	// titles, so it is kicked off immediately and resolved ALONGSIDE the
+	// titles promise below rather than waiting on it serially.
+	const identityP = Promise.all(
+		snap.instances.map(async (i) => {
+			const tty = normalizeTty(i.tty);
+			// The Codex and Cursor scanners realpath their cwd; claude-scan
+			// reports lsof's raw path. Left alone, the same project reached
+			// through a symlink would compare unequal across kinds and a
+			// captured binding would stop matching its own session.
+			let cwd = i.cwd;
+			try { cwd = await realpath(i.cwd); } catch { /* may exit mid-scan */ }
+			return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy };
+		}),
+	);
+	// CONTRACT (A6): this must never reject. A caller's titles promise can
+	// fail (a tmux probe errored) — that degrades Claude's title signal to
+	// the transcript-freshness fallback, exactly today's degraded path. It
+	// must never fail the whole scan just because one caller's title probe did.
+	let titles: PaneTitles;
+	try {
+		titles = await paneTitles;
+	} catch {
+		titles = new Map();
+	}
+	const identities = await identityP;
+	const instances = await Promise.all(
+		identities.map(async (id) => {
+			const watched = claudeState === "all" || claudeState.has(normalizeProjectPath(id.cwd));
+			const state = watched
+				? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, claudeProjectsBase)
+				: ("unknown" as const);
+			return {
+				kind: "claude" as const,
+				pid: id.pid,
+				tty: id.tty,
+				cwd: id.cwd,
+				// Claude binds by project path — it has no captured session id.
+				sessionId: "",
+				state,
+			};
+		}),
+	);
+	return { failed: snap.status !== "ok", instances };
+}
+
 /**
  * Every running session of the requested kinds, in one vocabulary.
  *
  * Pass `paneTitles` whenever Claude is among the kinds: without it Claude's
  * title signal is simply absent and its state falls back to transcript
- * freshness, which is coarser. Codex and Cursor ignore it entirely.
+ * freshness, which is coarser. Codex and Cursor ignore it entirely. May be a
+ * PROMISE — the caller's own pane listing and this scan then run in the same
+ * burst instead of one blocking the other (see A6 for the non-rejecting
+ * contract that makes this safe).
  */
 export async function scanAgents(
 	kinds: readonly AgentKind[],
-	paneTitles: PaneTitles = new Map(),
+	paneTitles: PaneTitles | Promise<PaneTitles> = new Map(),
 	exec: AgentExecFileLike = nodeExecFile as unknown as AgentExecFileLike,
+	options: ScanAgentsOptions = {},
 ): Promise<AgentSnapshot> {
 	const wanted = new Set(kinds);
-	const instances: AgentInstance[] = [];
+	const fresh = options.fresh === true;
+	const claudeState = options.claudeState ?? "all";
+
+	// The three per-kind branches run CONCURRENTLY — a key that has already
+	// captured its agent still only pays for one, but the capture gesture
+	// (which asks for all three) no longer pays for them serially.
+	const [codexResult, cursorResult, claudeResult] = await Promise.all([
+		wanted.has("codex") ? scanCodexBranch(exec, fresh) : null,
+		wanted.has("cursor") ? scanCursorBranch(exec, fresh) : null,
+		wanted.has("claude")
+			? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase)
+			: null,
+	]);
+
 	const failedKinds: AgentKind[] = [];
-
-	if (wanted.has("codex")) {
-		const snap = await scanCodexSnapshot(exec as never);
-		if (snap.status !== "ok") failedKinds.push("codex");
-		for (const i of snap.instances) {
-			instances.push({
-				kind: "codex",
-				pid: i.pid,
-				tty: normalizeTty(i.tty),
-				cwd: i.cwd,
-				sessionId: i.sessionId,
-				state: i.state,
-			});
-		}
-	}
-
-	if (wanted.has("cursor")) {
-		const snap = await scanCursorSnapshot(exec as never);
-		if (snap.status !== "ok") failedKinds.push("cursor");
-		for (const i of snap.instances) {
-			instances.push({
-				kind: "cursor",
-				pid: i.pid,
-				tty: normalizeTty(i.tty),
-				cwd: i.cwd,
-				sessionId: i.sessionId,
-				state: i.state,
-			});
-		}
-	}
-
-	if (wanted.has("claude")) {
-		const snap = await scanClaudeSnapshot(exec as never);
-		if (snap.status !== "ok") failedKinds.push("claude");
-		const resolved = await Promise.all(
-			snap.instances.map(async (i) => {
-				const tty = normalizeTty(i.tty);
-				// The Codex and Cursor scanners realpath their cwd; claude-scan
-				// reports lsof's raw path. Left alone, the same project reached
-				// through a symlink would compare unequal across kinds and a
-				// captured binding would stop matching its own session.
-				let cwd = i.cwd;
-				try { cwd = await realpath(i.cwd); } catch { /* may exit mid-scan */ }
-				return {
-					kind: "claude" as const,
-					pid: i.pid,
-					tty,
-					cwd,
-					// Claude binds by project path — it has no captured session id.
-					sessionId: "",
-					state: await claudeState(i.cwd, paneTitles.get(tty), i.shellBusy),
-				};
-			}),
-		);
-		instances.push(...resolved);
+	const instances: AgentInstance[] = [];
+	// Fixed concatenation order (codex, cursor, claude) regardless of which
+	// branch actually finished first.
+	for (const [kind, result] of [
+		["codex", codexResult],
+		["cursor", cursorResult],
+		["claude", claudeResult],
+	] as const) {
+		if (result === null) continue;
+		if (result.failed) failedKinds.push(kind);
+		instances.push(...result.instances);
 	}
 
 	return { status: failedKinds.length > 0 ? "unknown" : "ok", failedKinds, instances };
-}
-
-/**
- * Drop the underlying scanners' 2-second caches so the NEXT scan really goes to
- * the machine. Every scanner caches independently, so "take a fresh snapshot"
- * is not something a caller can achieve by asking politely — without this a
- * press acts on a view of the world up to a poll old, which is exactly when a
- * window raise lands on a session that has already exited.
- */
-export function invalidateAgentScans(kinds: readonly AgentKind[]): void {
-	for (const kind of kinds) {
-		if (kind === "claude") invalidateClaudeScan();
-		else if (kind === "codex") invalidateCodexScan();
-		else invalidateCursorScan();
-	}
 }
 
 /** The kinds a key must scan: just its captured one, or all three while it is

@@ -6,7 +6,9 @@ import {
 	type AgentInstance,
 	type AgentKind,
 	agentForFocusedTty,
+	agentTickInteresting,
 	blockedEvidenceFor,
+	blockedProbeForMissingPane,
 	buildAgentProjectKeyImage,
 	decideAgentFace,
 	paneShowsAgentPrompt,
@@ -33,6 +35,42 @@ describe("How trustworthy a blocked verdict can be", () => {
 			expect(blockedEvidenceFor(kind, "terminal")).toBe("unavailable");
 			expect(blockedEvidenceFor(kind, "")).toBe("unavailable");
 		}
+	});
+});
+
+/**
+ * A4: a failed pane LISTING must not read the same as "no pane matched". This
+ * is the pure decision that used to be inline in ai-project.ts's
+ * `blockedOnApproval` — pulled out so the honesty rule can be pinned directly
+ * rather than only through the action's untested shell.
+ */
+describe("What a missing pane means for a blocked-probe verdict", () => {
+	it("is clear when both list-panes and list-clients failed — indistinguishable from no tmux server", () => {
+		for (const kind of KINDS) {
+			expect(blockedProbeForMissingPane(kind, false, false)).toBe("clear");
+		}
+	});
+
+	it("is clear when the panes probe simply succeeded with no match", () => {
+		for (const kind of KINDS) {
+			expect(blockedProbeForMissingPane(kind, true, true)).toBe("clear");
+		}
+	});
+
+	/** tmux is demonstrably alive (clientsOk) but the pane listing specifically
+	 * broke, so for a kind whose blocked verdict can ONLY come from a pane
+	 * scrape, "no pane" here is unanswered, not a clean negative. */
+	it("is failed for claude and cursor when panes broke but clients answered", () => {
+		for (const kind of ["claude", "cursor"] as const) {
+			expect(blockedProbeForMissingPane(kind, false, true)).toBe("failed");
+		}
+	});
+
+	/** Codex's blocked verdict never depends on a pane at all, so a broken
+	 * pane listing changes nothing for it. */
+	it("stays clear for codex regardless of which probe failed", () => {
+		expect(blockedProbeForMissingPane("codex", false, true)).toBe("clear");
+		expect(blockedProbeForMissingPane("codex", false, false)).toBe("clear");
 	});
 });
 
@@ -329,5 +367,64 @@ describe("Agent key face", () => {
 			// so text-based assertions pass whether or not it is present.
 			expect(svg).not.toContain(deprecationBadge());
 		}
+	});
+});
+
+describe("Whether the AI Project poller should stay at full cadence (F7)", () => {
+	const idle = (kind: AgentKind, tty: string): AgentInstance =>
+		({ kind, pid: 1, tty, cwd: "/Users/j/code/app", sessionId: "", state: "waiting" });
+	const working = (kind: AgentKind, tty: string): AgentInstance =>
+		({ kind, pid: 1, tty, cwd: "/Users/j/code/app", sessionId: "", state: "working" });
+	const blocked = (kind: AgentKind, tty: string): AgentInstance =>
+		({ kind, pid: 1, tty, cwd: "/Users/j/code/app", sessionId: "", state: "blocked" });
+
+	it("stays interesting whenever a terminal is focused", () => {
+		expect(agentTickInteresting({ focusedTty: "/dev/ttys001", instances: [], blockedProbes: [] })).toBe(true);
+	});
+
+	it("stays interesting when any instance is working", () => {
+		expect(agentTickInteresting({
+			focusedTty: "", instances: [working("codex", "/dev/ttys001")], blockedProbes: ["clear"],
+		})).toBe(true);
+	});
+
+	it("stays interesting for a working (or blocked) codex instance", () => {
+		expect(agentTickInteresting({
+			focusedTty: "", instances: [blocked("codex", "/dev/ttys001")], blockedProbes: ["clear"],
+		})).toBe(true);
+	});
+
+	/**
+	 * THE F7 REGRESSION TEST. Claude Code keeps its idle "✳" title while its
+	 * own approval prompt is up (measured), so a blocked Claude's instance
+	 * state reads `"waiting"` — never `"working"` or `"blocked"`. A version of
+	 * this function that only consulted instance state would drop the poller
+	 * to a quarter cadence at exactly the moment the operator's attention is
+	 * most needed. Folding in the tick's own blocked-probe verdicts closes
+	 * that gap.
+	 */
+	it("keeps full cadence for a blocked Claude even though its instance state reads waiting", () => {
+		expect(agentTickInteresting({
+			focusedTty: "",
+			instances: [idle("claude", "/dev/ttys001")],
+			blockedProbes: ["blocked"],
+		})).toBe(true);
+	});
+
+	it("keeps full cadence when any probe failed, so a broken probe gets retried promptly", () => {
+		expect(agentTickInteresting({
+			focusedTty: "",
+			instances: [idle("claude", "/dev/ttys001")],
+			blockedProbes: ["failed"],
+		})).toBe(true);
+	});
+
+	it("drops to the idle gate only when nothing is focused, working, blocked, or unanswered", () => {
+		expect(agentTickInteresting({
+			focusedTty: "",
+			instances: [idle("claude", "/dev/ttys001"), idle("cursor", "/dev/ttys002")],
+			blockedProbes: ["clear", "clear"],
+		})).toBe(false);
+		expect(agentTickInteresting({ focusedTty: "", instances: [], blockedProbes: [] })).toBe(false);
 	});
 });

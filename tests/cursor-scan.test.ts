@@ -305,4 +305,49 @@ describe("Cursor scan", () => {
 		expect(cached.status).toBe("ok");
 		expect(cached.instances).toHaveLength(1);
 	});
+
+	describe("fresh scans (press path)", () => {
+		it("bypasses a warm world cache", async () => {
+			const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
+			const exec = vi.fn((_f: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) =>
+				cb(Object.assign(new Error("no match"), { code: 1 }), "", ""));
+			await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base); // warms the world cache
+			const before = exec.mock.calls.length;
+			await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base, { fresh: true });
+			expect(exec.mock.calls.length).toBeGreaterThan(before);
+		});
+
+		/** A2/A7: `fresh` deliberately does NOT bump `generation` (see the
+		 * module header), so two fresh scans race in the SAME generation —
+		 * the monotonic start-sequence guard is the only thing keeping the
+		 * slower, earlier-started one from winning. Driven by controlling
+		 * COMPLETION order, not merely asserting both scans happened. */
+		it("a scan that started earlier cannot publish over one that started later, even in the same generation", async () => {
+			const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
+			let release: (() => void) | null = null;
+			const gate = new Promise<void>((r) => { release = r; });
+			let pgrepCalls = 0;
+			const exec = vi.fn((file: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+				if (file !== "/usr/bin/pgrep") return;
+				pgrepCalls++;
+				if (pgrepCalls === 1) {
+					// earlier: a genuine probe FAILURE (not "nothing matched") -> unknown
+					void gate.then(() => cb(Object.assign(new Error("broken"), { code: 2 }), "", ""));
+					return;
+				}
+				// later: pgrep's trustworthy "nothing matched" -> a clean "ok"
+				cb(Object.assign(new Error("no match"), { code: 1 }), "", "");
+			});
+			const earlier = scanCursorSnapshot(exec as unknown as CursorExecFileLike, base, { fresh: true }); // mySeq 1, stalls
+			const later = scanCursorSnapshot(exec as unknown as CursorExecFileLike, base, { fresh: true }); // mySeq 2, races ahead
+			const laterResult = await later;
+			expect(laterResult).toEqual({ status: "ok", instances: [] });
+			release!();
+			const earlierResult = await earlier; // its own honest answer to its caller
+			expect(earlierResult.status).toBe("unknown");
+			// ...but must NOT have become the shared cache, even finishing last.
+			const cached = await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base);
+			expect(cached).toEqual({ status: "ok", instances: [] });
+		});
+	});
 });

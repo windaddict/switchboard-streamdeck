@@ -98,6 +98,35 @@ export function blockedEvidenceFor(kind: AgentKind, host: AgentHost): BlockedEvi
 	return host === "tmux" ? "terminal" : "unavailable";
 }
 
+/**
+ * What should a "blocked" probe read when there is no pane to scrape?
+ *
+ * A missing pane is ambiguous on its own: it means "no session here" just as
+ * often as it means "the pane LISTING itself failed this tick". The two must
+ * not paint the same face. `panesOk` tells them apart:
+ *
+ *   - Both `list-panes` and `list-clients` failed: indistinguishable from a
+ *     machine with no tmux server at all, which is a supported first-class
+ *     case (`runTmux` reports that failure the same way it reports "no tmux
+ *     server"). The honest answer here is `"clear"` — there was never a
+ *     question to answer.
+ *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
+ *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
+ *     any kind whose blocked verdict can ONLY come from scraping a pane
+ *     (`blockedEvidenceFor(kind, "tmux") === "terminal"` — claude and cursor).
+ *     For those, "clear" would be a confident negative on a question that was
+ *     never actually asked; the honest answer is `"failed"`. Codex is
+ *     unaffected either way — its blocked verdict never depends on a pane.
+ */
+export function blockedProbeForMissingPane(
+	kind: AgentKind,
+	panesOk: boolean,
+	clientsOk: boolean,
+): "clear" | "failed" {
+	if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux") === "terminal") return "failed";
+	return "clear";
+}
+
 /** Claude Code's approval question. Two different wordings were measured —
  * "Do you want to proceed?" for a bash approval and "Do you want to make this
  * edit to <file>?" for an edit approval — so the matcher keys on the shared
@@ -163,6 +192,34 @@ export function agentForFocusedTty(
 ): AgentInstance | null {
 	const matches = instances.filter((i) => i.tty === focusedTty);
 	return matches.length === 1 ? matches[0] : null;
+}
+
+/**
+ * Should the AI Project key's poller stay at full cadence this tick, or is it
+ * safe to drop to the idle-gate's reduced rate?
+ *
+ * MEASURED, and the reason `blockedProbes` is part of this decision and not
+ * just `instances`: Claude Code keeps its idle "✳" title marker on screen
+ * while its own approval prompt is up, so a BLOCKED Claude's `instance.state`
+ * reads `"waiting"`, never `"working"` or `"blocked"` — a version of this
+ * check that only looked at instance state would drop to a quarter of full
+ * cadence at exactly the moment the operator's approval is most time-
+ * sensitive, and the amber light could sit stale for up to 4 poll periods
+ * (~10s) instead of one (~2.5s). Folding in every kind's own blocked-probe
+ * verdict for the tick closes that gap for every kind, not just Claude.
+ * `"failed"` counts as interesting too, so a broken probe is re-tried at full
+ * speed rather than quietly left broken for several cycles.
+ */
+export function agentTickInteresting(args: {
+	focusedTty: string;
+	instances: readonly AgentInstance[];
+	blockedProbes: ReadonlyArray<"clear" | "blocked" | "failed">;
+}): boolean {
+	return (
+		args.focusedTty !== "" ||
+		args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
+		args.blockedProbes.some((p) => p !== "clear")
+	);
 }
 
 /**

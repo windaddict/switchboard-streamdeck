@@ -9272,9 +9272,11 @@ function buildClaudeProjectKeyImage(args) {
  * Shape of a scan: `pgrep` narrows to candidate pids (a full `ps -axo` costs
  * ~0.12s per call), one targeted `ps` reads their ttys, a second `pgrep -P` +
  * confirming `ps` spots a live shell-snapshot child, and one batched `lsof`
- * maps every pid to its project cwd (~0.06s total, measured). Absolute binary
- * paths — Stream Deck launches plugins with a minimal PATH. `exec` injectable
- * for tests.
+ * maps every pid to its project cwd (~0.06s total, measured). The child-probe
+ * chain and the lsof cwd probe depend only on that first `ps`, so they run
+ * CONCURRENTLY rather than one waiting on the other. Absolute binary paths —
+ * Stream Deck launches plugins with a minimal PATH. `exec` injectable for
+ * tests.
  *
  * The snapshot carries a `status`. When a probe FAILS the scan reports
  * `unknown` and hands back the remembered sessions rather than an empty list:
@@ -9283,6 +9285,13 @@ function buildClaudeProjectKeyImage(args) {
  * here" is worse than one that admits it doesn't know. The one probe whose
  * failure is deliberately tolerated is the shell-busy child probe — see the
  * comment at that call.
+ *
+ * A caller that needs the machine's CURRENT state rather than a shared,
+ * cached one (a key press about to act) passes `{ fresh: true }`. Fresh
+ * bypasses three separate caches, all of them, or the option would lie about
+ * how fresh the answer is: the 2s world-snapshot TTL, the in-flight-scan
+ * join, and — easy to miss, and the reason a naive first cut of this
+ * regressed freshness — the per-pid 60s cwd memo (see {@link refreshCwds}).
  */
 const TIMEOUT_MS$2 = 4000;
 function run$2(file, args, exec) {
@@ -9326,14 +9335,36 @@ function confirmShellArgs(pids) {
 }
 /** A claude's cwd is effectively fixed for its lifetime; cache the lsof
  * lookups per pid. Tolerated staleness: 60s (documented, plain TTL — no
- * cleverness about invalidation it can't actually deliver). */
+ * cleverness about invalidation it can't actually deliver), EXCEPT a `fresh`
+ * scan, which re-probes every pid regardless of memo age (see
+ * {@link refreshCwds}). */
 const CWD_TTL_MS = 60_000;
 const cwdCache = new Map();
 /** Shared snapshot for ALL pollers: both key types poll every few seconds
- * and would otherwise duplicate the scans. */
+ * and would otherwise duplicate the scans. Deliberately LESS than the
+ * pollers' own interval (2500ms, `POLL_MS` in ai-project.ts / focus-tmux.ts):
+ * every action's tick must still land on a genuinely fresh scan of its own
+ * rather than always inheriting one a neighbour happened to trigger a moment
+ * earlier — raising this above the poll period would halve the effective
+ * refresh rate. Do not "fix" this by raising it. */
 const WORLD_TTL_MS$2 = 2000;
 let worldCache = null;
 let worldInFlight = null;
+/**
+ * Guards which scan is allowed to publish to the shared cache.
+ *
+ * EXACT GUARANTEE: a scan that STARTED earlier can never overwrite the result
+ * of one that started later. It does NOT guarantee the cached snapshot is the
+ * latest observation of the world — a long scan that started later still
+ * wins even if a faster, earlier-started scan finishes after it.
+ *
+ * Ordered by START time via a monotonic counter assigned at kickoff, not by
+ * a `Date.now()` timestamp: two scans can start in the same millisecond, so
+ * comparing wall-clock times says nothing reliable about which one actually
+ * began later.
+ */
+let seq$2 = 0;
+let publishedSeq$2 = 0;
 function lsofCwdArgs(pids) {
     return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
@@ -9347,14 +9378,17 @@ function scanClaudeInstances(exec = execFile) {
     return scanClaudeSnapshot(exec).then((snapshot) => snapshot.instances);
 }
 /** The same scan, carrying whether its probes actually answered. */
-function scanClaudeSnapshot(exec = execFile) {
-    if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$2) {
-        return Promise.resolve(worldCache.snapshot);
+function scanClaudeSnapshot(exec = execFile, options = {}) {
+    if (!options.fresh) {
+        if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$2) {
+            return Promise.resolve(worldCache.snapshot);
+        }
+        if (worldInFlight !== null) {
+            return worldInFlight;
+        }
     }
-    if (worldInFlight !== null) {
-        return worldInFlight;
-    }
-    const p = doScan$2(exec);
+    const mySeq = ++seq$2;
+    const p = doScan$2(exec, mySeq, options.fresh === true);
     worldInFlight = p;
     void p.finally(() => {
         if (worldInFlight === p)
@@ -9362,73 +9396,100 @@ function scanClaudeSnapshot(exec = execFile) {
     });
     return p;
 }
-/** Tests: drop the shared caches between cases. */
-function invalidateClaudeScan() {
-    worldCache = null;
-    worldInFlight = null;
-    cwdCache.clear();
+/**
+ * Which claudes have a live shell-snapshot child right now?
+ *
+ * DELIBERATE: a failure here does NOT degrade the snapshot to "unknown". It
+ * means "we don't know whether a backgrounded shell is running", not "no
+ * session here" — the sessions and their project folders are established
+ * elsewhere, and `shellBusy` only ever UPGRADES a session's face to "working"
+ * (see `claudeState`). Degrading the whole snapshot would throw away correct
+ * project identity for every key on the machine to protect one of three
+ * "working" signals; the compensating signals — the braille/✳ terminal title
+ * and the transcript freshness check — are read separately and still fire.
+ * The cost is bounded and one-directional: a failed child probe can only
+ * UNDER-report "working", never invent a session or claim a project is empty.
+ */
+async function shellBusyPids(claudePids, exec) {
+    const kids = await run$2("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
+    if (!kids.ok)
+        return new Set();
+    const children = kids.stdout
+        .split("\n")
+        .map((l) => Number.parseInt(l.trim(), 10))
+        .filter((n) => Number.isFinite(n));
+    if (children.length === 0)
+        return new Set();
+    const confirm = await run$2("/bin/ps", confirmShellArgs(children), exec);
+    return confirm.ok ? busyParentsFrom(confirm.stdout) : new Set();
 }
-async function doScan$2(exec) {
+/**
+ * Refresh the cwd memo for whichever pids need it, in one batched `lsof`
+ * call. Returns false only when lsof itself failed: without cwds there is no
+ * project binding at all, so the caller must downgrade the whole scan to
+ * "unknown" rather than reporting an empty list.
+ *
+ * `fresh` (see A1 in the perf review): re-probes EVERY live pid, not just the
+ * ones whose memo has aged past {@link CWD_TTL_MS}. The map is refreshed IN
+ * PLACE rather than cleared — other concurrent pollers read it between
+ * awaits, and clearing it would show them a hole that was never really empty.
+ */
+async function refreshCwds(claudes, exec, now, fresh) {
+    const need = fresh
+        ? claudes
+        : claudes.filter((c) => {
+            const hit = cwdCache.get(c.pid);
+            return hit === undefined || now - hit.at >= CWD_TTL_MS;
+        });
+    if (need.length === 0)
+        return true;
+    // A FRESH scan must resolve identity from THIS probe alone. Dropping the
+    // requested pids' memo entries first is the whole point: lsof can succeed
+    // and still omit a pid, and without this the scan would silently fall back
+    // to a cwd observed up to CWD_TTL_MS (60s) ago while reporting itself
+    // fresh. A press acting on a 60-second-old project binding is exactly the
+    // staleness `fresh` exists to eliminate.
+    if (fresh)
+        for (const c of need)
+            cwdCache.delete(c.pid);
+    const lsof = await run$2("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec);
+    // Without cwds there is no project binding at all, so a broken lsof would
+    // empty the list — exactly the confident lie this status channel exists
+    // to prevent.
+    if (!lsof.ok)
+        return false;
+    for (const [pid, cwd] of parseLsofCwds(lsof.stdout))
+        cwdCache.set(pid, { cwd, at: now });
+    return true;
+}
+async function doScan$2(exec, mySeq, fresh) {
     const now = Date.now();
     const pgrep = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
     if (pgrepFoundNothing$1(pgrep))
-        return remember$2(now, { status: "ok", instances: [] });
+        return remember$2(now, mySeq, { status: "ok", instances: [] });
     if (!pgrep.ok)
-        return rememberUnknown$2(now);
+        return rememberUnknown$2(now, mySeq);
     const pids = pgrep.stdout
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
         .filter((n) => Number.isFinite(n));
     if (pids.length === 0)
-        return remember$2(now, { status: "ok", instances: [] });
+        return remember$2(now, mySeq, { status: "ok", instances: [] });
     const ps = await run$2("/bin/ps", claudeDetailArgs(pids), exec);
     if (!ps.ok)
-        return rememberUnknown$2(now);
+        return rememberUnknown$2(now, mySeq);
     const claudes = claudesFrom(parsePsProcs(ps.stdout));
     if (claudes.length === 0)
-        return remember$2(now, { status: "ok", instances: [] });
+        return remember$2(now, mySeq, { status: "ok", instances: [] });
     const claudePids = new Set(claudes.map((c) => c.pid));
-    // Targeted argv confirm: which claudes have a live shell-snapshot child?
-    //
-    // DELIBERATE: a failure here does NOT degrade the snapshot to "unknown".
-    // It means "we don't know whether a backgrounded shell is running", not
-    // "no session here" — the sessions and their project folders are already
-    // established by the probes above, and `shellBusy` only ever UPGRADES a
-    // session's face to "working" (see `claudeState`). Degrading the whole
-    // snapshot would throw away correct project identity for every key on the
-    // machine to protect one of three "working" signals; the compensating
-    // signals — the braille/✳ terminal title and the transcript freshness
-    // check — are read separately and still fire. The cost is bounded and
-    // one-directional: a failed child probe can only UNDER-report "working",
-    // never invent a session or claim a project is empty.
-    let busyPids = new Set();
-    const kids = await run$2("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
-    if (kids.ok) {
-        const children = kids.stdout
-            .split("\n")
-            .map((l) => Number.parseInt(l.trim(), 10))
-            .filter((n) => Number.isFinite(n));
-        if (children.length > 0) {
-            const confirm = await run$2("/bin/ps", confirmShellArgs(children), exec);
-            if (confirm.ok)
-                busyPids = busyParentsFrom(confirm.stdout);
-        }
-    }
-    // Phase 2b (cwds): lsof only for pids missing a fresh cache entry.
-    const need = claudes.filter((c) => {
-        const hit = cwdCache.get(c.pid);
-        return hit === undefined || now - hit.at >= CWD_TTL_MS;
-    });
-    if (need.length > 0) {
-        const lsof = await run$2("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec);
-        // Without cwds there is no project binding at all, so a broken lsof would
-        // empty the list — exactly the confident lie this status channel exists
-        // to prevent.
-        if (!lsof.ok)
-            return rememberUnknown$2(now);
-        for (const [pid, cwd] of parseLsofCwds(lsof.stdout))
-            cwdCache.set(pid, { cwd, at: now });
-    }
+    // The shell-busy child chain and the cwd lookup both depend only on the ps
+    // above, so they run CONCURRENTLY instead of one waiting on the other.
+    const [busyPids, cwdsOk] = await Promise.all([
+        shellBusyPids(claudePids, exec),
+        refreshCwds(claudes, exec, now, fresh),
+    ]);
+    if (!cwdsOk)
+        return rememberUnknown$2(now, mySeq);
     for (const pid of [...cwdCache.keys()]) {
         if (!claudePids.has(pid))
             cwdCache.delete(pid); // dead pids out
@@ -9444,10 +9505,13 @@ async function doScan$2(exec) {
     // A live claude whose cwd lsof did not report cannot be bound to a project,
     // so the list is not the whole truth even though every command succeeded.
     const incomplete = instances.length !== claudes.length;
-    return remember$2(now, { status: incomplete ? "unknown" : "ok", instances });
+    return remember$2(now, mySeq, { status: incomplete ? "unknown" : "ok", instances });
 }
-function remember$2(at, snapshot) {
-    worldCache = { at, snapshot };
+function remember$2(at, mySeq, snapshot) {
+    if (mySeq >= publishedSeq$2) {
+        worldCache = { at, snapshot };
+        publishedSeq$2 = mySeq;
+    }
     return snapshot;
 }
 /** Downgrade rather than invent: keep the last scan's sessions (they are the
@@ -9455,9 +9519,9 @@ function remember$2(at, snapshot) {
  * fresh. `shellBusy` is carried over as last known — there is no "unknown"
  * value for a boolean, and substituting `false` would fabricate the negative
  * this whole channel exists to avoid. */
-function rememberUnknown$2(at) {
+function rememberUnknown$2(at, mySeq) {
     const stale = worldCache?.snapshot.instances.map((instance) => ({ ...instance })) ?? [];
-    return remember$2(at, { status: "unknown", instances: stale });
+    return remember$2(at, mySeq, { status: "unknown", instances: stale });
 }
 /** Is a process with exactly this name running? (pgrep -x; used to avoid
  * AppleScript-launching a terminal app that isn't open.) */
@@ -10623,13 +10687,32 @@ function buildCodexProjectKeyImage(args) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$3}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }
 
-/** Bounded, cached scan of interactive Codex CLI sessions. */
+/**
+ * Bounded, cached scan of interactive Codex CLI sessions.
+ *
+ * A caller on the press path that needs the machine's state right now, not a
+ * poll-old shared one, passes `{ fresh: true }` — see {@link CodexScanOptions}.
+ * Publication to the shared cache is guarded by a monotonic start-sequence
+ * counter, not a wall-clock timestamp: see the exact guarantee documented at
+ * `seq`/`publishedSeq` in claude-scan.ts, which applies here unchanged.
+ */
 const TIMEOUT_MS$1 = 4000;
+/** Shared across every poller; deliberately LESS than the pollers' own
+ * interval (2500ms) so each action's tick still lands on a genuinely fresh
+ * scan rather than always inheriting one a neighbour happened to trigger a
+ * moment earlier. Raising this above the poll period would halve the
+ * effective refresh rate — do not "fix" it. */
 const WORLD_TTL_MS$1 = 2000;
 const TAIL_BYTES$1 = 1024 * 1024;
 const HEAD_BYTES = 64 * 1024;
 let cache$1 = null;
 let inFlight$2 = null;
+/** Monotonic start-sequence guard against a scan that started EARLIER
+ * publishing over one that started LATER — see the exact guarantee at the
+ * matching pair in claude-scan.ts. Not a wall-clock timestamp: two scans can
+ * start in the same millisecond. */
+let seq$1 = 0;
+let publishedSeq$1 = 0;
 function run$1(file, args, exec) {
     return new Promise((resolve) => {
         exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
@@ -10668,38 +10751,37 @@ async function rolloutLines(path) {
         return [];
     }
 }
-function invalidateCodexScan() {
-    cache$1 = null;
-    inFlight$2 = null;
-}
-function scanCodexSnapshot(exec = execFile) {
-    if (cache$1 !== null && Date.now() - cache$1.at < WORLD_TTL_MS$1)
-        return Promise.resolve(cache$1.snapshot);
-    if (inFlight$2 !== null)
-        return inFlight$2;
-    const p = doScan$1(exec);
+function scanCodexSnapshot(exec = execFile, options = {}) {
+    if (!options.fresh) {
+        if (cache$1 !== null && Date.now() - cache$1.at < WORLD_TTL_MS$1)
+            return Promise.resolve(cache$1.snapshot);
+        if (inFlight$2 !== null)
+            return inFlight$2;
+    }
+    const mySeq = ++seq$1;
+    const p = doScan$1(exec, mySeq);
     inFlight$2 = p;
     void p.finally(() => { if (inFlight$2 === p)
         inFlight$2 = null; });
     return p;
 }
-async function doScan$1(exec) {
+async function doScan$1(exec, mySeq) {
     const now = Date.now();
     const pgrep = await run$1("/usr/bin/pgrep", ["-x", "codex"], exec);
     if (!pgrep.ok)
-        return rememberUnknown$1(now);
+        return rememberUnknown$1(now, mySeq);
     const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
     if (pids.length === 0)
-        return remember$1(now, { status: "ok", instances: [] });
+        return remember$1(now, mySeq, { status: "ok", instances: [] });
     const ps = await run$1("/bin/ps", codexPsArgs(pids), exec);
     if (!ps.ok)
-        return rememberUnknown$1(now);
+        return rememberUnknown$1(now, mySeq);
     const processes = parseCodexProcesses(ps.stdout).filter(isInteractiveCodex);
     if (processes.length === 0)
-        return remember$1(now, { status: "ok", instances: [] });
+        return remember$1(now, mySeq, { status: "ok", instances: [] });
     const lsof = await run$1("/usr/sbin/lsof", codexLsofArgs(processes.map((p) => p.pid)), exec);
     if (!lsof.ok)
-        return rememberUnknown$1(now);
+        return rememberUnknown$1(now, mySeq);
     const entries = parseLsofEntries(lsof.stdout);
     let incomplete = false;
     const instances = await Promise.all(processes.map(async (process) => {
@@ -10737,15 +10819,23 @@ async function doScan$1(exec) {
             state: codexStateFromRolloutLines(lines),
         };
     }));
-    return remember$1(now, { status: incomplete ? "unknown" : "ok", instances: instances.filter((i) => i !== null) });
+    return remember$1(now, mySeq, { status: incomplete ? "unknown" : "ok", instances: instances.filter((i) => i !== null) });
 }
-function remember$1(at, snapshot) {
-    cache$1 = { at, snapshot };
+/** EXACT GUARANTEE (mirrors claude-scan.ts): a scan that started earlier can
+ * never overwrite the result of one that started later, ordered by a
+ * monotonic start sequence rather than a timestamp. It does NOT guarantee the
+ * cache holds the latest observation of the world — a long scan that started
+ * later still wins even if a faster, earlier scan finishes after it. */
+function remember$1(at, mySeq, snapshot) {
+    if (mySeq >= publishedSeq$1) {
+        cache$1 = { at, snapshot };
+        publishedSeq$1 = mySeq;
+    }
     return snapshot;
 }
-function rememberUnknown$1(at) {
+function rememberUnknown$1(at, mySeq) {
     const stale = cache$1?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
-    return remember$1(at, { status: "unknown", instances: stale });
+    return remember$1(at, mySeq, { status: "unknown", instances: stale });
 }
 
 /**
@@ -11103,6 +11193,31 @@ function blockedEvidenceFor(kind, host) {
     // terminal this plugin can read is a tmux pane.
     return host === "tmux" ? "terminal" : "unavailable";
 }
+/**
+ * What should a "blocked" probe read when there is no pane to scrape?
+ *
+ * A missing pane is ambiguous on its own: it means "no session here" just as
+ * often as it means "the pane LISTING itself failed this tick". The two must
+ * not paint the same face. `panesOk` tells them apart:
+ *
+ *   - Both `list-panes` and `list-clients` failed: indistinguishable from a
+ *     machine with no tmux server at all, which is a supported first-class
+ *     case (`runTmux` reports that failure the same way it reports "no tmux
+ *     server"). The honest answer here is `"clear"` — there was never a
+ *     question to answer.
+ *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
+ *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
+ *     any kind whose blocked verdict can ONLY come from scraping a pane
+ *     (`blockedEvidenceFor(kind, "tmux") === "terminal"` — claude and cursor).
+ *     For those, "clear" would be a confident negative on a question that was
+ *     never actually asked; the honest answer is `"failed"`. Codex is
+ *     unaffected either way — its blocked verdict never depends on a pane.
+ */
+function blockedProbeForMissingPane(kind, panesOk, clientsOk) {
+    if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux") === "terminal")
+        return "failed";
+    return "clear";
+}
 /** Claude Code's approval question. Two different wordings were measured —
  * "Do you want to proceed?" for a bash approval and "Do you want to make this
  * edit to <file>?" for an edit approval — so the matcher keys on the shared
@@ -11164,6 +11279,27 @@ function paneShowsAgentPrompt(kind, paneText) {
 function agentForFocusedTty(instances, focusedTty) {
     const matches = instances.filter((i) => i.tty === focusedTty);
     return matches.length === 1 ? matches[0] : null;
+}
+/**
+ * Should the AI Project key's poller stay at full cadence this tick, or is it
+ * safe to drop to the idle-gate's reduced rate?
+ *
+ * MEASURED, and the reason `blockedProbes` is part of this decision and not
+ * just `instances`: Claude Code keeps its idle "✳" title marker on screen
+ * while its own approval prompt is up, so a BLOCKED Claude's `instance.state`
+ * reads `"waiting"`, never `"working"` or `"blocked"` — a version of this
+ * check that only looked at instance state would drop to a quarter of full
+ * cadence at exactly the moment the operator's approval is most time-
+ * sensitive, and the amber light could sit stale for up to 4 poll periods
+ * (~10s) instead of one (~2.5s). Folding in every kind's own blocked-probe
+ * verdict for the tick closes that gap for every kind, not just Claude.
+ * `"failed"` counts as interesting too, so a broken probe is re-tried at full
+ * speed rather than quietly left broken for several cycles.
+ */
+function agentTickInteresting(args) {
+    return (args.focusedTty !== "" ||
+        args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
+        args.blockedProbes.some((p) => p !== "clear"));
 }
 /**
  * Compose the face a key should paint from every piece of evidence at once.
@@ -11613,8 +11749,24 @@ function buildCursorProjectKeyImage(args) {
  * Privacy: transcripts contain the operator's prompts and command text. Only
  * a bounded tail is read, only `type`/`role` are parsed out of it, and no
  * transcript content is ever returned or logged.
+ *
+ * A caller on the press path that needs the machine's state right now, not a
+ * poll-old shared one, passes `{ fresh: true }` (see {@link CursorScanOptions}).
+ * `fresh` does NOT bump `generation` — it answers one caller's "right now"
+ * without retroactively declaring every OTHER in-flight scan stale. Two
+ * publish guards cooperate, each closing a different gap: `generation` is an
+ * explicit invalidation epoch (bumped by {@link invalidateCursorScan}, so a
+ * scan started before an invalidation can never publish after one started
+ * following it), while a monotonic start-sequence counter orders scans
+ * WITHIN the same epoch by which one started later — see the exact guarantee
+ * documented at its declaration, which mirrors claude-scan.ts.
  */
 const TIMEOUT_MS = 4000;
+/** Shared across every poller; deliberately LESS than the pollers' own
+ * interval (2500ms) so each action's tick still lands on a genuinely fresh
+ * scan rather than always inheriting one a neighbour happened to trigger a
+ * moment earlier. Raising this above the poll period would halve the
+ * effective refresh rate — do not "fix" it. */
 const WORLD_TTL_MS = 2000;
 /** Enough to hold the last turn's records; bounds how much prompt text is
  * ever paged in. A record larger than the window yields unparsable fragments,
@@ -11628,6 +11780,21 @@ let inFlight$1 = null;
  * without it, a slow scan begun before a press could land AFTER the press's
  * fresh scan and leave the cache holding older data. */
 let generation$1 = 0;
+/**
+ * Monotonic start-sequence guard, on top of `generation`: two scans in the
+ * SAME generation (e.g. two `fresh` scans, or two ordinary concurrent ones)
+ * still need ordering by which one started later — `generation` alone is
+ * silent on that.
+ *
+ * EXACT GUARANTEE (mirrors claude-scan.ts): a scan that started earlier can
+ * never overwrite the result of one that started later. It does NOT
+ * guarantee the cache holds the latest observation of the world — a long
+ * scan that started later still wins even if a faster, earlier scan finishes
+ * after it. Ordered by a counter assigned at kickoff, not a `Date.now()`
+ * timestamp: two scans can start in the same millisecond.
+ */
+let seq = 0;
+let publishedSeq = 0;
 /** Session id → transcript path. A session's transcript never moves, so this
  * spares the per-tick directory walk once a session has been seen. */
 const transcriptPaths = new Map();
@@ -11754,40 +11921,47 @@ function invalidateCursorScan() {
     cache = null;
     inFlight$1 = null;
     generation$1++;
+    // Do NOT reset `seq` — an in-flight scan keeps the sequence it took at entry,
+    // so zeroing the counter would let it publish over a newer scan afterwards.
+    // Raising the watermark locks in-flight scans out; the next scan (++seq) passes.
+    publishedSeq = seq;
 }
 /** Where Cursor files its per-project transcripts. A parameter so tests can
  * point at a fixture tree instead of the operator's real, populated one. */
 const CURSOR_PROJECTS_BASE = join(homedir(), ".cursor", "projects");
-function scanCursorSnapshot(exec = execFile, projectsBase = CURSOR_PROJECTS_BASE) {
-    if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS)
-        return Promise.resolve(cache.snapshot);
-    if (inFlight$1 !== null)
-        return inFlight$1;
-    const p = doScan(exec, projectsBase, generation$1);
+function scanCursorSnapshot(exec = execFile, projectsBase = CURSOR_PROJECTS_BASE, options = {}) {
+    if (!options.fresh) {
+        if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS)
+            return Promise.resolve(cache.snapshot);
+        if (inFlight$1 !== null)
+            return inFlight$1;
+    }
+    const mySeq = ++seq;
+    const p = doScan(exec, projectsBase, generation$1, mySeq);
     inFlight$1 = p;
     void p.finally(() => { if (inFlight$1 === p)
         inFlight$1 = null; });
     return p;
 }
-async function doScan(exec, projectsBase, gen) {
+async function doScan(exec, projectsBase, gen, mySeq) {
     const now = Date.now();
     const pgrep = await run("/usr/bin/pgrep", PGREP_CURSOR_ARGS, exec);
     if (pgrepFoundNothing(pgrep))
-        return remember(now, gen, { status: "ok", instances: [] });
+        return remember(now, gen, mySeq, { status: "ok", instances: [] });
     if (!pgrep.ok)
-        return rememberUnknown(now, gen);
+        return rememberUnknown(now, gen, mySeq);
     const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
     if (pids.length === 0)
-        return remember(now, gen, { status: "ok", instances: [] });
+        return remember(now, gen, mySeq, { status: "ok", instances: [] });
     const ps = await run("/bin/ps", cursorPsArgs(pids), exec);
     if (!ps.ok)
-        return rememberUnknown(now, gen);
+        return rememberUnknown(now, gen, mySeq);
     const processes = withoutWorkerChildren(parseCursorProcesses(ps.stdout).filter(isCursorProcess));
     if (processes.length === 0)
-        return remember(now, gen, { status: "ok", instances: [] });
+        return remember(now, gen, mySeq, { status: "ok", instances: [] });
     const lsof = await run("/usr/sbin/lsof", cursorLsofArgs(processes.map((p) => p.pid)), exec);
     if (!lsof.ok)
-        return rememberUnknown(now, gen);
+        return rememberUnknown(now, gen, mySeq);
     const entries = parseLsofEntries(lsof.stdout);
     let incomplete = false;
     const instances = await Promise.all(processes.map(async (process) => {
@@ -11848,17 +12022,23 @@ async function doScan(exec, projectsBase, gen) {
         };
         return instance;
     }));
-    return remember(now, gen, {
+    return remember(now, gen, mySeq, {
         status: incomplete ? "unknown" : "ok",
         instances: instances.filter((i) => i !== null),
     });
 }
-function remember(at, gen, snapshot) {
+function remember(at, gen, mySeq, snapshot) {
     // Still return the snapshot to whoever awaited THIS scan; just don't let a
-    // superseded scan become the cached view of the world.
+    // superseded scan become the cached view of the world. Two independent
+    // checks: `gen` catches an EXPLICIT invalidation happening in between;
+    // `mySeq` catches two scans of the SAME generation finishing out of start
+    // order (see the module header for why both are needed).
     if (gen !== generation$1)
         return snapshot;
+    if (mySeq < publishedSeq)
+        return snapshot;
     cache = { at, snapshot };
+    publishedSeq = mySeq;
     // Sessions come and go; keep the memo from growing without bound.
     if (transcriptPaths.size > 64) {
         const live = new Set(snapshot.instances.map((i) => i.sessionId));
@@ -11870,9 +12050,9 @@ function remember(at, gen, snapshot) {
     }
     return snapshot;
 }
-function rememberUnknown(at, gen) {
+function rememberUnknown(at, gen, mySeq) {
     const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
-    return remember(at, gen, { status: "unknown", instances: stale });
+    return remember(at, gen, mySeq, { status: "unknown", instances: stale });
 }
 
 /**
@@ -11904,6 +12084,30 @@ function rememberUnknown(at, gen) {
  * Scanning is per-kind on purpose: a key that has already captured its agent
  * asks for exactly one kind, so the steady-state cost is identical to the old
  * dedicated keys. Only the capture gesture pays for all three.
+ *
+ * The three per-kind branches run CONCURRENTLY (`Promise.all`), each kind's
+ * `failedKinds` contribution computed entirely inside its own branch and only
+ * merged afterward — so a Codex probe failing can never contaminate Claude's
+ * or Cursor's own trustworthiness, whether the branches finish in order or not.
+ *
+ * FRESH-SCAN CONTRACT: `{ fresh: true }` (see {@link ScanAgentsOptions}) is
+ * for a caller on the press path that needs the machine's state right now,
+ * not whatever the shared 2s cache happens to hold. It is threaded straight
+ * into each underlying scanner's own `fresh` option — this module adds no
+ * caching of its own to bypass. The EXACT guarantee inherited from every
+ * scanner beneath it: a scan that STARTED earlier can never overwrite the
+ * result of one that started later (ordered by an internal start-sequence
+ * counter, not a timestamp — see claude-scan.ts). It does NOT guarantee the
+ * published snapshot is the single latest possible observation of the world.
+ *
+ * CLAUDE-STATE SELECTOR: resolving Claude's state costs a transcript read per
+ * instance, which nothing else needs — Codex and Cursor's state comes free
+ * from their own scanners. `claudeState` (default `"all"`) lets a caller that
+ * only watches SOME Claude projects (the AI Project key, once its taught
+ * targets are known) skip that read for every unwatched instance, which is
+ * returned with state `"unknown"` instead. A caller that has no such
+ * distinction to make (Focus tmux Window, which needs every instance's state
+ * to compute a window's spark) passes nothing and gets `"all"`.
  */
 /** Did the probe for THIS key's agent actually answer? Takes anything carrying
  * `failedKinds` so the action's own richer snapshot can be passed straight in. */
@@ -11925,8 +12129,10 @@ function normalizeTty(tty) {
  * title while an approval prompt is on screen (measured), so nothing here can
  * see that — the caller supplies it from the terminal.
  */
-async function claudeState(cwd, paneTitle, shellBusy) {
-    const transcript = await newestTranscriptState(cwd);
+async function computeClaudeState(cwd, paneTitle, shellBusy, projectsBase) {
+    const transcript = projectsBase === undefined
+        ? await newestTranscriptState(cwd)
+        : await newestTranscriptState(cwd, Date.now(), projectsBase);
     const state = projectClaudeState({
         present: true,
         titleWorking: paneTitle === undefined ? null : titleWorking(paneTitle),
@@ -11937,92 +12143,121 @@ async function claudeState(cwd, paneTitle, shellBusy) {
     // `present: true` above forecloses "none"; the narrowing is for the compiler.
     return state === "none" ? "unknown" : state;
 }
+async function scanCodexBranch(exec, fresh) {
+    const snap = await scanCodexSnapshot(exec, fresh ? { fresh: true } : undefined);
+    return {
+        failed: snap.status !== "ok",
+        instances: snap.instances.map((i) => ({
+            kind: "codex",
+            pid: i.pid,
+            tty: normalizeTty(i.tty),
+            cwd: i.cwd,
+            sessionId: i.sessionId,
+            state: i.state,
+        })),
+    };
+}
+async function scanCursorBranch(exec, fresh) {
+    const snap = await scanCursorSnapshot(exec, undefined, fresh ? { fresh: true } : undefined);
+    return {
+        failed: snap.status !== "ok",
+        instances: snap.instances.map((i) => ({
+            kind: "cursor",
+            pid: i.pid,
+            tty: normalizeTty(i.tty),
+            cwd: i.cwd,
+            sessionId: i.sessionId,
+            state: i.state,
+        })),
+    };
+}
+async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProjectsBase) {
+    const snap = await scanClaudeSnapshot(exec, fresh ? { fresh: true } : undefined);
+    // Identity (kind/pid/tty/cwd) depends only on the scan, not on the pane
+    // titles, so it is kicked off immediately and resolved ALONGSIDE the
+    // titles promise below rather than waiting on it serially.
+    const identityP = Promise.all(snap.instances.map(async (i) => {
+        const tty = normalizeTty(i.tty);
+        // The Codex and Cursor scanners realpath their cwd; claude-scan
+        // reports lsof's raw path. Left alone, the same project reached
+        // through a symlink would compare unequal across kinds and a
+        // captured binding would stop matching its own session.
+        let cwd = i.cwd;
+        try {
+            cwd = await realpath(i.cwd);
+        }
+        catch { /* may exit mid-scan */ }
+        return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy };
+    }));
+    // CONTRACT (A6): this must never reject. A caller's titles promise can
+    // fail (a tmux probe errored) — that degrades Claude's title signal to
+    // the transcript-freshness fallback, exactly today's degraded path. It
+    // must never fail the whole scan just because one caller's title probe did.
+    let titles;
+    try {
+        titles = await paneTitles;
+    }
+    catch {
+        titles = new Map();
+    }
+    const identities = await identityP;
+    const instances = await Promise.all(identities.map(async (id) => {
+        const watched = claudeState === "all" || claudeState.has(normalizeProjectPath(id.cwd));
+        const state = watched
+            ? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, claudeProjectsBase)
+            : "unknown";
+        return {
+            kind: "claude",
+            pid: id.pid,
+            tty: id.tty,
+            cwd: id.cwd,
+            // Claude binds by project path — it has no captured session id.
+            sessionId: "",
+            state,
+        };
+    }));
+    return { failed: snap.status !== "ok", instances };
+}
 /**
  * Every running session of the requested kinds, in one vocabulary.
  *
  * Pass `paneTitles` whenever Claude is among the kinds: without it Claude's
  * title signal is simply absent and its state falls back to transcript
- * freshness, which is coarser. Codex and Cursor ignore it entirely.
+ * freshness, which is coarser. Codex and Cursor ignore it entirely. May be a
+ * PROMISE — the caller's own pane listing and this scan then run in the same
+ * burst instead of one blocking the other (see A6 for the non-rejecting
+ * contract that makes this safe).
  */
-async function scanAgents(kinds, paneTitles = new Map(), exec = execFile) {
+async function scanAgents(kinds, paneTitles = new Map(), exec = execFile, options = {}) {
     const wanted = new Set(kinds);
-    const instances = [];
+    const fresh = options.fresh === true;
+    const claudeState = options.claudeState ?? "all";
+    // The three per-kind branches run CONCURRENTLY — a key that has already
+    // captured its agent still only pays for one, but the capture gesture
+    // (which asks for all three) no longer pays for them serially.
+    const [codexResult, cursorResult, claudeResult] = await Promise.all([
+        wanted.has("codex") ? scanCodexBranch(exec, fresh) : null,
+        wanted.has("cursor") ? scanCursorBranch(exec, fresh) : null,
+        wanted.has("claude")
+            ? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase)
+            : null,
+    ]);
     const failedKinds = [];
-    if (wanted.has("codex")) {
-        const snap = await scanCodexSnapshot(exec);
-        if (snap.status !== "ok")
-            failedKinds.push("codex");
-        for (const i of snap.instances) {
-            instances.push({
-                kind: "codex",
-                pid: i.pid,
-                tty: normalizeTty(i.tty),
-                cwd: i.cwd,
-                sessionId: i.sessionId,
-                state: i.state,
-            });
-        }
-    }
-    if (wanted.has("cursor")) {
-        const snap = await scanCursorSnapshot(exec);
-        if (snap.status !== "ok")
-            failedKinds.push("cursor");
-        for (const i of snap.instances) {
-            instances.push({
-                kind: "cursor",
-                pid: i.pid,
-                tty: normalizeTty(i.tty),
-                cwd: i.cwd,
-                sessionId: i.sessionId,
-                state: i.state,
-            });
-        }
-    }
-    if (wanted.has("claude")) {
-        const snap = await scanClaudeSnapshot(exec);
-        if (snap.status !== "ok")
-            failedKinds.push("claude");
-        const resolved = await Promise.all(snap.instances.map(async (i) => {
-            const tty = normalizeTty(i.tty);
-            // The Codex and Cursor scanners realpath their cwd; claude-scan
-            // reports lsof's raw path. Left alone, the same project reached
-            // through a symlink would compare unequal across kinds and a
-            // captured binding would stop matching its own session.
-            let cwd = i.cwd;
-            try {
-                cwd = await realpath(i.cwd);
-            }
-            catch { /* may exit mid-scan */ }
-            return {
-                kind: "claude",
-                pid: i.pid,
-                tty,
-                cwd,
-                // Claude binds by project path — it has no captured session id.
-                sessionId: "",
-                state: await claudeState(i.cwd, paneTitles.get(tty), i.shellBusy),
-            };
-        }));
-        instances.push(...resolved);
+    const instances = [];
+    // Fixed concatenation order (codex, cursor, claude) regardless of which
+    // branch actually finished first.
+    for (const [kind, result] of [
+        ["codex", codexResult],
+        ["cursor", cursorResult],
+        ["claude", claudeResult],
+    ]) {
+        if (result === null)
+            continue;
+        if (result.failed)
+            failedKinds.push(kind);
+        instances.push(...result.instances);
     }
     return { status: failedKinds.length > 0 ? "unknown" : "ok", failedKinds, instances };
-}
-/**
- * Drop the underlying scanners' 2-second caches so the NEXT scan really goes to
- * the machine. Every scanner caches independently, so "take a fresh snapshot"
- * is not something a caller can achieve by asking politely — without this a
- * press acts on a view of the world up to a poll old, which is exactly when a
- * window raise lands on a session that has already exited.
- */
-function invalidateAgentScans(kinds) {
-    for (const kind of kinds) {
-        if (kind === "claude")
-            invalidateClaudeScan();
-        else if (kind === "codex")
-            invalidateCodexScan();
-        else
-            invalidateCursorScan();
-    }
 }
 /** The kinds a key must scan: just its captured one, or all three while it is
  * still untaught and any of them could be the answer to a capture. */
@@ -12209,9 +12444,6 @@ let AiProject = (() => {
         gate = new PressGate();
         visible = new Map();
         lastImage = new Map();
-        /** Session identity the last refresh RESOLVED for this key. A press treats
-         * it as a hint only — focus() revalidates against a fresh scan. */
-        paintedSession = new Map();
         refresher = new CoalescedRunner(() => this.doRefreshAll());
         timer;
         spin = 0;
@@ -12233,7 +12465,6 @@ let AiProject = (() => {
             this.gate.cancel(ev.action.id);
             this.visible.delete(ev.action.id);
             this.lastImage.delete(ev.action.id);
-            this.paintedSession.delete(ev.action.id);
             if (this.visible.size === 0 && this.timer !== undefined) {
                 clearInterval(this.timer);
                 this.timer = undefined;
@@ -12265,23 +12496,40 @@ let AiProject = (() => {
             }
             return [...kinds];
         }
-        async snapshot(kinds) {
+        /**
+         * One parallel probe burst instead of a chain: panes, clients, and the
+         * frontmost app all start together; the focused-tty AppleScript (which
+         * used to run strictly AFTER the frontmost-app probe, and after that the
+         * whole agent scan) is chained off the frontmost-app result INSIDE its own
+         * branch, so it overlaps the scan instead of adding to its latency. Pane
+         * titles are handed to {@link scanAgents} as a PROMISE for the same
+         * reason: Claude's working/idle marker lives in the terminal title, so the
+         * scan still needs it, but listing panes and scanning no longer serialize.
+         */
+        async snapshot(kinds, opts = {}) {
             const tmux = findTmuxPath();
-            const [panesResult, clientsResult, front] = await Promise.all([
-                runTmux(LIST_AGENT_PANES_ARGS, tmux),
-                runTmux(LIST_CLIENTS_ARGS, tmux),
-                runJxa(FRONT_APP_BUNDLE_JXA),
+            const panesP = runTmux(LIST_AGENT_PANES_ARGS, tmux);
+            const clientsP = runTmux(LIST_CLIENTS_ARGS, tmux);
+            const frontP = runJxa(FRONT_APP_BUNDLE_JXA);
+            // CONTRACT (A6): must never reject — a failed pane listing degrades
+            // Claude's title signal to the transcript fallback, never the scan.
+            const titlesP = panesP
+                .then((r) => (r.ok ? paneTitlesByTty(parseAgentPanes(r.stdout)) : new Map()))
+                .catch(() => new Map());
+            const agentsP = scanAgents(kinds, titlesP, undefined, { fresh: opts.fresh, claudeState: opts.claudeState });
+            const focusedTtyP = frontP.then(async (front) => {
+                const frontBundle = front.ok ? front.stdout.trim() : "";
+                if (frontBundle === ITERM_BUNDLE_ID)
+                    return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+                if (frontBundle === TERMINAL_BUNDLE_ID)
+                    return (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+                return "";
+            });
+            const [panesResult, clientsResult, front, focusedTty, agents] = await Promise.all([
+                panesP, clientsP, frontP, focusedTtyP, agentsP,
             ]);
             const panes = panesResult.ok ? parseAgentPanes(panesResult.stdout) : [];
-            // Pane titles must be gathered BEFORE scanning: Claude's working/idle
-            // marker lives in its terminal title and the scan cannot see it.
-            const agents = await scanAgents(kinds, paneTitlesByTty(panes));
             const frontBundle = front.ok ? front.stdout.trim() : "";
-            let focusedTty = "";
-            if (frontBundle === ITERM_BUNDLE_ID)
-                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            else if (frontBundle === TERMINAL_BUNDLE_ID)
-                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
             return {
                 instances: agents.instances,
                 panes,
@@ -12291,6 +12539,7 @@ let AiProject = (() => {
                 scanStatus: agents.status,
                 failedKinds: agents.failedKinds,
                 clientsOk: clientsResult.ok,
+                panesOk: panesResult.ok,
             };
         }
         refreshAll() { return this.refresher.request(); }
@@ -12307,22 +12556,32 @@ let AiProject = (() => {
          * Is this session holding for the operator? Only asked when the terminal is
          * the ONLY place that answer exists — Codex records it in its own log and so
          * never needs scraping, and outside tmux there is no screen we can read.
+         *
+         * `captured` is a Map of PROMISES, not settled results (A4/6d.3): per-key
+         * bodies now run concurrently, so two keys can race to ask for the same
+         * pane in the same tick — storing the promise lets the second one share
+         * the first one's in-flight capture instead of firing a duplicate.
          */
-        async blockedOnApproval(kind, host, pane, tmux, captured) {
-            // "clear" is the honest answer where the question does not arise: Codex
-            // records blocking in its own log, and outside tmux there is no screen to
-            // read — neither is a FAILED probe.
-            if (pane === undefined || blockedEvidenceFor(kind, host) !== "terminal")
+        async blockedOnApproval(kind, host, pane, tmux, captured, panesOk, clientsOk) {
+            if (pane === undefined) {
+                // A4: "no pane" is ambiguous by itself — see the pure decision this
+                // defers to for why panesOk/clientsOk tell it apart from a genuine
+                // pane-listing failure.
+                return blockedProbeForMissingPane(kind, panesOk, clientsOk);
+            }
+            if (blockedEvidenceFor(kind, host) !== "terminal")
                 return "clear";
             // Several keys can watch the same pane; capture it once per tick.
-            let shot = captured.get(pane.paneId);
-            if (shot === undefined) {
-                const result = await runTmux(captureAgentPaneArgs(pane.paneId), tmux);
-                shot = { ok: result.ok, text: result.stdout };
-                captured.set(pane.paneId, shot);
-                if (!result.ok)
-                    streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+            let shotP = captured.get(pane.paneId);
+            if (shotP === undefined) {
+                shotP = runTmux(captureAgentPaneArgs(pane.paneId), tmux).then((result) => {
+                    if (!result.ok)
+                        streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+                    return { ok: result.ok, text: result.stdout };
+                });
+                captured.set(pane.paneId, shotP);
             }
+            const shot = await shotP;
             // A probe that errored has NOT told us the agent is unblocked.
             if (!shot.ok)
                 return "failed";
@@ -12332,22 +12591,43 @@ let AiProject = (() => {
             if (this.visible.size === 0)
                 return;
             const entries = await this.readKeys();
-            const snap = await this.snapshot(this.wantedKinds(entries));
+            const kinds = this.wantedKinds(entries);
+            // Canonicalize each DISTINCT raw project string once (a home-dir
+            // realpath, cheap but not free) — doing it per key duplicated the work
+            // across every key sharing a project, and doing it AFTER the scan (as
+            // this used to) meant the watched-Claude-project set below could not
+            // exist yet when the scan needed it.
+            const rawProjects = [...new Set(entries.map((e) => (e.settings.project ?? "").trim()))];
+            const canonicalByRaw = new Map(await Promise.all(rawProjects.map(async (raw) => [raw, await this.canonicalProject(raw)])));
+            // Claude alone pays for a transcript read per instance (F4); spend it
+            // only on projects a visible key is actually watching. A key bound to
+            // Codex or Cursor gets its state for free from the scan itself.
+            const watchedClaudeProjects = new Set();
+            for (const { settings } of entries) {
+                if (settings.agent !== "claude")
+                    continue;
+                const raw = (settings.project ?? "").trim();
+                if (raw === "")
+                    continue;
+                const canonical = canonicalByRaw.get(raw);
+                if (canonical !== undefined && canonical !== "")
+                    watchedClaudeProjects.add(normalizeProjectPath(canonical));
+            }
+            const snap = await this.snapshot(kinds, { claudeState: watchedClaudeProjects });
             const tmux = findTmuxPath();
             this.spin++;
-            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working" || i.state === "blocked");
-            // One capture-pane per pane per tick, however many keys watch it.
+            // One capture-pane per pane per tick, however many keys watch it,
+            // shared via its PROMISE — see blockedOnApproval.
             const captured = new Map();
-            for (const { key, settings } of entries) {
+            const blockedProbes = [];
+            // Per-key bodies run CONCURRENTLY (F5): each does its own setImage,
+            // guarded by the existing lastImage dedupe.
+            await Promise.all(entries.map(async ({ key, settings }) => {
                 const kind = settings.agent;
-                const project = await this.canonicalProject((settings.project ?? "").trim());
+                const project = canonicalByRaw.get((settings.project ?? "").trim()) ?? "";
                 const sessionId = (settings.sessionId ?? "").trim();
                 const mine = kind !== undefined && project !== "" ? agentInstancesFor(snap.instances, kind, project) : [];
                 const instance = kind === undefined ? null : selectAgentInstance(snap.instances, kind, project, sessionId);
-                if (instance === null)
-                    this.paintedSession.delete(key.id);
-                else
-                    this.paintedSession.set(key.id, instance.sessionId);
                 const pane = instance === null ? undefined : agentPaneForTty(snap.panes, instance.tty);
                 let host = "";
                 let hot = false;
@@ -12360,8 +12640,9 @@ let AiProject = (() => {
                     host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
                 }
                 const blockedProbe = instance !== null && kind !== undefined
-                    ? await this.blockedOnApproval(kind, host, pane, tmux, captured)
+                    ? await this.blockedOnApproval(kind, host, pane, tmux, captured, snap.panesOk, snap.clientsOk)
                     : "clear";
+                blockedProbes.push(blockedProbe);
                 const state = decideAgentFace({
                     hasTarget: kind !== undefined && project !== "",
                     matchCount: mine.length,
@@ -12381,7 +12662,7 @@ let AiProject = (() => {
                     spin: this.spin,
                 }));
                 if (this.lastImage.get(key.id) === image)
-                    continue;
+                    return;
                 try {
                     await key.setImage(image);
                     this.lastImage.set(key.id, image);
@@ -12389,7 +12670,14 @@ let AiProject = (() => {
                 catch (error) {
                     streamDeck.logger.debug(`AI Project image skipped: ${String(error)}`);
                 }
-            }
+            }));
+            // Computed AFTER the per-key pass (F7): needs this tick's blocked-probe
+            // verdicts, which only exist once every key has been evaluated.
+            this.interesting = agentTickInteresting({
+                focusedTty: snap.focusedTty,
+                instances: snap.instances,
+                blockedProbes,
+            });
         }
         async raiseTty(tty) {
             if (await processRunning("iTerm2")) {
@@ -12419,12 +12707,24 @@ let AiProject = (() => {
                 await key.showAlert();
                 return;
             }
-            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
-            // Genuinely fresh: every scanner caches for ~2s, so without dropping those
-            // caches first this would act on a view of the world up to a poll old and
-            // could raise a window for a session that has already exited.
-            invalidateAgentScans([kind]);
-            const snap = await this.snapshot([kind]);
+            // A3: settings are what capture() commits, so they are the single source
+            // of truth for what this key targets — there used to be a second,
+            // separately-written `paintedSession` map read here instead, and making
+            // the per-key refresh loop concurrent (above) turned its race with
+            // doRefreshAll's writes into a real bug: a refresh that read a key's
+            // settings before a capture committed could overwrite paintedSession
+            // AFTERWARDS, and focus() would prefer that stale value over the
+            // freshly captured one. Reading settings directly has no such race.
+            const expected = (settings.sessionId ?? "").trim();
+            // `fresh: true` asks every scanner for the machine's state right now,
+            // bypassing their shared ~2s caches (and Claude's separate 60s cwd
+            // memo) — without it this would act on a view of the world up to a
+            // poll old and could raise a window for a session that has already
+            // exited. `claudeState: new Set()` skips Claude's transcript read
+            // entirely: a raise only needs to know WHICH session is still there,
+            // not whether it is working, so there is nothing to buy by paying for
+            // that read on the press path.
+            const snap = await this.snapshot([kind], { fresh: true, claudeState: new Set() });
             if (!kindTrusted(snap, kind)) {
                 streamDeck.logger.warn("AI Project: agent scan unavailable; refusing stale focus.");
                 await key.showAlert();
@@ -12494,8 +12794,9 @@ let AiProject = (() => {
             // not yet know which agent it is dealing with.
             // Capture must consider every kind, and every kind must have answered:
             // binding to the wrong agent is not recoverable by looking again.
-            invalidateAgentScans(kindsToScan(undefined));
-            const snap = await this.snapshot(kindsToScan(undefined));
+            // `fresh: true` asks the machine now rather than acting on a snapshot
+            // up to a poll old.
+            const snap = await this.snapshot(kindsToScan(undefined), { fresh: true });
             if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
                 await key.showAlert();
                 return;
@@ -12529,7 +12830,6 @@ let AiProject = (() => {
             }
             const settings = await key.getSettings();
             await key.setSettings({ ...settings, agent: instance.kind, project, sessionId: instance.sessionId });
-            this.paintedSession.set(key.id, instance.sessionId);
             await key.showOk();
             await this.refreshAll();
         }
@@ -13337,28 +13637,35 @@ let FocusTmuxWindow = (() => {
             {
                 const tmux = findTmuxPath();
                 this.spin++;
-                const [front, windowsRes, clientsRes, panesRes, instances] = await Promise.all([
-                    runJxa(FRONT_APP_BUNDLE_JXA),
+                const frontP = runJxa(FRONT_APP_BUNDLE_JXA);
+                // Chained off `front` so it overlaps the rest of this burst instead of
+                // running strictly after it. Only address iTerm when it is frontmost
+                // — AppleScript would LAUNCH it.
+                const focusedTtyP = frontP.then(async (front) => {
+                    if (!(front.ok && front.stdout.trim() === ITERM_BUNDLE_ID))
+                        return "";
+                    return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+                });
+                const [front, windowsRes, clientsRes, panesRes, instances, focusedTty, otherAgents] = await Promise.all([
+                    frontP,
                     runTmux(LIST_WINDOWS_ARGS, tmux),
                     runTmux(LIST_CLIENTS_ARGS, tmux),
                     runTmux(LIST_PANE_TTYS_ARGS, tmux),
                     scanClaudeInstances(),
+                    focusedTtyP,
+                    // Codex and Cursor, via the shared adapter, started in the SAME
+                    // burst rather than after it. Claude is deliberately NOT requested
+                    // here: its own path below is richer (it upgrades a ✳ idle title to
+                    // "working" from a backgrounded shell or a transcript that owes the
+                    // next turn), and duplicating it would be a second opinion that
+                    // could disagree with itself.
+                    scanAgents(["codex", "cursor"]),
                 ]);
                 const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
                 let anyInteresting = iTermFrontmost;
-                // Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
-                const focusedTty = iTermFrontmost
-                    ? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
-                    : "";
                 const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
                 const clients = parseClients(clientsRes.stdout);
                 const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
-                // Codex and Cursor, via the shared adapter. Claude is deliberately NOT
-                // requested here: its own path below is richer (it upgrades a ✳ idle
-                // title to "working" from a backgrounded shell or a transcript that
-                // owes the next turn), and duplicating it would be a second opinion
-                // that could disagree with itself.
-                const otherAgents = await scanAgents(["codex", "cursor"]);
                 const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
                 const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
                 const transcriptWorking = new Map(); // cwd -> working, deduped per tick

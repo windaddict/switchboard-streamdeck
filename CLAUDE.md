@@ -312,6 +312,23 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   teal=files), and the "jack-line" strip at each key's foot. Add new actions by
   adding a glyph fn there — don't hand-draw one-off icons. Live faces
   (tmux-key.ts, window-ring.ts, key-image.ts) use the same tokens in hex.
+- **`fresh` is not `invalidate`.** The three agent scanners (`claude-scan.ts`,
+  `codex-scan.ts`, `cursor-scan.ts`) each take a `{ fresh: true }` option
+  instead of the older pattern of calling an `invalidateXScan()` before the
+  scan (removed from `agent-scan.ts`'s `invalidateAgentScans`, which used to
+  exist for exactly that). `fresh` asks the machine now for THIS caller,
+  without wiping the shared cache out from under every other poller reading it
+  concurrently — an explicit invalidate is a global reset, `fresh` is a local
+  ask. Publishing to the shared cache is guarded by a monotonic START-sequence
+  counter (`seq`/`publishedSeq` in each scanner), not a wall-clock timestamp:
+  the exact guarantee is "a scan that STARTED earlier can never overwrite the
+  result of one that started later" — it does NOT mean the cache holds the
+  single latest possible observation of the world, since a long scan that
+  started later still wins even if a faster, earlier one finishes after it.
+  Claude's cwd memo (`CWD_TTL_MS`, separate from the 2s world-cache TTL) is a
+  second cache `fresh` has to bypass too — an earlier cut of this that only
+  cleared the world cache left a "fresh" press acting on a cwd observed up to
+  60s ago.
 
 ## Adding a new action
 

@@ -133,28 +133,34 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 		{
 			const tmux = findTmuxPath();
 			this.spin++;
-			const [front, windowsRes, clientsRes, panesRes, instances] = await Promise.all([
-				runJxa(FRONT_APP_BUNDLE_JXA),
+			const frontP = runJxa(FRONT_APP_BUNDLE_JXA);
+			// Chained off `front` so it overlaps the rest of this burst instead of
+			// running strictly after it. Only address iTerm when it is frontmost
+			// — AppleScript would LAUNCH it.
+			const focusedTtyP = frontP.then(async (front) => {
+				if (!(front.ok && front.stdout.trim() === ITERM_BUNDLE_ID)) return "";
+				return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+			});
+			const [front, windowsRes, clientsRes, panesRes, instances, focusedTty, otherAgents] = await Promise.all([
+				frontP,
 				runTmux(LIST_WINDOWS_ARGS, tmux),
 				runTmux(LIST_CLIENTS_ARGS, tmux),
 				runTmux(LIST_PANE_TTYS_ARGS, tmux),
 				scanClaudeInstances(),
+				focusedTtyP,
+				// Codex and Cursor, via the shared adapter, started in the SAME
+				// burst rather than after it. Claude is deliberately NOT requested
+				// here: its own path below is richer (it upgrades a ✳ idle title to
+				// "working" from a backgrounded shell or a transcript that owes the
+				// next turn), and duplicating it would be a second opinion that
+				// could disagree with itself.
+				scanAgents(["codex", "cursor"]),
 			]);
 			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
 			let anyInteresting = iTermFrontmost;
-			// Only address iTerm when it is frontmost — AppleScript would LAUNCH it.
-			const focusedTty = iTermFrontmost
-				? (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim()
-				: "";
 			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
 			const clients = parseClients(clientsRes.stdout);
 			const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
-			// Codex and Cursor, via the shared adapter. Claude is deliberately NOT
-			// requested here: its own path below is richer (it upgrades a ✳ idle
-			// title to "working" from a backgrounded shell or a transcript that
-			// owes the next turn), and duplicating it would be a second opinion
-			// that could disagree with itself.
-			const otherAgents = await scanAgents(["codex", "cursor"]);
 			const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
 			const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
 			const transcriptWorking = new Map<string, boolean>(); // cwd -> working, deduped per tick

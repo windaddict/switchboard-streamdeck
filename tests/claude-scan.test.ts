@@ -17,7 +17,12 @@ import {
 beforeEach(() => invalidateClaudeScan());
 
 describe("scanClaudeInstances", () => {
-	it("chains pgrep -> targeted ps -> pgrep -P -> confirm -> batched lsof", async () => {
+	/** The child-probe chain (pgrep -P -> confirming ps) and the lsof cwd probe
+	 * both depend only on the FIRST ps and now run concurrently, so their
+	 * relative order is no longer meaningful — this pins the call SET instead
+	 * of a strict order. The two ps calls are told apart by shape rather than
+	 * position for the same reason. */
+	it("issues pgrep -> targeted ps -> {pgrep -P -> confirm ps} || batched lsof", async () => {
 		const calls: Array<{ file: string; args: readonly string[] }> = [];
 		const exec = vi.fn((file, args, _o, cb) => {
 			calls.push({ file, args });
@@ -34,11 +39,15 @@ describe("scanClaudeInstances", () => {
 			{ pid: 1120, tty: "/dev/ttys019", cwd: "/Users/j/code/a", shellBusy: true },
 			{ pid: 14251, tty: "/dev/ttys001", cwd: "/Users/j/code/b", shellBusy: false },
 		]);
+		expect(calls).toHaveLength(5);
 		expect(calls[0]).toEqual({ file: "/usr/bin/pgrep", args: PGREP_CLAUDE_ARGS });
 		expect(calls[1]).toEqual({ file: "/bin/ps", args: claudeDetailArgs([1120, 14251]) });
-		expect(calls[2]).toEqual({ file: "/usr/bin/pgrep", args: childPidsArgs([1120, 14251]) });
-		expect(calls[3]).toEqual({ file: "/bin/ps", args: confirmShellArgs([3161]) });
-		expect(calls[4].file).toBe("/usr/sbin/lsof");
+		// The remaining three (child pgrep, confirm ps, lsof) may interleave in
+		// either order — assert the SET, not a position.
+		const rest = calls.slice(2);
+		expect(rest).toContainEqual({ file: "/usr/bin/pgrep", args: childPidsArgs([1120, 14251]) });
+		expect(rest).toContainEqual({ file: "/bin/ps", args: confirmShellArgs([3161]) });
+		expect(rest.some((c) => c.file === "/usr/sbin/lsof")).toBe(true);
 	});
 
 	it("cwds come from cache on the second scan (no second lsof)", async () => {
@@ -89,6 +98,55 @@ describe("processRunning", () => {
 });
 
 describe("scanClaudeSnapshot", () => {
+
+	/** A fresh scan must resolve identity from its OWN lsof. Before this, the
+	 * memo entry survived when lsof succeeded but omitted a pid, so a "fresh"
+	 * scan could hand a press a cwd observed up to 60s earlier. */
+	it("fresh: an lsof that omits a pid yields no cwd, never a 60s-old one", async () => {
+		const good = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/usr/bin/pgrep" && args[0] === "-x") cb(null, "1\n", "");
+			else if (file === "/usr/bin/pgrep") cb(null, "", "");
+			else if (file === "/bin/ps" && isDetailPs(args)) cb(null, "1 9 ttys001 claude\n", "");
+			else if (file === "/bin/ps") cb(null, "", "");
+			else cb(null, "p1\nn/Users/j/warm\n", "");
+		});
+		expect((await scanClaudeSnapshot(good as unknown as ExecFileLike)).instances[0].cwd).toBe("/Users/j/warm");
+		// Same pid, but this lsof answers about nobody.
+		const omits = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/usr/bin/pgrep" && args[0] === "-x") cb(null, "1\n", "");
+			else if (file === "/usr/bin/pgrep") cb(null, "", "");
+			else if (file === "/bin/ps" && isDetailPs(args)) cb(null, "1 9 ttys001 claude\n", "");
+			else if (file === "/bin/ps") cb(null, "", "");
+			else cb(null, "", ""); // succeeds, reports nothing
+		});
+		const snap = await scanClaudeSnapshot(omits as unknown as ExecFileLike, { fresh: true });
+		expect(snap.instances.map((i) => i.cwd)).not.toContain("/Users/j/warm");
+		expect(snap.status).toBe("unknown"); // a live session it could not place
+	});
+
+	/** Invalidation must not hand an already-running scan the right to publish
+	 * over a newer one: it raises the watermark rather than zeroing the counter. */
+	it("invalidation locks out an in-flight scan instead of promoting it", async () => {
+		let releaseOld: (() => void) | null = null;
+		const held = new Promise<void>((r) => { releaseOld = r; });
+		let first = true;
+		const exec = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/usr/bin/pgrep" && args[0] === "-x") cb(null, "1\n", "");
+			else if (file === "/usr/bin/pgrep") cb(null, "", "");
+			else if (file === "/bin/ps" && isDetailPs(args)) cb(null, "1 9 ttys001 claude\n", "");
+			else if (file === "/bin/ps") cb(null, "", "");
+			else if (first) { first = false; void held.then(() => cb(null, "p1\nn/Users/j/STALE\n", "")); }
+			else cb(null, "p1\nn/Users/j/FRESH\n", "");
+		});
+		const stale = scanClaudeSnapshot(exec as unknown as ExecFileLike); // starts, then hangs
+		invalidateClaudeScan();
+		const fresh = await scanClaudeSnapshot(exec as unknown as ExecFileLike);
+		expect(fresh.instances[0].cwd).toBe("/Users/j/FRESH");
+		releaseOld!();
+		await stale;
+		// The cached view must still be the newer scan's.
+		expect((await scanClaudeSnapshot(exec as unknown as ExecFileLike)).instances[0].cwd).toBe("/Users/j/FRESH");
+	});
 	type Cb = (error: Error | null, stdout: string, stderr: string) => void;
 	/** An execFile error carrying whatever Node would attach for this failure. */
 	const failure = (props: Record<string, unknown>) => Object.assign(new Error("probe failed"), props);
@@ -210,5 +268,84 @@ describe("scanClaudeSnapshot", () => {
 		});
 		expect(await scanClaudeSnapshot(exec as unknown as ExecFileLike))
 			.toEqual({ status: "ok", instances: ONE });
+	});
+
+	describe("fresh scans (press path)", () => {
+		it("bypasses a warm world cache", async () => {
+			const exec = healthyExec();
+			await scanClaudeSnapshot(exec as unknown as ExecFileLike); // warms the 2s world cache
+			const before = exec.mock.calls.length;
+			await scanClaudeSnapshot(exec as unknown as ExecFileLike, { fresh: true });
+			// A cache hit would have made zero further calls; fresh must probe again.
+			expect(exec.mock.calls.length).toBeGreaterThan(before);
+		});
+
+		/** A1: bypassing only the world cache would still answer from a cwd
+		 * observed up to 60s ago — the per-pid memo has to be bypassed too. */
+		it("bypasses the 60s cwd memo (A1): a warm memo still gets a fresh lsof for every pid", async () => {
+			const exec = healthyExec();
+			await scanClaudeSnapshot(exec as unknown as ExecFileLike); // memoises pid 1's cwd
+			const lsofBefore = exec.mock.calls.filter((c) => c[0] === "/usr/sbin/lsof").length;
+			expect(lsofBefore).toBe(1);
+			await scanClaudeSnapshot(exec as unknown as ExecFileLike, { fresh: true });
+			const lsofAfter = exec.mock.calls.filter((c) => c[0] === "/usr/sbin/lsof").length;
+			expect(lsofAfter).toBe(2); // re-probed despite the memo being warm
+		});
+
+		it("does not join an in-flight scan", async () => {
+			let releaseFirst: (() => void) | null = null;
+			const gate = new Promise<void>((r) => { releaseFirst = r; });
+			let pgrepCalls = 0;
+			const exec = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+				if (file === "/usr/bin/pgrep" && args[0] === "-x") {
+					pgrepCalls++;
+					const mine = pgrepCalls;
+					if (mine === 1) { void gate.then(() => cb(failure({ code: 1 }), "", "")); return; }
+					cb(failure({ code: 1 }), "", "");
+					return;
+				}
+			});
+			const first = scanClaudeSnapshot(exec as unknown as ExecFileLike); // in-flight, held open
+			const second = scanClaudeSnapshot(exec as unknown as ExecFileLike, { fresh: true }); // must NOT join it
+			releaseFirst!();
+			await Promise.all([first, second]);
+			expect(pgrepCalls).toBe(2); // a genuinely separate probe, not the shared in-flight one
+		});
+
+		/** A2 / A7: driven by controlling COMPLETION order, not just asserting
+		 * both scans happened. The scan that started later (higher sequence
+		 * number) must win the cache even though the one that started earlier
+		 * happens to finish after it. */
+		it("a scan that started earlier cannot publish over one that started later", async () => {
+			let releaseFirst: (() => void) | null = null;
+			const gate = new Promise<void>((r) => { releaseFirst = r; });
+			let pgrepCalls = 0;
+			const has2 = (args: readonly string[]) => args.includes("1,2");
+			const exec = vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+				if (file === "/usr/bin/pgrep" && args[0] === "-x") {
+					pgrepCalls++;
+					if (pgrepCalls === 1) { void gate.then(() => cb(null, "1\n2\n", "")); return; } // earlier: 2 pids
+					cb(null, "1\n", ""); // later: 1 pid, resolves right away
+					return;
+				}
+				if (file === "/usr/bin/pgrep") { cb(null, "", ""); return; } // child probe: none busy
+				if (file === "/bin/ps" && isDetailPs(args)) {
+					cb(null, has2(args) ? "1 9 ttys001 claude\n2 9 ttys002 claude\n" : "1 9 ttys001 claude\n", "");
+					return;
+				}
+				if (file === "/bin/ps") { cb(null, "", ""); return; }
+				cb(null, has2(args) ? "p1\nfcwd\nn/Users/j/x\np2\nfcwd\nn/Users/j/y\n" : "p1\nfcwd\nn/Users/j/x\n", "");
+			});
+			const earlier = scanClaudeSnapshot(exec as unknown as ExecFileLike, { fresh: true }); // mySeq 1, stalls on gate
+			const later = scanClaudeSnapshot(exec as unknown as ExecFileLike, { fresh: true }); // mySeq 2, races ahead
+			const laterResult = await later;
+			expect(laterResult.instances).toHaveLength(1); // finished and published first
+			releaseFirst!();
+			const earlierResult = await earlier;
+			expect(earlierResult.instances).toHaveLength(2); // still its own honest answer to its caller...
+			// ...but must NOT have become the shared cache, even finishing last.
+			const cached = await scanClaudeSnapshot(exec as unknown as ExecFileLike);
+			expect(cached.instances).toHaveLength(1);
+		});
 	});
 });

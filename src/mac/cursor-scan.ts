@@ -24,6 +24,17 @@
  * Privacy: transcripts contain the operator's prompts and command text. Only
  * a bounded tail is read, only `type`/`role` are parsed out of it, and no
  * transcript content is ever returned or logged.
+ *
+ * A caller on the press path that needs the machine's state right now, not a
+ * poll-old shared one, passes `{ fresh: true }` (see {@link CursorScanOptions}).
+ * `fresh` does NOT bump `generation` — it answers one caller's "right now"
+ * without retroactively declaring every OTHER in-flight scan stale. Two
+ * publish guards cooperate, each closing a different gap: `generation` is an
+ * explicit invalidation epoch (bumped by {@link invalidateCursorScan}, so a
+ * scan started before an invalidation can never publish after one started
+ * following it), while a monotonic start-sequence counter orders scans
+ * WITHIN the same epoch by which one started later — see the exact guarantee
+ * documented at its declaration, which mirrors claude-scan.ts.
  */
 
 import { execFile as nodeExecFile } from "node:child_process";
@@ -52,6 +63,11 @@ export type CursorExecFileLike = (
 ) => unknown;
 
 const TIMEOUT_MS = 4000;
+/** Shared across every poller; deliberately LESS than the pollers' own
+ * interval (2500ms) so each action's tick still lands on a genuinely fresh
+ * scan rather than always inheriting one a neighbour happened to trigger a
+ * moment earlier. Raising this above the poll period would halve the
+ * effective refresh rate — do not "fix" it. */
 const WORLD_TTL_MS = 2000;
 /** Enough to hold the last turn's records; bounds how much prompt text is
  * ever paged in. A record larger than the window yields unparsable fragments,
@@ -64,6 +80,14 @@ export interface CursorScanSnapshot {
 	instances: CursorInstance[];
 }
 
+export interface CursorScanOptions {
+	/** Skip the world-cache TTL and decline to join an in-flight scan — a
+	 * scan already running cannot answer for "right now". Deliberately does
+	 * NOT bump `generation`: see the module header for why two separate
+	 * publish guards are needed. */
+	fresh?: boolean;
+}
+
 let cache: { at: number; snapshot: CursorScanSnapshot } | null = null;
 let inFlight: Promise<CursorScanSnapshot> | null = null;
 /** Bumped by every invalidation. A scan carries the generation it started in
@@ -71,6 +95,21 @@ let inFlight: Promise<CursorScanSnapshot> | null = null;
  * without it, a slow scan begun before a press could land AFTER the press's
  * fresh scan and leave the cache holding older data. */
 let generation = 0;
+/**
+ * Monotonic start-sequence guard, on top of `generation`: two scans in the
+ * SAME generation (e.g. two `fresh` scans, or two ordinary concurrent ones)
+ * still need ordering by which one started later — `generation` alone is
+ * silent on that.
+ *
+ * EXACT GUARANTEE (mirrors claude-scan.ts): a scan that started earlier can
+ * never overwrite the result of one that started later. It does NOT
+ * guarantee the cache holds the latest observation of the world — a long
+ * scan that started later still wins even if a faster, earlier scan finishes
+ * after it. Ordered by a counter assigned at kickoff, not a `Date.now()`
+ * timestamp: two scans can start in the same millisecond.
+ */
+let seq = 0;
+let publishedSeq = 0;
 /** Session id → transcript path. A session's transcript never moves, so this
  * spares the per-tick directory walk once a session has been seen. */
 const transcriptPaths = new Map<string, string>();
@@ -221,6 +260,10 @@ export function invalidateCursorScan(): void {
 	cache = null;
 	inFlight = null;
 	generation++;
+	// Do NOT reset `seq` — an in-flight scan keeps the sequence it took at entry,
+	// so zeroing the counter would let it publish over a newer scan afterwards.
+	// Raising the watermark locks in-flight scans out; the next scan (++seq) passes.
+	publishedSeq = seq;
 }
 
 /** Tests: also drop the session→transcript memo. */
@@ -242,28 +285,32 @@ export function scanCursorInstances(
 export function scanCursorSnapshot(
 	exec: CursorExecFileLike = nodeExecFile as unknown as CursorExecFileLike,
 	projectsBase: string = CURSOR_PROJECTS_BASE,
+	options: CursorScanOptions = {},
 ): Promise<CursorScanSnapshot> {
-	if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS) return Promise.resolve(cache.snapshot);
-	if (inFlight !== null) return inFlight;
-	const p = doScan(exec, projectsBase, generation);
+	if (!options.fresh) {
+		if (cache !== null && Date.now() - cache.at < WORLD_TTL_MS) return Promise.resolve(cache.snapshot);
+		if (inFlight !== null) return inFlight;
+	}
+	const mySeq = ++seq;
+	const p = doScan(exec, projectsBase, generation, mySeq);
 	inFlight = p;
 	void p.finally(() => { if (inFlight === p) inFlight = null; });
 	return p;
 }
 
-async function doScan(exec: CursorExecFileLike, projectsBase: string, gen: number): Promise<CursorScanSnapshot> {
+async function doScan(exec: CursorExecFileLike, projectsBase: string, gen: number, mySeq: number): Promise<CursorScanSnapshot> {
 	const now = Date.now();
 	const pgrep = await run("/usr/bin/pgrep", PGREP_CURSOR_ARGS, exec);
-	if (pgrepFoundNothing(pgrep)) return remember(now, gen, { status: "ok", instances: [] });
-	if (!pgrep.ok) return rememberUnknown(now, gen);
+	if (pgrepFoundNothing(pgrep)) return remember(now, gen, mySeq, { status: "ok", instances: [] });
+	if (!pgrep.ok) return rememberUnknown(now, gen, mySeq);
 	const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
-	if (pids.length === 0) return remember(now, gen, { status: "ok", instances: [] });
+	if (pids.length === 0) return remember(now, gen, mySeq, { status: "ok", instances: [] });
 	const ps = await run("/bin/ps", cursorPsArgs(pids), exec);
-	if (!ps.ok) return rememberUnknown(now, gen);
+	if (!ps.ok) return rememberUnknown(now, gen, mySeq);
 	const processes = withoutWorkerChildren(parseCursorProcesses(ps.stdout).filter(isCursorProcess));
-	if (processes.length === 0) return remember(now, gen, { status: "ok", instances: [] });
+	if (processes.length === 0) return remember(now, gen, mySeq, { status: "ok", instances: [] });
 	const lsof = await run("/usr/sbin/lsof", cursorLsofArgs(processes.map((p) => p.pid)), exec);
-	if (!lsof.ok) return rememberUnknown(now, gen);
+	if (!lsof.ok) return rememberUnknown(now, gen, mySeq);
 	const entries = parseLsofEntries(lsof.stdout);
 	let incomplete = false;
 	const instances = await Promise.all(processes.map(async (process) => {
@@ -316,17 +363,22 @@ async function doScan(exec: CursorExecFileLike, projectsBase: string, gen: numbe
 		};
 		return instance;
 	}));
-	return remember(now, gen, {
+	return remember(now, gen, mySeq, {
 		status: incomplete ? "unknown" : "ok",
 		instances: instances.filter((i): i is CursorInstance => i !== null),
 	});
 }
 
-function remember(at: number, gen: number, snapshot: CursorScanSnapshot): CursorScanSnapshot {
+function remember(at: number, gen: number, mySeq: number, snapshot: CursorScanSnapshot): CursorScanSnapshot {
 	// Still return the snapshot to whoever awaited THIS scan; just don't let a
-	// superseded scan become the cached view of the world.
+	// superseded scan become the cached view of the world. Two independent
+	// checks: `gen` catches an EXPLICIT invalidation happening in between;
+	// `mySeq` catches two scans of the SAME generation finishing out of start
+	// order (see the module header for why both are needed).
 	if (gen !== generation) return snapshot;
+	if (mySeq < publishedSeq) return snapshot;
 	cache = { at, snapshot };
+	publishedSeq = mySeq;
 	// Sessions come and go; keep the memo from growing without bound.
 	if (transcriptPaths.size > 64) {
 		const live = new Set(snapshot.instances.map((i) => i.sessionId));
@@ -338,7 +390,7 @@ function remember(at: number, gen: number, snapshot: CursorScanSnapshot): Cursor
 	return snapshot;
 }
 
-function rememberUnknown(at: number, gen: number): CursorScanSnapshot {
+function rememberUnknown(at: number, gen: number, mySeq: number): CursorScanSnapshot {
 	const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" as const })) ?? [];
-	return remember(at, gen, { status: "unknown", instances: stale });
+	return remember(at, gen, mySeq, { status: "unknown", instances: stale });
 }
