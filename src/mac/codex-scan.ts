@@ -118,6 +118,12 @@ async function doScan(exec: CodexExecFileLike): Promise<CodexScanSnapshot> {
 		const lines = await rolloutLines(rolloutPath);
 		const originator = codexRolloutOriginator(lines);
 		if (originator !== "codex-tui") {
+			// A KNOWN non-tui originator is a clean negative: this is a `codex
+			// exec` job or similar, correctly not a target. An EMPTY one means
+			// the rollout could not be read or carried no session_meta — we
+			// failed to classify a live process, and unlike Cursor's
+			// never-prompted case that is not a normal state, so it stays an
+			// incomplete observation rather than being reported as a clean scan.
 			if (originator === "") incomplete = true;
 			return null;
 		}

@@ -300,6 +300,47 @@ export function captureAgentPaneArgs(paneId: string): string[] {
 	return ["capture-pane", "-p", "-t", paneId];
 }
 
+/**
+ * Does any coding agent in this tmux WINDOW have work in flight?
+ *
+ * The Focus tmux Window key answers "take me to that window", so it wants one
+ * bit about the whole window rather than per-session detail: is something in
+ * there still going, or is it all sitting idle? Panes are matched to sessions
+ * by tty — never by `pane_current_command`, which is how the older Claude-only
+ * check worked and why it could not see Cursor at all (cursor-agent presents as
+ * `node`, not `cursor`).
+ *
+ * The exact guarantee: `working` means at least one agent in the window is
+ * mid-turn. `waiting` means agents are present and none is KNOWN to be
+ * computing — which includes a session whose state could not be read at all, so
+ * `waiting` here is "present, not known to be busy" rather than a positive
+ * claim of idleness. Callers must not pass instances from a failed probe. Note what
+ * that folds together — an agent BLOCKED on your approval reports `waiting`
+ * here, because it is indeed not computing, and this key has no amber to spend:
+ * amber belongs to the AI Project key, which is bound to one exact session and
+ * can say whose approval is wanted. Less information, not wrong information.
+ *
+ * Structurally typed over panes so it works with either tmux listing format.
+ */
+export function agentSparkForWindow(
+	instances: readonly AgentInstance[],
+	panes: ReadonlyArray<{ tty: string; session: string; windowName: string }>,
+	session: string,
+	windowName: string,
+): "working" | "waiting" | "none" {
+	const ttys = new Set(
+		panes.filter((p) => p.session === session && p.windowName === windowName).map((p) => p.tty),
+	);
+	if (ttys.size === 0) return "none";
+	let present = false;
+	for (const i of instances) {
+		if (!ttys.has(i.tty)) continue;
+		present = true;
+		if (i.state === "working") return "working";
+	}
+	return present ? "waiting" : "none";
+}
+
 /** Every running session of one kind sitting in one project folder. */
 export function agentInstancesFor(
 	instances: readonly AgentInstance[],
@@ -325,10 +366,25 @@ export function selectAgentInstance(
 	project: string,
 	sessionId: string,
 ): AgentInstance | null {
-	const mine = agentInstancesFor(instances, kind, project);
+	// An empty sessionId means two different things, and conflating them is a
+	// hole: on the KEY it means "nothing captured", but on an INSTANCE it means
+	// "we can see this session but cannot name its conversation". For a kind
+	// that has conversation ids, an unnameable session must never be selectable
+	// at all — otherwise capturing one would store an empty binding that
+	// afterwards adopts whichever sole session happens to sit in that folder,
+	// which is exactly the neighbour-adoption this function exists to prevent.
+	const mine = agentInstancesFor(instances, kind, project)
+		.filter((i) => !bindsBySession(kind) || i.sessionId !== "");
 	if (sessionId !== "") {
 		const matches = mine.filter((i) => i.sessionId === sessionId);
 		return matches.length === 1 ? matches[0] : null;
 	}
 	return mine.length === 1 ? mine[0] : null;
+}
+
+/** Does this agent give its conversations a stable id? Codex and Cursor do, so
+ * a key binds to one exact session. Claude Code does not, so its keys bind by
+ * project folder and a folder with two Claude sessions is simply ambiguous. */
+export function bindsBySession(kind: AgentKind): boolean {
+	return kind !== "claude";
 }

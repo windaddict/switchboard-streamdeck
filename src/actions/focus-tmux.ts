@@ -14,6 +14,7 @@ import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { CoalescedRunner, shouldPollThisTick } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import { scanClaudeInstances } from "../mac/claude-scan.js";
+import { agentSparkForWindow, scanAgents } from "../mac/agent-scan.js";
 import {
 	claudeStateForWindow,
 	LIST_PANE_TTYS_ARGS,
@@ -148,6 +149,12 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
 			const clients = parseClients(clientsRes.stdout);
 			const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
+			// Codex and Cursor, via the shared adapter. Claude is deliberately NOT
+			// requested here: its own path below is richer (it upgrades a ✳ idle
+			// title to "working" from a backgrounded shell or a transcript that
+			// owes the next turn), and duplicating it would be a second opinion
+			// that could disagree with itself.
+			const otherAgents = await scanAgents(["codex", "cursor"]);
 			const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
 			const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
 			const transcriptWorking = new Map<string, boolean>(); // cwd -> working, deduped per tick
@@ -185,6 +192,17 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 							}
 						}
 					}
+				}
+				// Whatever Claude concluded, a Codex or Cursor session in the same
+				// window can still be mid-turn — and for a window with no Claude in
+				// it at all this is the only signal there is.
+				// Only layer when those probes actually answered. A failed scan
+				// returns nothing, which would otherwise read as "no agent here"
+				// and quietly retract a spark that belongs there.
+				if (claude !== "working" && status.state !== "unknown" && otherAgents.status === "ok") {
+					const other = agentSparkForWindow(otherAgents.instances, panes, status.session, status.window);
+					if (other === "working") claude = "working";
+					else if (claude === "none" && other === "waiting") claude = "waiting";
 				}
 				if (status.state === "hot" || claude === "working") anyInteresting = true;
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));

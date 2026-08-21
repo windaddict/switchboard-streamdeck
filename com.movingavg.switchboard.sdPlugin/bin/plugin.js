@@ -10718,6 +10718,12 @@ async function doScan$1(exec) {
         const lines = await rolloutLines(rolloutPath);
         const originator = codexRolloutOriginator(lines);
         if (originator !== "codex-tui") {
+            // A KNOWN non-tui originator is a clean negative: this is a `codex
+            // exec` job or similar, correctly not a target. An EMPTY one means
+            // the rollout could not be read or carried no session_meta — we
+            // failed to classify a live process, and unlike Cursor's
+            // never-prompted case that is not a normal state, so it stays an
+            // incomplete observation rather than being reported as a clean scan.
             if (originator === "")
                 incomplete = true;
             return null;
@@ -11594,10 +11600,15 @@ function buildCursorProjectKeyImage(args) {
  * (Stream Deck gives plugins a minimal PATH) and `UTF8_ENV` (its environment
  * has no LANG, and the C locale mangles non-ASCII output).
  *
- * The snapshot carries a `status`. When any probe fails the scan reports
+ * The snapshot carries a `status`. When any probe FAILS the scan reports
  * `unknown` and downgrades remembered sessions rather than serving a
  * confident, stale answer — a key that focuses the wrong terminal window is
  * worse than a key that admits it doesn't know.
+ *
+ * A session that is present but not yet IDENTIFIABLE is a different thing and
+ * is not a failure: it is returned with an empty `sessionId`, and `status`
+ * stays `ok`. Conflating the two made one unprompted session gray out every
+ * Cursor key on the machine.
  *
  * Privacy: transcripts contain the operator's prompts and command text. Only
  * a bounded tail is read, only `type`/`role` are parsed out of it, and no
@@ -11783,9 +11794,9 @@ async function doScan(exec, projectsBase, gen) {
         const mine = entries.filter((e) => e.pid === process.pid);
         const cwdRaw = mine.find((e) => e.fd === "cwd")?.name ?? "";
         const chatDir = soleChatDir(mine.map((e) => e.name));
-        // A session still opening its store, or one mid-switch between two
-        // chats, cannot be identified — say so instead of picking one.
-        if (cwdRaw === "" || chatDir === "") {
+        // Without a cwd the process cannot be placed in a project at all, which
+        // is a genuinely incomplete observation of a live session.
+        if (cwdRaw === "") {
             incomplete = true;
             return null;
         }
@@ -11794,6 +11805,24 @@ async function doScan(exec, projectsBase, gen) {
             cwd = await realpath(cwdRaw);
         }
         catch { /* process may exit mid-scan */ }
+        // PRESENT BUT UNIDENTIFIED is its own answer, not a failure. A session
+        // that has never been prompted holds no chat store open (measured: a
+        // freshly opened cursor-agent has zero handles under ~/.cursor/chats),
+        // and one mid-switch briefly holds two. Either way the session is really
+        // there — callers that only need "is an agent here and is it busy?" must
+        // be able to see it, while a captured session id can never match the
+        // empty one, so nothing binds to a conversation we cannot name.
+        if (chatDir === "") {
+            const unidentified = {
+                pid: process.pid,
+                tty: process.tty.startsWith("/dev/") ? process.tty : `/dev/${process.tty}`,
+                cwd,
+                chatDir: "",
+                sessionId: "",
+                state: "unknown",
+            };
+            return unidentified;
+        }
         const sessionId = cursorSessionId(chatDir);
         const transcript = await findTranscriptPath(sessionId, projectsBase);
         // Only a SUCCESSFUL search that found nothing means "not prompted yet",
@@ -12079,6 +12108,42 @@ function agentTmuxFocusArgs(pane, clientTty) {
 function captureAgentPaneArgs(paneId) {
     return ["capture-pane", "-p", "-t", paneId];
 }
+/**
+ * Does any coding agent in this tmux WINDOW have work in flight?
+ *
+ * The Focus tmux Window key answers "take me to that window", so it wants one
+ * bit about the whole window rather than per-session detail: is something in
+ * there still going, or is it all sitting idle? Panes are matched to sessions
+ * by tty — never by `pane_current_command`, which is how the older Claude-only
+ * check worked and why it could not see Cursor at all (cursor-agent presents as
+ * `node`, not `cursor`).
+ *
+ * The exact guarantee: `working` means at least one agent in the window is
+ * mid-turn. `waiting` means agents are present and none is KNOWN to be
+ * computing — which includes a session whose state could not be read at all, so
+ * `waiting` here is "present, not known to be busy" rather than a positive
+ * claim of idleness. Callers must not pass instances from a failed probe. Note what
+ * that folds together — an agent BLOCKED on your approval reports `waiting`
+ * here, because it is indeed not computing, and this key has no amber to spend:
+ * amber belongs to the AI Project key, which is bound to one exact session and
+ * can say whose approval is wanted. Less information, not wrong information.
+ *
+ * Structurally typed over panes so it works with either tmux listing format.
+ */
+function agentSparkForWindow(instances, panes, session, windowName) {
+    const ttys = new Set(panes.filter((p) => p.session === session && p.windowName === windowName).map((p) => p.tty));
+    if (ttys.size === 0)
+        return "none";
+    let present = false;
+    for (const i of instances) {
+        if (!ttys.has(i.tty))
+            continue;
+        present = true;
+        if (i.state === "working")
+            return "working";
+    }
+    return present ? "waiting" : "none";
+}
 /** Every running session of one kind sitting in one project folder. */
 function agentInstancesFor(instances, kind, project) {
     const target = normalizeProjectPath(project);
@@ -12094,12 +12159,26 @@ function agentInstancesFor(instances, kind, project) {
  * a lone session is unambiguous and two or more are not.
  */
 function selectAgentInstance(instances, kind, project, sessionId) {
-    const mine = agentInstancesFor(instances, kind, project);
+    // An empty sessionId means two different things, and conflating them is a
+    // hole: on the KEY it means "nothing captured", but on an INSTANCE it means
+    // "we can see this session but cannot name its conversation". For a kind
+    // that has conversation ids, an unnameable session must never be selectable
+    // at all — otherwise capturing one would store an empty binding that
+    // afterwards adopts whichever sole session happens to sit in that folder,
+    // which is exactly the neighbour-adoption this function exists to prevent.
+    const mine = agentInstancesFor(instances, kind, project)
+        .filter((i) => !bindsBySession(kind) || i.sessionId !== "");
     if (sessionId !== "") {
         const matches = mine.filter((i) => i.sessionId === sessionId);
         return matches.length === 1 ? matches[0] : null;
     }
     return mine.length === 1 ? mine[0] : null;
+}
+/** Does this agent give its conversations a stable id? Codex and Cursor do, so
+ * a key binds to one exact session. Claude Code does not, so its keys bind by
+ * project folder and a folder with two Claude sessions is simply ambiguous. */
+function bindsBySession(kind) {
+    return kind !== "claude";
 }
 
 const POLL_MS$4 = 2500;
@@ -13070,9 +13149,11 @@ spin = 0) {
     const eyebrow = session
         ? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
         : "";
-    // Claude Code spark (top-right): blue and slowly rotating while WORKING,
-    // still signal-white when finished and WAITING for input, absent when no
-    // claude runs in the window. Drawn as paths — no font-fallback risk.
+    // Coding-agent spark (top-right): blue and slowly rotating while WORKING,
+    // still signal-white when idle, absent when no agent runs in the window.
+    // Covers Claude Code, Codex and Cursor — the caller matches panes to agents
+    // by tty, so it is not fooled by cursor-agent presenting as `node`.
+    // Drawn as paths — no font-fallback risk.
     //
     // Blue, not amber, so ONE colour language holds across every key that
     // outlives this release: blue = working (leave it alone), amber = stopped
@@ -13272,6 +13353,12 @@ let FocusTmuxWindow = (() => {
                 const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
                 const clients = parseClients(clientsRes.stdout);
                 const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
+                // Codex and Cursor, via the shared adapter. Claude is deliberately NOT
+                // requested here: its own path below is richer (it upgrades a ✳ idle
+                // title to "working" from a backgrounded shell or a transcript that
+                // owes the next turn), and duplicating it would be a second opinion
+                // that could disagree with itself.
+                const otherAgents = await scanAgents(["codex", "cursor"]);
                 const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
                 const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
                 const transcriptWorking = new Map(); // cwd -> working, deduped per tick
@@ -13308,6 +13395,19 @@ let FocusTmuxWindow = (() => {
                                 }
                             }
                         }
+                    }
+                    // Whatever Claude concluded, a Codex or Cursor session in the same
+                    // window can still be mid-turn — and for a window with no Claude in
+                    // it at all this is the only signal there is.
+                    // Only layer when those probes actually answered. A failed scan
+                    // returns nothing, which would otherwise read as "no agent here"
+                    // and quietly retract a spark that belongs there.
+                    if (claude !== "working" && status.state !== "unknown" && otherAgents.status === "ok") {
+                        const other = agentSparkForWindow(otherAgents.instances, panes, status.session, status.window);
+                        if (other === "working")
+                            claude = "working";
+                        else if (claude === "none" && other === "waiting")
+                            claude = "waiting";
                     }
                     if (status.state === "hot" || claude === "working")
                         anyInteresting = true;

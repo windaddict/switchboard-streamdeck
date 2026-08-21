@@ -5,6 +5,8 @@ import {
 	type AgentPane,
 	agentInstancesFor,
 	agentPaneForTty,
+	agentSparkForWindow,
+	bindsBySession,
 	agentTmuxFocusArgs,
 	captureAgentPaneArgs,
 	kindsToScan,
@@ -162,6 +164,31 @@ describe("Selecting the key's session", () => {
 		expect(selectAgentInstance([claudeA, claudeB], "claude", "/Users/j/app", "")).toBeNull();
 	});
 
+	/** A present-but-unidentified session (empty sessionId) is visible to the
+	 * tmux spark but must never be SELECTABLE for a kind that has conversation
+	 * ids — not against a captured id, and not as a lone match either. The
+	 * second case is the sharp one: capture() validates through this function,
+	 * so allowing it would let a key store an empty binding that afterwards
+	 * adopts whichever sole session sits in the folder. */
+	it("never selects an unnameable Codex or Cursor session", () => {
+		const nameless = inst("cursor", "/Users/j/app", "", 7);
+		expect(selectAgentInstance([nameless], "cursor", "/Users/j/app", "cccc")).toBeNull();
+		expect(selectAgentInstance([cursorA, nameless], "cursor", "/Users/j/app", "cccc")).toBe(cursorA);
+		// the lone-match path must reject it too, or capture() would accept it
+		expect(selectAgentInstance([nameless], "cursor", "/Users/j/app", "")).toBeNull();
+		// and it must not make an identified neighbour look ambiguous
+		expect(selectAgentInstance([cursorA, nameless], "cursor", "/Users/j/app", "")).toBe(cursorA);
+	});
+
+	/** Claude legitimately has no conversation id, so the same empty string must
+	 * NOT lock it out of selection. */
+	it("still selects Claude, which has no session id by nature", () => {
+		expect(bindsBySession("claude")).toBe(false);
+		expect(bindsBySession("codex")).toBe(true);
+		expect(bindsBySession("cursor")).toBe(true);
+		expect(selectAgentInstance([claudeA], "claude", "/Users/j/app", "")).toBe(claudeA);
+	});
+
 	it("finds nothing for a folder that has no session of that kind", () => {
 		expect(selectAgentInstance(all, "cursor", "/Users/j/other", "")).toBeNull();
 	});
@@ -182,5 +209,50 @@ describe("Whose probe failed", () => {
 		for (const kind of ["claude", "codex", "cursor"] as const) {
 			expect(kindTrusted({ failedKinds: [] }, kind)).toBe(true);
 		}
+	});
+});
+
+describe("The tmux key's agent spark", () => {
+	const pane = (tty: string, windowName: string, session = "dev") => ({ tty, session, windowName });
+	const panes = [
+		pane("/dev/ttys001", "movingavg"), pane("/dev/ttys002", "movingavg"),
+		pane("/dev/ttys003", "copybug"), pane("/dev/ttys009", "empty"),
+	];
+	const at = (kind: AgentInstance["kind"], tty: string, state: AgentInstance["state"]): AgentInstance =>
+		({ kind, pid: 1, tty, cwd: "/x", sessionId: "", state });
+
+	it("shows nothing when the window holds no agent", () => {
+		expect(agentSparkForWindow([], panes, "dev", "empty")).toBe("none");
+		expect(agentSparkForWindow([at("codex", "/dev/ttys003", "working")], panes, "dev", "empty")).toBe("none");
+	});
+
+	/** Matching is by tty, never by pane_current_command — which is exactly why
+	 * the old Claude-only check could not see Cursor, since cursor-agent
+	 * presents itself as `node`. */
+	it("finds Codex and Cursor, not just Claude", () => {
+		expect(agentSparkForWindow([at("cursor", "/dev/ttys001", "working")], panes, "dev", "movingavg")).toBe("working");
+		expect(agentSparkForWindow([at("codex", "/dev/ttys003", "working")], panes, "dev", "copybug")).toBe("working");
+	});
+
+	it("is working when ANY pane in the window is mid-turn", () => {
+		const both = [at("codex", "/dev/ttys001", "waiting"), at("cursor", "/dev/ttys002", "working")];
+		expect(agentSparkForWindow(both, panes, "dev", "movingavg")).toBe("working");
+	});
+
+	it("is waiting when agents are present but none is computing", () => {
+		expect(agentSparkForWindow([at("codex", "/dev/ttys001", "waiting")], panes, "dev", "movingavg")).toBe("waiting");
+	});
+
+	/** This key has no amber to spend — amber belongs to the AI Project key,
+	 * which knows WHOSE approval is wanted. Blocked is not computing, so it
+	 * reports waiting: less information, not wrong information. */
+	it("folds blocked into waiting rather than claiming to be idle-or-busy", () => {
+		expect(agentSparkForWindow([at("cursor", "/dev/ttys001", "blocked")], panes, "dev", "movingavg")).toBe("waiting");
+	});
+
+	it("never leaks state across windows or sessions", () => {
+		const inst = [at("codex", "/dev/ttys003", "working")];
+		expect(agentSparkForWindow(inst, panes, "dev", "movingavg")).toBe("none");
+		expect(agentSparkForWindow(inst, panes, "other", "copybug")).toBe("none");
 	});
 });

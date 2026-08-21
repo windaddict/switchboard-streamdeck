@@ -116,9 +116,11 @@ export function buildTmuxKeyImage(
 		? `<text x="36" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1.2" fill="${sessionText}">${escapeXml(session)}</text>`
 		: "";
 
-	// Claude Code spark (top-right): blue and slowly rotating while WORKING,
-	// still signal-white when finished and WAITING for input, absent when no
-	// claude runs in the window. Drawn as paths — no font-fallback risk.
+	// Coding-agent spark (top-right): blue and slowly rotating while WORKING,
+	// still signal-white when idle, absent when no agent runs in the window.
+	// Covers Claude Code, Codex and Cursor — the caller matches panes to agents
+	// by tty, so it is not fooled by cursor-agent presenting as `node`.
+	// Drawn as paths — no font-fallback risk.
 	//
 	// Blue, not amber, so ONE colour language holds across every key that
 	// outlives this release: blue = working (leave it alone), amber = stopped

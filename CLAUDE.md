@@ -180,6 +180,26 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   `str.replace` targeting a "What it does" bullet also matched the README intro and
   shipped it broken (bullet spliced mid-sentence) for two releases. Re-read the
   rendered section after any scripted edit.
+- **An empty `sessionId` means two different things — never conflate them.** On a
+  KEY it means "nothing captured"; on an INSTANCE it means "present but we cannot
+  name its conversation" (a Cursor session that has never been prompted holds NO
+  chat store open — measured: zero handles under `~/.cursor/chats`). Conflating
+  them let `capture()` store an empty binding that afterwards adopted whichever
+  sole session sat in the folder. `bindsBySession(kind)` is the discriminator:
+  Codex and Cursor have conversation ids, Claude does not.
+- **"Present but unidentifiable" is NOT "the probe failed" — for Cursor.** An
+  unprompted Cursor session is a normal state and is returned with an empty
+  sessionId under `status: "ok"`; flagging it as a failure grayed out every
+  Cursor key on the machine. Codex is the opposite: an unreadable rollout
+  originator means a live process could not be CLASSIFIED (interactive vs
+  `codex exec`), which is not normal, so it stays incomplete.
+- **The tmux key's spark covers all three agents, matched by TTY.** Never by
+  `pane_current_command` — that is why the old Claude-only check could not see
+  Cursor, which presents as `node`. Claude keeps its own richer path in
+  `focus-tmux.ts` (✳ upgraded to working by a busy shell or an owing
+  transcript); Codex/Cursor come from `agentSparkForWindow`. A BLOCKED agent
+  reports `waiting` there: that key has no amber to spend, and amber belongs to
+  AI Project, which knows whose approval is wanted.
 - **ONE colour language across the keys: blue = working, amber = waiting on YOU,
   white = idle.** The tmux key's Claude spark was amber-for-working, which meant
   the opposite of amber on the agent keys — two states demanding opposite actions

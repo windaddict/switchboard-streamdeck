@@ -54,7 +54,7 @@ These still work and are unchanged, but **AI Project replaces all three** and th
 - **Window Ring** *(key)* — a curated ring of windows: long-press to add the current window (or remove it, if it's already in the ring), tap to cycle through them. The key shows a live count with a green ring when the current window is a member; optional sound on long-press.
 
 **tmux & iTerm2**
-- **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it. Hold the key to capture the current tmux window into the button. The key face renders live as a mini tmux pane: its status bar lights up in the session's color — with a block cursor — exactly when that window would receive your keystrokes (active in tmux, focused in iTerm2, iTerm2 frontmost). A spark in the corner tracks Claude Code inside the window: blue and slowly turning while it works, still and white when it's finished and waiting for your input.
+- **Focus tmux Window** *(key)* — raise the iTerm2 window for a tmux window, optionally switching to it. Hold the key to capture the current tmux window into the button. The key face renders live as a mini tmux pane: its status bar lights up in the session's color — with a block cursor — exactly when that window would receive your keystrokes (active in tmux, focused in iTerm2, iTerm2 frontmost). A spark in the corner tracks whichever coding agent runs inside the window — **Claude Code, Codex or Cursor**: blue and slowly turning while it works, still and white when it's idle. (Only the AI Project key shows amber for “waiting on you”; it is bound to one exact session and can say whose approval is wanted.)
 - **Switch tmux Pane** *(dial)* — rotate to move between tmux panes — or, after a press/tap toggles the mode, tmux windows. Only drives the tmux session in the frontmost macOS window — when iTerm2 isn't frontmost the dial does nothing (never a background terminal) — and the mode survives restarts. The touchscreen shows the mode and the pane's running command (or the window name).
 - **Cycle tmux Window** *(dial)* — rotate to cycle tmux windows; press for the last window. Tap the touchscreen to widen the scope to ALL sessions — rotation then crosses session boundaries and press jumps to the last session. Only drives the tmux client in the frontmost macOS window (does nothing when iTerm2 isn't frontmost). Renders the current session/window live on the touchscreen.
 
@@ -76,7 +76,7 @@ One honest limit on **Cursor Project**: Cursor writes nothing to disk that separ
 
 ![Four states of a Claude Project key: focused under tmux with Claude working, focused under Terminal with Claude ready, a background project with Claude working, and a project with no Claude running](docs/claude-project-keys.png)
 
-<img src="docs/claude-spark.gif" width="120" alt="Animated key face: the blue spark turns while Claude Code works" />
+<img src="docs/claude-spark.gif" width="120" alt="Animated key face: the blue spark turns while a coding agent works" />
 
 Across every key: **blue means working** (leave it alone), **amber means the agent is waiting on you** (go there now), **white means idle at the prompt**. The two superseded per-agent keys still use the older scheme where amber meant *working* — one more reason to move them to AI Project.
 

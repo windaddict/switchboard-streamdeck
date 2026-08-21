@@ -11,10 +11,15 @@
  * (Stream Deck gives plugins a minimal PATH) and `UTF8_ENV` (its environment
  * has no LANG, and the C locale mangles non-ASCII output).
  *
- * The snapshot carries a `status`. When any probe fails the scan reports
+ * The snapshot carries a `status`. When any probe FAILS the scan reports
  * `unknown` and downgrades remembered sessions rather than serving a
  * confident, stale answer — a key that focuses the wrong terminal window is
  * worse than a key that admits it doesn't know.
+ *
+ * A session that is present but not yet IDENTIFIABLE is a different thing and
+ * is not a failure: it is returned with an empty `sessionId`, and `status`
+ * stays `ok`. Conflating the two made one unprompted session gray out every
+ * Cursor key on the machine.
  *
  * Privacy: transcripts contain the operator's prompts and command text. Only
  * a bounded tail is read, only `type`/`role` are parsed out of it, and no
@@ -265,11 +270,29 @@ async function doScan(exec: CursorExecFileLike, projectsBase: string, gen: numbe
 		const mine = entries.filter((e) => e.pid === process.pid);
 		const cwdRaw = mine.find((e) => e.fd === "cwd")?.name ?? "";
 		const chatDir = soleChatDir(mine.map((e) => e.name));
-		// A session still opening its store, or one mid-switch between two
-		// chats, cannot be identified — say so instead of picking one.
-		if (cwdRaw === "" || chatDir === "") { incomplete = true; return null; }
+		// Without a cwd the process cannot be placed in a project at all, which
+		// is a genuinely incomplete observation of a live session.
+		if (cwdRaw === "") { incomplete = true; return null; }
 		let cwd = cwdRaw;
 		try { cwd = await realpath(cwdRaw); } catch { /* process may exit mid-scan */ }
+		// PRESENT BUT UNIDENTIFIED is its own answer, not a failure. A session
+		// that has never been prompted holds no chat store open (measured: a
+		// freshly opened cursor-agent has zero handles under ~/.cursor/chats),
+		// and one mid-switch briefly holds two. Either way the session is really
+		// there — callers that only need "is an agent here and is it busy?" must
+		// be able to see it, while a captured session id can never match the
+		// empty one, so nothing binds to a conversation we cannot name.
+		if (chatDir === "") {
+			const unidentified: CursorInstance = {
+				pid: process.pid,
+				tty: process.tty.startsWith("/dev/") ? process.tty : `/dev/${process.tty}`,
+				cwd,
+				chatDir: "",
+				sessionId: "",
+				state: "unknown",
+			};
+			return unidentified;
+		}
 		const sessionId = cursorSessionId(chatDir);
 		const transcript = await findTranscriptPath(sessionId, projectsBase);
 		// Only a SUCCESSFUL search that found nothing means "not prompted yet",

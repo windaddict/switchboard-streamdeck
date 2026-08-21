@@ -117,7 +117,28 @@ describe("Cursor scan", () => {
 		expect(snap.instances[0].state).toBe("waiting");
 	});
 
-	it("is unknown — not confidently empty — when a session's chat store is ambiguous", async () => {
+	/** Present but not yet identifiable is its own answer, not a probe failure.
+	 * Measured: a freshly opened cursor-agent holds ZERO handles under
+	 * ~/.cursor/chats until it is first prompted, and treating that as a failure
+	 * grayed out every Cursor key on the machine. */
+	it("reports an unprompted session as present-but-unidentified, not as a failure", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "sb-proj-"));
+		const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
+		const exec = execFor({
+			pgrep: "37335\n",
+			ps: `37335 3591 ttys016  /Users/j/.local/bin/agent --use-system-ca ${VERSION_DIR}/index.js`,
+			lsof: `p37335\nfcwd\nn${cwd}\n`, // a cwd, but no chat store open yet
+		});
+		const snap = await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base);
+		expect(snap.status).toBe("ok"); // NOT a failed probe
+		expect(snap.instances).toHaveLength(1);
+		expect(snap.instances[0]).toMatchObject({ pid: 37335, sessionId: "", chatDir: "", state: "unknown" });
+	});
+
+	/** A session mid-switch briefly holds two chat stores; same treatment. It is
+	 * really there, it just cannot be named — and an empty sessionId can never
+	 * match a captured one, so nothing binds to the wrong conversation. */
+	it("reports an ambiguous chat store the same way, without naming a conversation", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "sb-proj-"));
 		const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
 		const other = chat("/Users/j").replace("3d9825b5", "4d9825b5");
@@ -126,11 +147,23 @@ describe("Cursor scan", () => {
 			ps: `37335 3591 ttys016  /Users/j/.local/bin/agent --use-system-ca ${VERSION_DIR}/index.js`,
 			lsof: `p37335\nfcwd\nn${cwd}\nftxt\nn${chat("/Users/j")}/store.db\nftxt\nn${other}/store.db\n`,
 		});
+		const snap = await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base);
+		expect(snap.status).toBe("ok");
+		expect(snap.instances[0].sessionId).toBe("");
+	});
+
+	/** No cwd is different: the process cannot be placed in a project at all. */
+	it("is unknown when a live session cannot be placed in a project", async () => {
+		const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
+		const exec = execFor({
+			pgrep: "37335\n",
+			ps: `37335 3591 ttys016  /Users/j/.local/bin/agent --use-system-ca ${VERSION_DIR}/index.js`,
+			lsof: "p37335\nftxt\nn/tmp/whatever\n",
+		});
 		expect(await scanCursorSnapshot(exec as unknown as CursorExecFileLike, base))
 			.toEqual({ status: "unknown", instances: [] });
 	});
 
-	/** pgrep signals "nothing matched" with exit status 1 — a definite answer. */
 	it("returns a clean empty result when no cursor-agent is running", async () => {
 		const base = await mkdtemp(join(tmpdir(), "sb-empty-"));
 		const exec = vi.fn((_f: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => cb(Object.assign(new Error("no match"), { code: 1 }), "", ""));
