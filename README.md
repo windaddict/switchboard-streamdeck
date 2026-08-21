@@ -1,10 +1,10 @@
 # Switchboard
 
-![Switchboard — a macOS Stream Deck plugin with fourteen actions: live Claude Code, Codex, and Cursor project keys, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
+![Switchboard — a macOS Stream Deck plugin with fifteen actions: one live AI Project key for Claude Code, Codex, and Cursor, Safari tabs, windows, apps, tmux/iTerm2 panes, BBEdit documents, files, and window tiling](docs/switchboard-hero.png)
 
 *An operator's control surface for macOS — routing your attention across Claude Code, Codex, and Cursor sessions, tabs, windows, panes, apps, documents, and files from a Stream Deck.*
 
-Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code**, **Codex CLI**, and **Cursor CLI** projects from the deck, see whether each needs you, and press to raise its exact terminal session. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
+Ever lose a beat hunting for the right tab or window? Tactile switches beat hunting-and-clicking. Switchboard is a **macOS Stream Deck plugin** for fast context-switching: keep an eye on your **Claude Code**, **Codex CLI**, and **Cursor CLI** projects from one key on the deck, see whether each needs you, and press to raise its exact terminal session. Jump to **Safari** tabs (with multi-account **Gmail**/**Calendar** presets), switch and cycle **app windows**, tile and ring **windows**, drive **tmux** windows and panes (raising the right **iTerm2** window as you go), move between **BBEdit** documents, and open files by wildcard pattern — all from Stream Deck keys and dials.
 
 ---
 
@@ -20,7 +20,17 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 
 ## What it does
 
-Fourteen actions, grouped by what they route your attention to.
+Fifteen actions, grouped by what they route your attention to.
+
+**Coding agents**
+- **AI Project** *(key)* — one live face for a **Claude Code**, **Codex CLI**, or **Cursor CLI** session. Hold the key for ½ second while the agent's terminal is frontmost and it works out which of the three it is looking at, then takes on that agent's mark: a coral spark for Claude, a violet square for Codex, an arrow for Cursor. Blue with a moving dot means a turn is running, amber means the agent is waiting on *you*, white means the prompt is idle, gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane.
+
+  *Amber is not equally available to all three.* Codex records "waiting for your approval" in its own session log, so it works in any terminal. Claude Code and Cursor write nothing that distinguishes it from ordinary work — the only evidence is the prompt on screen, which the key can read for **tmux-hosted sessions only**; elsewhere those two show an approval prompt as blue. Codex and Cursor bind to one exact session; Claude Code has no session identifier and binds by project folder, so two Claude sessions in one folder read as ambiguous rather than being guessed between.
+
+<details>
+<summary><b>Superseded:</b> the three per-agent keys (Claude Project, Codex Project, Cursor Project)</summary>
+
+These still work and are unchanged, but **AI Project replaces all three** and they will be removed in a future release. To move a key over: add an AI Project action, hold it for ½ second while that agent is frontmost to capture the session, then delete the old key. Their settings screens carry the same note.
 
 **Claude Code**
 - **Claude Project** *(key)* — a live face for a Claude Code project, wherever it runs (tmux, plain iTerm2, or Terminal.app): the spark shows working (amber, turning) vs waiting for your input (white, still), the bar lights when your keystrokes would land in that session, and pressing raises the hosting window. Hold to capture the frontmost session's project.
@@ -30,6 +40,8 @@ Fourteen actions, grouped by what they route your attention to.
 
 **Cursor CLI**
 - **Cursor Project** *(key)* — a live face for an interactive Cursor CLI (`cursor-agent`) session in tmux, plain iTerm2, or Terminal.app: blue means a turn is running, amber means Cursor is waiting for you to approve a command, white means the prompt is idle, and gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session. (Amber is tmux-only — see below.)
+
+</details>
 
 **Safari**
 - **Safari Tab Jump** *(key)* — jump to an open Safari tab, or open it if it isn't there yet. Built-in presets for multi-account Gmail and Google Calendar, plus custom sites and private-window targets. URL matching supports `*` wildcards. Hold the key to capture the current front tab into the button.
@@ -56,7 +68,7 @@ Fourteen actions, grouped by what they route your attention to.
 
 ## Live on the deck
 
-The **Focus tmux Window**, **Claude Project**, **Codex Project**, and **Cursor Project** keys render live. Each tmux key is a miniature tmux pane whose status bar lights up exactly when that target would receive your keystrokes. Claude Project tracks Claude Code's working/waiting state; Codex Project and Cursor Project each distinguish working, blocked on you, ready, and unknown, and bind to a captured session so two sessions in one directory are never silently confused. All three project keys work under tmux, plain iTerm2, or Terminal.app and only observe and focus — they never drive the coding agent itself.
+The **Focus tmux Window** and **AI Project** keys (and the three superseded per-agent keys) render live. Each tmux key is a miniature tmux pane whose status bar lights up exactly when that target would receive your keystrokes. Claude Project tracks Claude Code's working/waiting state; Codex Project and Cursor Project each distinguish working, blocked on you, ready, and unknown, and bind to a captured session so two sessions in one directory are never silently confused. All three project keys work under tmux, plain iTerm2, or Terminal.app and only observe and focus — they never drive the coding agent itself.
 
 One honest limit on **Cursor Project**: Cursor writes nothing to disk that separates "waiting for your approval" from "still thinking", so that amber state is read from the terminal itself and is therefore available for **tmux-hosted sessions only**. Elsewhere an approval prompt reads as blue (running). Detection is deliberately narrow, so a future Cursor release that rewords its prompt makes amber stop appearing rather than start lying.
 
@@ -161,7 +173,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 528 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 593 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

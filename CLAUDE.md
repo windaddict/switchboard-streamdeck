@@ -6,7 +6,7 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Fourteen actions today (the manifest is the
+that script before ever renaming again. Fifteen actions today (the manifest is the
 source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
@@ -21,6 +21,13 @@ src/
   mac/                      # PURE, tested logic (no SDK, no I/O)
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
+  mac/agent-*.ts            # AI Project (supersedes the three per-agent keys):
+                            #   agent-project (one AgentKind/AgentState vocabulary,
+                            #   per-kind approval-prompt matchers, decideAgentFace,
+                            #   per-kind key face), agent-scan (ADAPTER over the three
+                            #   existing scanners — never a fourth scanner)
+  mac/deprecation.ts        # the badge on the three superseded key faces; DELETE
+                            #   this whole file when those actions are retired
   mac/cursor-*.ts           # Cursor CLI detection: cursor-scan (pgrep -f the installed
                             #   versions path -> ps -o pid=,ppid=,tty=,args= -> lsof), cursor-project
                             #   (identity + turn_ended state + approval-prompt scrape + key face)
@@ -75,7 +82,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 528 tests today
+npm test              # vitest (pure modules) — 593 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -204,6 +211,37 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   first cursor-scan tests silently read the OPERATOR'S REAL `~/.cursor/projects`
   and passed/failed on live data; `scanCursorSnapshot(exec, projectsBase)` takes the
   root so fixtures stay hermetic. Same trap applies to any future home-dir probe.
+- **Claude Code keeps its IDLE title while BLOCKED on you.** Measured on claude
+  2.1.226: with "Do you want to proceed?" on screen the pane title still read
+  `✳ Count bytes in note.txt file` — the ✳ waiting marker, not a braille spinner.
+  So a blocked Claude arrives at the face logic as `waiting`, NOT `working`. Any
+  "upgrade to blocked" rule copied from `decideCursorFace` (which gates on
+  `working`, correct for Cursor) is therefore UNREACHABLE for Claude and the
+  feature silently never fires. `decideAgentFace` upgrades from either state.
+  An independent review caught this before it shipped; every listed test would
+  still have passed.
+- **Claude's approval prompt is not one string.** Bash approval reads
+  "This command requires approval" + "Do you want to proceed?"; an EDIT approval
+  reads "Do you want to make this edit to <file>?". A matcher keyed on the first
+  misses every file edit. Both carry a numbered `1. Yes` list, which is the
+  conjunct that keeps a bare "Do you want to…?" in scrolled output from matching.
+  The folder-trust prompt ("Quick safety check: Is this a project you created…")
+  deliberately does NOT match.
+- **Three agents, three different notions of "blocked".** Codex records it in its
+  own rollout log (authoritative, works in any terminal); Claude and Cursor only
+  ever show it on screen (tmux-only scrape). `blockedEvidenceFor(kind, host)`
+  encodes exactly that, and the docs must not imply one uniform guarantee.
+- **RETIREMENT COMMITMENT (do not lose this).** Claude/Codex/Cursor Project are
+  superseded by AI Project and are kept ONLY so nobody's configured key is
+  orphaned without a release of warning. A future release must delete: the three
+  actions + their manifest entries, `src/mac/deprecation.ts` and its three call
+  sites, `ui/lib/deprecated.js`, the three PIs, and the three legacy key-face
+  BUILDERS (`build{Claude,Codex,Cursor}ProjectKeyImage`) only. The MODULES
+  themselves stay: `claude-scan`/`codex-scan`/`cursor-scan` do the detection AI
+  Project relies on, `claude-project` still supplies `projectClaudeState` and the
+  ps/lsof parsers, and `codex-project` still supplies `normalizeProjectPath` and
+  `parseLsofEntries`. Deleting a whole file because its NAME matches a retired
+  action would break the unified key — check the imports first.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:
