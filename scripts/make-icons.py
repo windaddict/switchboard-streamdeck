@@ -30,6 +30,7 @@ TEAL = "#3EC9C4"  # files family
 CORAL = "#D97757"  # Claude family
 VIOLET = "#A78BFA"  # Codex family
 STEEL = "#B9C6D4"  # Cursor family
+SIGNAL_AI = "#7FD4C1"  # AI Project family (agent-neutral)
 SIGNAL = "#F2FFF6"  # arrows / cursors
 MUTED = "#8B9490"  # secondary strokes
 
@@ -169,7 +170,22 @@ def glyph_cursorproject() -> str:
     )
 
 
+def glyph_aiproject() -> str:
+    """Terminal window holding all three agent marks — the agent-neutral key."""
+    return (
+        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
+        # Claude spark (left), Codex square (centre), Cursor pointer (right):
+        # the key adopts whichever one it captures.
+        f'<path d="M20 31h9M22.5 26.5l4 9M26.5 26.5l-4 9" stroke="{CORAL}" stroke-width="2.4"'
+        f' stroke-linecap="round" fill="none"/>'
+        f'<rect x="31.5" y="25.5" width="11" height="11" rx="1.5" stroke="{VIOLET}" stroke-width="2.4" fill="none"/>'
+        f'<path d="M47 24l7.5 8-3.5.3 1.8 3.9-1.9.9-1.8-3.9-2.1 2z"'
+        f' stroke="{STEEL}" stroke-width="2.2" stroke-linejoin="round" fill="none"/>'
+    )
+
+
 ACTIONS = {
+    "aiproject": (glyph_aiproject, SIGNAL_AI),
     "claudeproject": (glyph_claudeproject, CORAL),
     "codexproject": (glyph_codexproject, VIOLET),
     "cursorproject": (glyph_cursorproject, STEEL),

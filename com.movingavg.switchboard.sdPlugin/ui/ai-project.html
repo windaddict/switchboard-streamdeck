@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>AI Project</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Project folder">
+			<sdpi-textfield setting="project" placeholder="hold the key to capture — or type a path"></sdpi-textfield>
+		</sdpi-item>
+
+		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			One key for <b>Claude Code</b>, <b>Codex CLI</b>, or <b>Cursor CLI</b>.
+			<b>Hold it for &frac12;&nbsp;second</b> while the agent&rsquo;s terminal is
+			frontmost: the key works out which of the three it is looking at, stores
+			that with the project, and takes on that agent&rsquo;s mark &mdash; a coral
+			spark for Claude, a violet square for Codex, an arrow for Cursor. Press to
+			raise its terminal window and, under tmux, select its exact pane.<br /><br />
+			Blue with a moving dot means a turn is running, amber means the agent is
+			waiting on <i>you</i>, white means the prompt is idle, and gray means the
+			state is unknown or more than one session matches. The bar lights when your
+			keystrokes would reach that exact session.<br /><br />
+			<b>Requires:</b> Automation access for iTerm2 and/or Terminal for the hot
+			indicator, capture, and focusing (macOS prompts on first use). Finding
+			sessions and reading their state needs no permission.<br /><br />
+			<b>What amber can and cannot see.</b> Codex records &ldquo;waiting for your
+			approval&rdquo; in its own session log, so amber works for Codex in any
+			terminal. Claude Code and Cursor write nothing that distinguishes it from
+			ordinary work &mdash; the only evidence is the prompt on screen, which this
+			key can read for <b>tmux-hosted sessions only</b>. In a bare iTerm2 or
+			Terminal window those two show an approval prompt as blue (running).
+			Detection is deliberately narrow, so a future release of either tool that
+			rewords its prompt makes amber stop appearing rather than start lying
+			&mdash; though recognised prompt wording appearing in ordinary output can
+			still, in principle, read as amber.<br /><br />
+			<b>Codex and Cursor</b> bind to one exact session, so two sessions in one
+			folder are never confused. <b>Claude Code</b> has no session identifier and
+			binds by project folder, so two Claude sessions in the same folder read as
+			ambiguous (gray) rather than being guessed between.
+		</div>
+	</body>
+</html>

@@ -255,10 +255,27 @@
 			"UserTitleEnabled": false
 		},
 		{
-			"Name": "Claude Project",
+			"Name": "AI Project",
+			"UUID": "com.movingavg.switchboard.aiproject",
+			"Icon": "imgs/actions/aiproject/icon",
+			"Tooltip": "Live face for a Claude Code, Codex, or Cursor CLI session \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane.",
+			"PropertyInspectorPath": "ui/ai-project.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/aiproject/key",
+					"ShowTitle": false
+				}
+			],
+			"UserTitleEnabled": false
+		},
+		{
+			"Name": "Claude Project (legacy)",
 			"UUID": "com.movingavg.switchboard.claudeproject",
 			"Icon": "imgs/actions/claudeproject/icon",
-			"Tooltip": "Live face for a Claude Code project — any host (tmux, iTerm2, Terminal). Press to raise its window; hold to capture the frontmost session's project.",
+			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for a Claude Code project; press to raise its window, hold to capture the frontmost session. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/claude-project.html",
 			"Controllers": [
 				"Keypad"
@@ -272,10 +289,10 @@
 			"UserTitleEnabled": false
 		},
 		{
-			"Name": "Codex Project",
+			"Name": "Codex Project (legacy)",
 			"UUID": "com.movingavg.switchboard.codexproject",
 			"Icon": "imgs/actions/codexproject/icon",
-			"Tooltip": "Live face for an interactive Codex CLI session. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.",
+			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Codex CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/codex-project.html",
 			"Controllers": [
 				"Keypad"
@@ -289,10 +306,10 @@
 			"UserTitleEnabled": false
 		},
 		{
-			"Name": "Cursor Project",
+			"Name": "Cursor Project (legacy)",
 			"UUID": "com.movingavg.switchboard.cursorproject",
 			"Icon": "imgs/actions/cursorproject/icon",
-			"Tooltip": "Live face for an interactive Cursor CLI session. Press to raise its terminal and exact tmux pane; hold to capture the frontmost session.",
+			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Cursor CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/cursor-project.html",
 			"Controllers": [
 				"Keypad"

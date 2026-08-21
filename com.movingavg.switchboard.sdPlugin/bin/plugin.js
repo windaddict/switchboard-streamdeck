@@ -8783,6 +8783,46 @@ function shouldPollThisTick(tick, interesting, idleEvery = 4) {
     return interesting || tick % idleEvery === 0;
 }
 
+/**
+ * WHAT IT'S FOR: the one place that draws the "there is a newer way to do
+ * this" mark on the three per-agent project keys — Claude Project, Codex
+ * Project and Cursor Project — which are superseded by the single AI Project
+ * action. Those three faces are built by three separate, near-duplicate SVG
+ * builders; putting the mark here means they cannot drift into three slightly
+ * different badges.
+ *
+ * The badge is PURELY COSMETIC. It changes no state, no detection, no
+ * behaviour: the three actions keep working exactly as before, and the badge
+ * is only a hint to the operator that the key has a replacement. The
+ * corresponding words — what to do about it — live in the property inspector
+ * banner (`ui/lib/deprecated.js`); a 72×72 key has no room for a sentence.
+ *
+ * EXPECTED LIFETIME: this module is scaffolding for one deprecation cycle.
+ * When the three superseded actions are deleted, delete this file wholesale
+ * along with its three call sites — there is nothing here worth keeping.
+ */
+/**
+ * A right-pointing chevron-arrow to overlay on a 72×72 key face, marking the
+ * key as superseded. Returns an SVG fragment (not a whole document) to be
+ * concatenated into a builder's `<svg>…</svg>`.
+ *
+ * Placement: the free top-left corner, roughly x 2..8, y 9..15 — clear of the
+ * host eyebrow (text centred at x=30 y=15, whose longest label "TERMINAL"
+ * starts its ink near x≈8), the state glyph (x 53..69, y 4..21), the project
+ * name (centred at x=36 y=40) and the bottom bar (y 57..71). The horizontal
+ * extent is deliberately kept tighter than the free box so the longest eyebrow
+ * still clears it.
+ *
+ * Hex colour only — the Stream Deck KEY rasterizer paints `hsl()` as BLACK
+ * (documented gotcha; each of the three key-face test files asserts that no
+ * `hsl(` literal survives). #6A716E is the muted grey already used for a
+ * dimmed project name, so the mark reads as secondary to everything else.
+ */
+function deprecationBadge() {
+    return (`<path d="M2.6 12h4.4M4.9 9.8L7.1 12l-2.2 2.2" fill="none" stroke="#6A716E" ` +
+        `stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`);
+}
+
 /** Small shared SVG helpers used by the key/touchscreen image builders. */
 /** Encode an SVG string as a data URI usable by Stream Deck setImage / pixmaps. */
 function svgToDataUri(svg) {
@@ -8945,7 +8985,7 @@ function dotsSvg(count, activeIndex, hue) {
     return out;
 }
 /** Truncate a label so it fits the 200px touch strip. */
-function truncate$4(value, max = 16) {
+function truncate$5(value, max = 16) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /**
@@ -8968,8 +9008,8 @@ function buildBackgroundSvg(opts) {
         `<rect width="200" height="100" fill="url(#g)"/>` +
         `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
         `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$4(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$4(window))}</text>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$5(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$5(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         badgeSvg +
         `</svg>`);
@@ -9139,18 +9179,18 @@ function projectClaudeState(args) {
     }
     return "waiting";
 }
-const MONO$3 = "Menlo, Monaco, monospace";
-function truncate$3(value, max) {
+const MONO$4 = "Menlo, Monaco, monospace";
+function truncate$4(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /** Last path segment as the display name ("" -> "?"). */
-function projectBasename$2(projectPath) {
+function projectBasename$3(projectPath) {
     const normalized = normalizeProjectPath$1(projectPath);
     const base = normalized.slice(normalized.lastIndexOf("/") + 1);
     return base || "?";
 }
 /** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
-const ORBIT$3 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
+const ORBIT$4 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
 /**
  * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
  * project name in mono (hue seeded per project, so each project wears a
@@ -9160,8 +9200,8 @@ const ORBIT$3 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.
  * colours only — the key rasterizer paints hsl() black.
  */
 function buildClaudeProjectKeyImage(args) {
-    const name = truncate$3(projectBasename$2(args.project), 9);
-    const hue = sessionHue(projectBasename$2(args.project));
+    const name = truncate$4(projectBasename$3(args.project), 9);
+    const hue = sessionHue(projectBasename$3(args.project));
     const spin = args.spin ?? 0;
     let bar;
     let nameFill;
@@ -9189,7 +9229,7 @@ function buildClaudeProjectKeyImage(args) {
     // Anchored at x=30, not center: the longest host label ("TERMINAL") must
     // clear the Claude spark in the top-right corner.
     const eyebrow = args.host
-        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$3}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$3(args.host.toUpperCase(), 8))}</text>`
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$4}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$4(args.host.toUpperCase(), 8))}</text>`
         : "";
     let spark = "";
     if (args.claude !== "none") {
@@ -9203,7 +9243,7 @@ function buildClaudeProjectKeyImage(args) {
             // The star is 6-fold symmetric, so its rotation collapses to a
             // two-frame wobble — motion you cannot see at key size. The orbiting
             // dot gives 12 genuinely distinct frames per revolution.
-            const [ox, oy] = ORBIT$3[spin % 12];
+            const [ox, oy] = ORBIT$4[spin % 12];
             spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
         }
     }
@@ -9213,27 +9253,60 @@ function buildClaudeProjectKeyImage(args) {
         `stroke="${args.claude === "none" ? "#8B9490" : args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70)}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
     return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
         `<rect width="72" height="72" fill="#0F1211"/>` +
+        // Deprecation marker — superseded by AI Project; remove with this action.
+        deprecationBadge() +
         eyebrow +
         spark +
-        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$3}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
+        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$4}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
         bar +
         mark +
         `</svg>`);
 }
 
 /**
- * Scans the machine for running Claude Code CLI instances: `ps` enumerates
- * pids+ttys (pgrep misses ancestors), one batched `lsof` maps every pid to
- * its project cwd (~0.06s total, measured). Absolute binary paths — Stream
- * Deck launches plugins with a minimal PATH. `exec` injectable for tests.
+ * WHAT IT'S FOR: the one place that asks the machine "which Claude Code CLI
+ * sessions exist right now, in which project folders, and is a shell tool
+ * still running under each?" — so every Claude-facing key repaints from a
+ * single bounded snapshot instead of each key shelling out for itself.
+ *
+ * Shape of a scan: `pgrep` narrows to candidate pids (a full `ps -axo` costs
+ * ~0.12s per call), one targeted `ps` reads their ttys, a second `pgrep -P` +
+ * confirming `ps` spots a live shell-snapshot child, and one batched `lsof`
+ * maps every pid to its project cwd (~0.06s total, measured). Absolute binary
+ * paths — Stream Deck launches plugins with a minimal PATH. `exec` injectable
+ * for tests.
+ *
+ * The snapshot carries a `status`. When a probe FAILS the scan reports
+ * `unknown` and hands back the remembered sessions rather than an empty list:
+ * an empty list from a broken `ps` or `lsof` is indistinguishable from "no
+ * Claude sessions are running", and a key that confidently paints "nothing
+ * here" is worse than one that admits it doesn't know. The one probe whose
+ * failure is deliberately tolerated is the shell-busy child probe — see the
+ * comment at that call.
  */
 const TIMEOUT_MS$2 = 4000;
 function run$2(file, args, exec) {
     return new Promise((resolve) => {
         exec(file, args, { timeout: TIMEOUT_MS$2, env: UTF8_ENV }, (error, stdout) => {
-            resolve(error ? "" : String(stdout ?? ""));
+            const e = error;
+            // A process cut short by the timeout is NOT reporting an exit status,
+            // even though Node may still surface a numeric `code`.
+            const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
+            const code = terminated ? null : e?.code;
+            resolve({
+                ok: error === null,
+                stdout: String(stdout ?? ""),
+                exitCode: typeof code === "number" ? code : null,
+            });
         });
     });
+}
+/** pgrep's documented contract: exit 1 means "nothing matched" — a definite,
+ * trustworthy answer. Any other non-zero exit (or a signal/timeout, which is
+ * normalised to a non-numeric code above) means the probe itself failed, and
+ * must NOT be reported as "no Claude sessions are running". */
+function pgrepFoundNothing$1(result) {
+    return !result.ok && result.exitCode === 1 && result.stdout.trim() === "";
 }
 /** Discovery is pgrep-based: pgrep walks the process table at ~zero CPU
  * where a full `ps -axo` costs ~0.12s per call. Safe HERE because the plugin
@@ -9265,11 +9338,18 @@ function lsofCwdArgs(pids) {
     return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
 /** All running Claude Code CLI instances with their ttys, project cwds, and
- * whether a shell tool is running under each. TTL-cached so concurrent
- * pollers share one scan; cwds cached per pid (60s). */
+ * whether a shell tool is running under each — WITHOUT the trust channel.
+ * Kept for callers that only ever act on sessions they actually found; prefer
+ * {@link scanClaudeSnapshot} where an empty list would be painted as an
+ * answer. TTL-cached so concurrent pollers share one scan; cwds cached per
+ * pid (60s). */
 function scanClaudeInstances(exec = execFile) {
+    return scanClaudeSnapshot(exec).then((snapshot) => snapshot.instances);
+}
+/** The same scan, carrying whether its probes actually answered. */
+function scanClaudeSnapshot(exec = execFile) {
     if (worldCache !== null && Date.now() - worldCache.at < WORLD_TTL_MS$2) {
-        return Promise.resolve(worldCache.instances);
+        return Promise.resolve(worldCache.snapshot);
     }
     if (worldInFlight !== null) {
         return worldInFlight;
@@ -9282,33 +9362,57 @@ function scanClaudeInstances(exec = execFile) {
     });
     return p;
 }
+/** Tests: drop the shared caches between cases. */
+function invalidateClaudeScan() {
+    worldCache = null;
+    worldInFlight = null;
+    cwdCache.clear();
+}
 async function doScan$2(exec) {
     const now = Date.now();
-    const pidsOut = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
-    const pids = pidsOut
+    const pgrep = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
+    if (pgrepFoundNothing$1(pgrep))
+        return remember$2(now, { status: "ok", instances: [] });
+    if (!pgrep.ok)
+        return rememberUnknown$2(now);
+    const pids = pgrep.stdout
         .split("\n")
         .map((l) => Number.parseInt(l.trim(), 10))
         .filter((n) => Number.isFinite(n));
-    if (pids.length === 0) {
-        worldCache = { at: now, instances: [] };
-        return [];
-    }
-    const procs = parsePsProcs(await run$2("/bin/ps", claudeDetailArgs(pids), exec));
-    const claudes = claudesFrom(procs);
-    if (claudes.length === 0) {
-        worldCache = { at: now, instances: [] };
-        return [];
-    }
+    if (pids.length === 0)
+        return remember$2(now, { status: "ok", instances: [] });
+    const ps = await run$2("/bin/ps", claudeDetailArgs(pids), exec);
+    if (!ps.ok)
+        return rememberUnknown$2(now);
+    const claudes = claudesFrom(parsePsProcs(ps.stdout));
+    if (claudes.length === 0)
+        return remember$2(now, { status: "ok", instances: [] });
     const claudePids = new Set(claudes.map((c) => c.pid));
     // Targeted argv confirm: which claudes have a live shell-snapshot child?
-    const kidsOut = await run$2("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
-    const children = kidsOut
-        .split("\n")
-        .map((l) => Number.parseInt(l.trim(), 10))
-        .filter((n) => Number.isFinite(n));
+    //
+    // DELIBERATE: a failure here does NOT degrade the snapshot to "unknown".
+    // It means "we don't know whether a backgrounded shell is running", not
+    // "no session here" — the sessions and their project folders are already
+    // established by the probes above, and `shellBusy` only ever UPGRADES a
+    // session's face to "working" (see `claudeState`). Degrading the whole
+    // snapshot would throw away correct project identity for every key on the
+    // machine to protect one of three "working" signals; the compensating
+    // signals — the braille/✳ terminal title and the transcript freshness
+    // check — are read separately and still fire. The cost is bounded and
+    // one-directional: a failed child probe can only UNDER-report "working",
+    // never invent a session or claim a project is empty.
     let busyPids = new Set();
-    if (children.length > 0) {
-        busyPids = busyParentsFrom(await run$2("/bin/ps", confirmShellArgs(children), exec));
+    const kids = await run$2("/usr/bin/pgrep", childPidsArgs([...claudePids]), exec);
+    if (kids.ok) {
+        const children = kids.stdout
+            .split("\n")
+            .map((l) => Number.parseInt(l.trim(), 10))
+            .filter((n) => Number.isFinite(n));
+        if (children.length > 0) {
+            const confirm = await run$2("/bin/ps", confirmShellArgs(children), exec);
+            if (confirm.ok)
+                busyPids = busyParentsFrom(confirm.stdout);
+        }
     }
     // Phase 2b (cwds): lsof only for pids missing a fresh cache entry.
     const need = claudes.filter((c) => {
@@ -9316,8 +9420,13 @@ async function doScan$2(exec) {
         return hit === undefined || now - hit.at >= CWD_TTL_MS;
     });
     if (need.length > 0) {
-        const cwds = parseLsofCwds(await run$2("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec));
-        for (const [pid, cwd] of cwds)
+        const lsof = await run$2("/usr/sbin/lsof", lsofCwdArgs(need.map((p) => p.pid)), exec);
+        // Without cwds there is no project binding at all, so a broken lsof would
+        // empty the list — exactly the confident lie this status channel exists
+        // to prevent.
+        if (!lsof.ok)
+            return rememberUnknown$2(now);
+        for (const [pid, cwd] of parseLsofCwds(lsof.stdout))
             cwdCache.set(pid, { cwd, at: now });
     }
     for (const pid of [...cwdCache.keys()]) {
@@ -9332,8 +9441,23 @@ async function doScan$2(exec) {
         shellBusy: busyPids.has(p.pid),
     }))
         .filter((i) => i.cwd !== "");
-    worldCache = { at: now, instances };
-    return instances;
+    // A live claude whose cwd lsof did not report cannot be bound to a project,
+    // so the list is not the whole truth even though every command succeeded.
+    const incomplete = instances.length !== claudes.length;
+    return remember$2(now, { status: incomplete ? "unknown" : "ok", instances });
+}
+function remember$2(at, snapshot) {
+    worldCache = { at, snapshot };
+    return snapshot;
+}
+/** Downgrade rather than invent: keep the last scan's sessions (they are the
+ * best available guess at what is running) and let `status` say they are not
+ * fresh. `shellBusy` is carried over as last known — there is no "unknown"
+ * value for a boolean, and substituting `false` would fabricate the negative
+ * this whole channel exists to avoid. */
+function rememberUnknown$2(at) {
+    const stale = worldCache?.snapshot.instances.map((instance) => ({ ...instance })) ?? [];
+    return remember$2(at, { status: "unknown", instances: stale });
 }
 /** Is a process with exactly this name running? (pgrep -x; used to avoid
  * AppleScript-launching a terminal app that isn't open.) */
@@ -10036,7 +10160,7 @@ return "notfound"`;
 }
 
 /** How often the key faces re-check the live state. */
-const POLL_MS$5 = 2500;
+const POLL_MS$6 = 2500;
 /**
  * Live key face for a Claude Code PROJECT, host-independent: works whether
  * the session runs under tmux, plain iTerm2, or Terminal.app. The face shows
@@ -10079,7 +10203,7 @@ let ClaudeProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$5);
+                }, POLL_MS$6);
             }
             await this.refreshAll();
         }
@@ -10463,19 +10587,19 @@ function codexTmuxFocusArgs(pane, clientTty) {
     commands.push(["select-pane", "-t", pane.paneId]);
     return commands;
 }
-function projectBasename$1(path) {
+function projectBasename$2(path) {
     const p = normalizeProjectPath(path);
     return p.slice(p.lastIndexOf("/") + 1) || "?";
 }
-function truncate$2(value, max) {
+function truncate$3(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-const MONO$2 = "Menlo, Monaco, monospace";
-const ORBIT$2 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+const MONO$3 = "Menlo, Monaco, monospace";
+const ORBIT$3 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
 /** Codex sibling of the Claude live face. Hex colors only for key rasterizing. */
 function buildCodexProjectKeyImage(args) {
-    const name = truncate$2(projectBasename$1(args.project), 9);
-    const hue = sessionHue(projectBasename$1(args.project));
+    const name = truncate$3(projectBasename$2(args.project), 9);
+    const hue = sessionHue(projectBasename$2(args.project));
     const active = args.state !== "none";
     const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
     const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
@@ -10484,18 +10608,19 @@ function buildCodexProjectKeyImage(args) {
         : args.hot
             ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
             : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
+    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$3}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
     let glyph = "";
     if (active) {
         const spin = args.spin ?? 0;
         glyph = `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
         if (args.state === "working") {
-            const [x, y] = ORBIT$2[spin % ORBIT$2.length];
+            const [x, y] = ORBIT$3[spin % ORBIT$3.length];
             glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
         }
     }
     const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+    // Deprecation marker — superseded by AI Project; remove with this action.
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$3}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }
 
 /** Bounded, cached scan of interactive Codex CLI sessions. */
@@ -10542,6 +10667,10 @@ async function rolloutLines(path) {
     catch {
         return [];
     }
+}
+function invalidateCodexScan() {
+    cache$1 = null;
+    inFlight$2 = null;
 }
 function scanCodexSnapshot(exec = execFile) {
     if (cache$1 !== null && Date.now() - cache$1.at < WORLD_TTL_MS$1)
@@ -10680,7 +10809,7 @@ function buildOpenArgs(filePath, opener, app) {
     return [filePath];
 }
 
-const POLL_MS$4 = 2500;
+const POLL_MS$5 = 2500;
 /** Live key for one interactive Codex CLI session/project. */
 let CodexProject = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.codexproject" })];
@@ -10715,7 +10844,7 @@ let CodexProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$4);
+                }, POLL_MS$5);
             }
             await this.refreshAll();
         }
@@ -10915,6 +11044,259 @@ let CodexProject = (() => {
     });
     return _classThis;
 })();
+
+/**
+ * WHAT IT'S FOR: one shared decision layer for the "agent project" keys, so a
+ * key that has captured a Claude Code, Codex or Cursor session in a folder can
+ * answer the same four questions — is there a session, is it working, is it
+ * blocked on me, or is it just sitting idle? — with the SAME rules whichever
+ * CLI it captured. Before this module each CLI had its own copy of that logic
+ * and the copies had drifted; the drift is what this module removes.
+ *
+ * The three CLIs are NOT interchangeable underneath, and the differences are
+ * load-bearing rather than cosmetic. Each was measured against a live session,
+ * and the comments below say what was observed rather than what seemed likely:
+ *
+ *   - Codex records "I am waiting for your approval" in its own rollout log, so
+ *     a blocked Codex session is knowable from a file, on any host, with no
+ *     terminal scraping at all. Its `state` already carries `blocked`.
+ *   - Claude Code and Cursor write nothing that distinguishes "blocked on the
+ *     operator" from "busy working". The ONLY direct evidence is the approval
+ *     prompt drawn on the terminal, and the only terminal this plugin can read
+ *     is a tmux pane. Outside tmux, "blocked" is simply not observable for
+ *     those two — see {@link blockedEvidenceFor}.
+ *   - Measured, and the reason {@link decideAgentFace} exists in this form:
+ *     Claude Code keeps its IDLE title marker (a "✳") on screen while its
+ *     approval prompt is up, so a blocked Claude session's file-derived state
+ *     reads `waiting`, not `working`. Cursor's blocked session has no
+ *     `turn_ended` record yet and so reads `working`. A rule that only upgrades
+ *     a `working` session to `blocked` is therefore correct for Cursor and
+ *     unreachable for Claude.
+ *
+ * Vocabulary used throughout (these recur, so they are defined once here):
+ *   - "instance" — one running agent process this plugin has identified,
+ *     with the tty it owns and the folder it was started in. Identifying them
+ *     is the impure scanners' job; this module only decides.
+ *   - "face" — what the key should PAINT: the composed verdict, which is not
+ *     the same thing as an instance's own state (an incomplete scan can force
+ *     `unknown` over a perfectly confident instance).
+ *   - "hot" — this key's project is the one the operator is looking at now.
+ */
+/**
+ * What kind of evidence a `blocked` verdict could rest on for this kind+host.
+ *
+ * Callers use it to decide whether scraping a pane is worth doing at all, and
+ * to avoid promising a "needs you" light they cannot actually deliver.
+ */
+function blockedEvidenceFor(kind, host) {
+    // Codex reports blocking in its own rollout log, so it needs no terminal and
+    // works outside tmux too.
+    if (kind === "codex")
+        return "authoritative";
+    // Claude and Cursor are only observable through the pane text, and the only
+    // terminal this plugin can read is a tmux pane.
+    return host === "tmux" ? "terminal" : "unavailable";
+}
+/** Claude Code's approval question. Two different wordings were measured —
+ * "Do you want to proceed?" for a bash approval and "Do you want to make this
+ * edit to <file>?" for an edit approval — so the matcher keys on the shared
+ * stem rather than on either full sentence. `.` does not cross newlines, so
+ * this necessarily matches WITHIN one line of pane text. */
+const CLAUDE_ASK = /Do you want to .*\?/;
+/**
+ * Does this terminal pane show the agent's approval prompt — i.e. is it
+ * blocked on the operator right now?
+ *
+ * Matching is deliberately narrow, and the guarantee is narrow to match:
+ * unrecognised wording yields false, so a prompt phrased in a way we have not
+ * measured leaves the key on its file-derived state instead of inventing an
+ * amber light. It does NOT guarantee the reverse — this reads the pane's
+ * visible text, so recognised prompt wording appearing in ordinary output (a
+ * README being catted, a transcript being replayed) CAN produce a false
+ * `blocked`. The markers below were chosen to make that unlikely, not
+ * impossible.
+ *
+ * Callers must capture the VISIBLE screen only, never scrollback: an
+ * already-answered prompt lingers in history, and matching it would hold the
+ * key amber while the agent is busy working.
+ */
+function paneShowsAgentPrompt(kind, paneText) {
+    switch (kind) {
+        case "codex":
+            // Codex's own log already says `blocked` (see blockedEvidenceFor), so
+            // there is nothing to gain by scraping and a false positive to lose.
+            return false;
+        case "claude":
+            // The question alone is too ordinary a sentence to trust; Claude renders
+            // a numbered choice list directly beneath it, and both measured wordings
+            // carry "1. Yes".
+            //
+            // NEGATIVE CASE (measured): the folder-trust prompt — "Quick safety
+            // check: Is this a project you created or one you trust?" with "1. Yes,
+            // I trust this folder" — carries the same choice line but is NOT an
+            // approval to act on, and must not turn the key amber. It is excluded by
+            // the question stem: it never says "Do you want to". A test pins this.
+            return CLAUDE_ASK.test(paneText) && paneText.includes("1. Yes");
+        case "cursor":
+            // The inline status marker is specific enough to stand on its own.
+            // "Run this command?" is a phrase that could plausibly appear in
+            // scrolled output, so it only counts alongside Cursor's choice line.
+            if (paneText.includes("Waiting for approval"))
+                return true;
+            return paneText.includes("Run this command?") && paneText.includes("Run (once)");
+    }
+}
+/**
+ * The agent instance owning the terminal the operator is looking at, or null.
+ *
+ * Returns null on zero matches AND on two or more — never picks. Two can
+ * genuinely match: an agent launched from inside another agent's terminal
+ * inherits that terminal's tty, so both processes legitimately report it.
+ * Choosing between them would be a guess, and the caller's honest answer to a
+ * guess is to show nothing rather than act on the wrong session.
+ */
+function agentForFocusedTty(instances, focusedTty) {
+    const matches = instances.filter((i) => i.tty === focusedTty);
+    return matches.length === 1 ? matches[0] : null;
+}
+/**
+ * Compose the face a key should paint from every piece of evidence at once.
+ *
+ * Pure and tested because it is where the honesty rules live: a key must never
+ * look confident on thin evidence. Three cases are easy to get wrong and are
+ * settled here rather than in each action shell:
+ *
+ *   - A scan that could not identify every candidate process is not proof that
+ *     the ONE session it found is the only one in this folder. Without a
+ *     captured session id — the thing that would make it unambiguous — the
+ *     honest face is `unknown`, not that session's state.
+ *   - Once a key has captured a session id that id is binding. If a trustworthy
+ *     scan no longer finds it, the answer is "no target", never the neighbour
+ *     that happens to share the folder.
+ *   - A visible approval prompt outranks the file-derived state. MEASURED: a
+ *     blocked Claude Code session still shows its idle "✳" marker and so reads
+ *     `waiting`, while a blocked Cursor session reads `working`. Requiring
+ *     `working` here — as the Cursor-only predecessor did — would make the
+ *     branch unreachable for Claude and silently kill the whole feature. The
+ *     prompt on screen is direct evidence either way.
+ *
+ * `blockedOnPane` is only ever true for claude and cursor: codex carries its own
+ * `blocked` in `instanceState` and is never scraped ({@link paneShowsAgentPrompt}).
+ */
+function decideAgentFace(args) {
+    if (!args.hasTarget)
+        return "none";
+    if (args.instanceState === null) {
+        if (args.scanStatus !== "ok")
+            return "unknown";
+        // A trustworthy scan that did not turn up the captured session means that
+        // session has exited — "no target". Reporting `unknown` because OTHER
+        // sessions share the folder would contradict the binding-capture rule:
+        // those neighbours are not this key's.
+        if (args.hasCapturedId)
+            return "none";
+        return args.matchCount > 1 ? "unknown" : "none";
+    }
+    // `scanStatus` here is THIS kind's own probe (see kindTrusted). If it failed,
+    // nothing about this session was actually observed this tick — a captured id
+    // disambiguates WHICH session is meant, it does not make an unobserved one
+    // trustworthy. So the exemption a captured id used to buy is gone.
+    if (args.scanStatus !== "ok")
+        return "unknown";
+    // A visible prompt is direct evidence and outranks the file-derived state.
+    // It must upgrade from "waiting" as well as "working": Claude Code keeps its
+    // IDLE title marker while its approval prompt is on screen (measured), so
+    // gating this on "working" alone would make it unreachable for Claude.
+    if (args.blockedProbe === "blocked")
+        return "blocked";
+    // The probe failed, so "is it waiting on the operator?" is unanswered — and
+    // that is exactly the question this key exists to answer. Say so.
+    if (args.blockedProbe === "failed")
+        return "unknown";
+    return args.instanceState;
+}
+function projectBasename$1(path) {
+    const p = normalizeProjectPath(path);
+    return p.slice(p.lastIndexOf("/") + 1) || "?";
+}
+function truncate$2(value, max) {
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+const MONO$2 = "Menlo, Monaco, monospace";
+/** Twelve positions around the state glyph. The glyphs are close to
+ * rotationally symmetric at key size, so spinning them collapses to a wobble
+ * you cannot see; an orbiting dot gives 12 genuinely distinct frames. */
+const ORBIT$2 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+/** The top-right state glyph, one shape per kind, so a crowded deck says at a
+ * glance WHICH agent a key captured and not merely that it captured one. */
+function stateGlyph(kind, color) {
+    switch (kind) {
+        case "claude":
+            // Claude's coral spark/asterisk.
+            return `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none"/>`;
+        case "codex":
+            // Codex's nested square.
+            return `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
+        case "cursor":
+            // Cursor's arrow pointer.
+            return `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+    }
+}
+/** The small mark at the bar's left end — the same shape as the state glyph,
+ * so the key still identifies its agent when there is nothing to report. */
+function footMark(kind, color) {
+    switch (kind) {
+        case "claude":
+            return `<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" stroke="${color}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
+        case "codex":
+            return `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${color}" stroke-width="1.2"/>`;
+        case "cursor":
+            return `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${color}" stroke-width="1.1" stroke-linejoin="round"/>`;
+    }
+}
+/**
+ * The unified live key face, 72x72, on the shared ink ground.
+ *
+ * Hex colours ONLY — the KEY rasterizer paints `hsl()` as solid black (the
+ * touchscreen pixmap pipeline renders it fine), so every hue goes through
+ * {@link hslToHex}; a unit test asserts no `hsl(` literal survives for any
+ * kind/state/hot combination. The project name is XML-escaped and truncated to
+ * what fits the key.
+ */
+function buildAgentProjectKeyImage(args) {
+    const base = projectBasename$1(args.project);
+    const name = truncate$2(base, 9);
+    const hue = sessionHue(base);
+    const active = args.state !== "none";
+    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
+    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
+    const bar = !active
+        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
+        : args.hot
+            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
+            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
+    // Anchored at x=30, not centre: the longest host label ("TERMINAL") must
+    // clear the state glyph in the top-right corner.
+    const eyebrow = args.host
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>`
+        : "";
+    let glyph = "";
+    if (active) {
+        glyph = stateGlyph(args.kind, color);
+        if (args.state === "working") {
+            const [x, y] = ORBIT$2[(args.spin ?? 0) % ORBIT$2.length];
+            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
+        }
+        // The hollow-outline glyphs get an amber core when blocked. Claude's spark
+        // is skipped: its three strokes already cross at exactly this point, so a
+        // dot there would only thicken the join. Its whole spark is amber instead.
+        if (args.state === "blocked" && args.kind !== "claude") {
+            glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
+        }
+    }
+    const mark = footMark(args.kind, active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490");
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+}
 
 /**
  * WHAT IT'S FOR: the pure decision layer behind the Cursor Project key — the
@@ -11195,7 +11577,8 @@ function buildCursorProjectKeyImage(args) {
             glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
     }
     const mark = `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.1" stroke-linejoin="round"/>`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+    // Deprecation marker — superseded by AI Project; remove with this action.
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }
 
 /**
@@ -11462,6 +11845,618 @@ function rememberUnknown(at, gen) {
     const stale = cache?.snapshot.instances.map((instance) => ({ ...instance, state: "unknown" })) ?? [];
     return remember(at, gen, { status: "unknown", instances: stale });
 }
+
+/**
+ * WHAT IT'S FOR: one question, asked once — "which coding-agent sessions are
+ * running right now, and what is each one doing?" — answered in a single
+ * vocabulary regardless of whether the agent is Claude Code, Codex, or Cursor.
+ * The AI Project key talks to this and never to the three per-agent scanners
+ * underneath it.
+ *
+ * This module is deliberately an ADAPTER, not a fourth scanner. The three
+ * existing scanners (`claude-scan`, `codex-scan`, `cursor-scan`) keep all the
+ * hard-won detection logic and are reused untouched, so there is no second
+ * implementation to drift out of step and their existing tests keep guarding
+ * it. What lives here is only the translation into {@link AgentInstance} and
+ * the honest reconciliation of three different notions of "state".
+ *
+ * Two asymmetries are real and are handled explicitly rather than papered over:
+ *
+ *   - **Claude's state is not derivable from process facts alone.** Codex and
+ *     Cursor each write a log their scanner reads, so their scanner returns a
+ *     finished verdict. Claude's depends on its terminal title, its transcript,
+ *     and whether a shell tool is still running — so this module needs the
+ *     caller to hand it the tmux pane titles it cannot see for itself.
+ *   - **Only Codex reports being blocked.** Claude and Cursor reveal an
+ *     approval prompt on screen and nowhere else, so a "blocked" verdict for
+ *     those two is added by the caller from a terminal scrape, and is
+ *     unavailable outside tmux. See `blockedEvidenceFor` in `agent-project`.
+ *
+ * Scanning is per-kind on purpose: a key that has already captured its agent
+ * asks for exactly one kind, so the steady-state cost is identical to the old
+ * dedicated keys. Only the capture gesture pays for all three.
+ */
+/** Did the probe for THIS key's agent actually answer? Takes anything carrying
+ * `failedKinds` so the action's own richer snapshot can be passed straight in. */
+function kindTrusted(snapshot, kind) {
+    return !snapshot.failedKinds.includes(kind);
+}
+function normalizeTty(tty) {
+    if (tty === "" || tty === "??" || tty === "?")
+        return "";
+    return tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
+}
+/**
+ * Claude's verdict, assembled from the three signals its own action uses.
+ * `titleWorking` is null when no pane title was available (a non-tmux host),
+ * which `projectClaudeState` already treats as "fall back to transcript
+ * freshness" rather than as evidence of idleness.
+ *
+ * Note what this deliberately CANNOT return: `blocked`. Claude keeps its idle
+ * title while an approval prompt is on screen (measured), so nothing here can
+ * see that — the caller supplies it from the terminal.
+ */
+async function claudeState(cwd, paneTitle, shellBusy) {
+    const transcript = await newestTranscriptState(cwd);
+    const state = projectClaudeState({
+        present: true,
+        titleWorking: paneTitle === undefined ? null : titleWorking(paneTitle),
+        transcriptAgeMs: transcript.ageMs,
+        transcriptWorking: transcript.working,
+        shellBusy,
+    });
+    // `present: true` above forecloses "none"; the narrowing is for the compiler.
+    return state === "none" ? "unknown" : state;
+}
+/**
+ * Every running session of the requested kinds, in one vocabulary.
+ *
+ * Pass `paneTitles` whenever Claude is among the kinds: without it Claude's
+ * title signal is simply absent and its state falls back to transcript
+ * freshness, which is coarser. Codex and Cursor ignore it entirely.
+ */
+async function scanAgents(kinds, paneTitles = new Map(), exec = execFile) {
+    const wanted = new Set(kinds);
+    const instances = [];
+    const failedKinds = [];
+    if (wanted.has("codex")) {
+        const snap = await scanCodexSnapshot(exec);
+        if (snap.status !== "ok")
+            failedKinds.push("codex");
+        for (const i of snap.instances) {
+            instances.push({
+                kind: "codex",
+                pid: i.pid,
+                tty: normalizeTty(i.tty),
+                cwd: i.cwd,
+                sessionId: i.sessionId,
+                state: i.state,
+            });
+        }
+    }
+    if (wanted.has("cursor")) {
+        const snap = await scanCursorSnapshot(exec);
+        if (snap.status !== "ok")
+            failedKinds.push("cursor");
+        for (const i of snap.instances) {
+            instances.push({
+                kind: "cursor",
+                pid: i.pid,
+                tty: normalizeTty(i.tty),
+                cwd: i.cwd,
+                sessionId: i.sessionId,
+                state: i.state,
+            });
+        }
+    }
+    if (wanted.has("claude")) {
+        const snap = await scanClaudeSnapshot(exec);
+        if (snap.status !== "ok")
+            failedKinds.push("claude");
+        const resolved = await Promise.all(snap.instances.map(async (i) => {
+            const tty = normalizeTty(i.tty);
+            // The Codex and Cursor scanners realpath their cwd; claude-scan
+            // reports lsof's raw path. Left alone, the same project reached
+            // through a symlink would compare unequal across kinds and a
+            // captured binding would stop matching its own session.
+            let cwd = i.cwd;
+            try {
+                cwd = await realpath(i.cwd);
+            }
+            catch { /* may exit mid-scan */ }
+            return {
+                kind: "claude",
+                pid: i.pid,
+                tty,
+                cwd,
+                // Claude binds by project path — it has no captured session id.
+                sessionId: "",
+                state: await claudeState(i.cwd, paneTitles.get(tty), i.shellBusy),
+            };
+        }));
+        instances.push(...resolved);
+    }
+    return { status: failedKinds.length > 0 ? "unknown" : "ok", failedKinds, instances };
+}
+/**
+ * Drop the underlying scanners' 2-second caches so the NEXT scan really goes to
+ * the machine. Every scanner caches independently, so "take a fresh snapshot"
+ * is not something a caller can achieve by asking politely — without this a
+ * press acts on a view of the world up to a poll old, which is exactly when a
+ * window raise lands on a session that has already exited.
+ */
+function invalidateAgentScans(kinds) {
+    for (const kind of kinds) {
+        if (kind === "claude")
+            invalidateClaudeScan();
+        else if (kind === "codex")
+            invalidateCodexScan();
+        else
+            invalidateCursorScan();
+    }
+}
+/** The kinds a key must scan: just its captured one, or all three while it is
+ * still untaught and any of them could be the answer to a capture. */
+function kindsToScan(captured) {
+    return captured === undefined ? ["claude", "codex", "cursor"] : [captured];
+}
+/**
+ * One tmux listing carrying everything the unified key needs, because the two
+ * formats already in the codebase each hold only half of it: the Codex/Cursor
+ * one has the window and pane IDs required to focus a pane but no title, and
+ * the Claude one has the title but identifies windows by index rather than by
+ * the `@id` that `select-window` wants. Asking twice would mean two probes that
+ * can disagree with each other between calls.
+ */
+/** ASCII unit separator. Both the session name and the pane title are
+ * user-controlled and may contain `|`, which the older per-agent formats had to
+ * disambiguate by hunting for an `@window`/`%pane` landmark — a session named
+ * `…@x|%y…` could defeat that. tmux passes this control character through `-F`
+ * untouched (verified), and neither a session name nor a title contains it in
+ * practice, so the split is unambiguous rather than cleverly guessed.
+ *
+ * The exact guarantee, not a rounded-up one: this is framing by convention, not
+ * escaping. A title containing a literal unit separator would yield too many
+ * fields, and one containing a newline would split into two records; either way
+ * the affected pane fails the shape check and is DROPPED. A dropped pane makes
+ * its session look non-tmux — the key still works, but shows amber as
+ * unavailable rather than reporting something false. */
+const FS = "\u001f";
+const LIST_AGENT_PANES_ARGS = [
+    "list-panes",
+    "-a",
+    "-F",
+    `#{pane_tty}${FS}#{session_name}${FS}#{window_id}${FS}#{pane_id}${FS}#{pane_active}${FS}#{window_active}${FS}#{pane_title}`,
+];
+/** Parse {@link LIST_AGENT_PANES_ARGS}. Positional and exact: the separator
+ * cannot appear inside any field, so a line either has its seven parts or is
+ * malformed. The id shapes are still checked so a garbled line is dropped
+ * rather than turned into a plausible-looking pane target. */
+function parseAgentPanes(output) {
+    const panes = [];
+    for (const raw of output.split("\n")) {
+        const line = raw.trim();
+        if (line === "")
+            continue;
+        const f = line.split(FS);
+        if (f.length !== 7)
+            continue; // malformed — skipped, never guessed at
+        if (!f[2].startsWith("@") || !f[3].startsWith("%"))
+            continue;
+        panes.push({
+            tty: f[0],
+            session: f[1],
+            windowId: f[2],
+            paneId: f[3],
+            receivesKeys: f[4] === "1" && f[5] === "1",
+            title: f[6],
+        });
+    }
+    return panes;
+}
+/** tty -> title, for feeding Claude's title signal into {@link scanAgents}. */
+function paneTitlesByTty(panes) {
+    return new Map(panes.map((p) => [p.tty, p.title]));
+}
+/** The pane hosting a session, matched by tty. */
+function agentPaneForTty(panes, tty) {
+    return panes.find((p) => p.tty === tty);
+}
+/** Raise one pane to the front of its session. Deliberately defined here rather
+ * than borrowed from the per-agent modules: those carry the superseded actions
+ * and are slated for deletion, and the unified key must not depend on them. */
+function agentTmuxFocusArgs(pane, clientTty) {
+    const commands = [];
+    if (clientTty !== "")
+        commands.push(["switch-client", "-c", clientTty, "-t", pane.session]);
+    commands.push(["select-window", "-t", pane.windowId]);
+    commands.push(["select-pane", "-t", pane.paneId]);
+    return commands;
+}
+/** Capture one pane's VISIBLE screen — no scrollback. An approval prompt is on
+ * screen for exactly as long as it is waiting, so history adds nothing but the
+ * risk of matching a prompt that was already answered. */
+function captureAgentPaneArgs(paneId) {
+    return ["capture-pane", "-p", "-t", paneId];
+}
+/** Every running session of one kind sitting in one project folder. */
+function agentInstancesFor(instances, kind, project) {
+    const target = normalizeProjectPath(project);
+    return instances.filter((i) => i.kind === kind && normalizeProjectPath(i.cwd) === target);
+}
+/**
+ * Resolve the key's target session.
+ *
+ * A captured session id is BINDING: if that exact session is gone the answer is
+ * "no target", never a neighbour that happens to share the folder — sending the
+ * operator's window focus to a conversation they never captured is worse than
+ * showing nothing. Claude has no session id (it binds by folder), so for Claude
+ * a lone session is unambiguous and two or more are not.
+ */
+function selectAgentInstance(instances, kind, project, sessionId) {
+    const mine = agentInstancesFor(instances, kind, project);
+    if (sessionId !== "") {
+        const matches = mine.filter((i) => i.sessionId === sessionId);
+        return matches.length === 1 ? matches[0] : null;
+    }
+    return mine.length === 1 ? mine[0] : null;
+}
+
+const POLL_MS$4 = 2500;
+/**
+ * One live key for one coding-agent session, whichever agent that is.
+ *
+ * Supersedes the three per-agent keys. Hold it for half a second while Claude
+ * Code, Codex, or Cursor is frontmost and it works out which of the three it is
+ * looking at, then behaves exactly as the dedicated key did: blue while a turn
+ * runs, amber when the agent is waiting on you, white at an idle prompt, and
+ * the bar lit when your keystrokes would reach that exact session.
+ */
+let AiProject = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.aiproject" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        gate = new PressGate();
+        visible = new Map();
+        lastImage = new Map();
+        /** Session identity the last refresh RESOLVED for this key. A press treats
+         * it as a hint only — focus() revalidates against a fresh scan. */
+        paintedSession = new Map();
+        refresher = new CoalescedRunner(() => this.doRefreshAll());
+        timer;
+        spin = 0;
+        tick = 0;
+        interesting = true;
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            if (this.timer === undefined) {
+                this.timer = setInterval(() => {
+                    if (shouldPollThisTick(this.tick++, this.interesting))
+                        void this.refreshAll();
+                }, POLL_MS$4);
+            }
+            await this.refreshAll();
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+            this.lastImage.delete(ev.action.id);
+            this.paintedSession.delete(ev.action.id);
+            if (this.visible.size === 0 && this.timer !== undefined) {
+                clearInterval(this.timer);
+                this.timer = undefined;
+            }
+        }
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`AI Project capture failed: ${String(error)}`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return;
+            await runExclusive("iterm-focus", () => this.focus(ev.action));
+        }
+        /** Every visible key with its settings, read exactly once per tick. */
+        async readKeys() {
+            return Promise.all([...this.visible.values()].map(async (key) => ({ key, settings: await key.getSettings() })));
+        }
+        /** The kinds this tick must scan, derived from the SAME settings read that
+         * will paint the keys — reading twice invites a key whose agent changed in
+         * between being painted from a snapshot that never scanned its kind. */
+        wantedKinds(entries) {
+            const kinds = new Set();
+            for (const { settings } of entries) {
+                if (settings.agent === undefined)
+                    return kindsToScan(undefined);
+                kinds.add(settings.agent);
+            }
+            return [...kinds];
+        }
+        async snapshot(kinds) {
+            const tmux = findTmuxPath();
+            const [panesResult, clientsResult, front] = await Promise.all([
+                runTmux(LIST_AGENT_PANES_ARGS, tmux),
+                runTmux(LIST_CLIENTS_ARGS, tmux),
+                runJxa(FRONT_APP_BUNDLE_JXA),
+            ]);
+            const panes = panesResult.ok ? parseAgentPanes(panesResult.stdout) : [];
+            // Pane titles must be gathered BEFORE scanning: Claude's working/idle
+            // marker lives in its terminal title and the scan cannot see it.
+            const agents = await scanAgents(kinds, paneTitlesByTty(panes));
+            const frontBundle = front.ok ? front.stdout.trim() : "";
+            let focusedTty = "";
+            if (frontBundle === ITERM_BUNDLE_ID)
+                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            else if (frontBundle === TERMINAL_BUNDLE_ID)
+                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
+            return {
+                instances: agents.instances,
+                panes,
+                clientTtys: parseClientTtys(clientsResult.stdout),
+                frontBundle,
+                focusedTty,
+                scanStatus: agents.status,
+                failedKinds: agents.failedKinds,
+                clientsOk: clientsResult.ok,
+            };
+        }
+        refreshAll() { return this.refresher.request(); }
+        async canonicalProject(project) {
+            const normalized = normalizeProjectPath(expandHome(project, homedir()));
+            try {
+                return await realpath(normalized);
+            }
+            catch {
+                return normalized;
+            }
+        }
+        /**
+         * Is this session holding for the operator? Only asked when the terminal is
+         * the ONLY place that answer exists — Codex records it in its own log and so
+         * never needs scraping, and outside tmux there is no screen we can read.
+         */
+        async blockedOnApproval(kind, host, pane, tmux, captured) {
+            // "clear" is the honest answer where the question does not arise: Codex
+            // records blocking in its own log, and outside tmux there is no screen to
+            // read — neither is a FAILED probe.
+            if (pane === undefined || blockedEvidenceFor(kind, host) !== "terminal")
+                return "clear";
+            // Several keys can watch the same pane; capture it once per tick.
+            let shot = captured.get(pane.paneId);
+            if (shot === undefined) {
+                const result = await runTmux(captureAgentPaneArgs(pane.paneId), tmux);
+                shot = { ok: result.ok, text: result.stdout };
+                captured.set(pane.paneId, shot);
+                if (!result.ok)
+                    streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
+            }
+            // A probe that errored has NOT told us the agent is unblocked.
+            if (!shot.ok)
+                return "failed";
+            return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
+        }
+        async doRefreshAll() {
+            if (this.visible.size === 0)
+                return;
+            const entries = await this.readKeys();
+            const snap = await this.snapshot(this.wantedKinds(entries));
+            const tmux = findTmuxPath();
+            this.spin++;
+            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working" || i.state === "blocked");
+            // One capture-pane per pane per tick, however many keys watch it.
+            const captured = new Map();
+            for (const { key, settings } of entries) {
+                const kind = settings.agent;
+                const project = await this.canonicalProject((settings.project ?? "").trim());
+                const sessionId = (settings.sessionId ?? "").trim();
+                const mine = kind !== undefined && project !== "" ? agentInstancesFor(snap.instances, kind, project) : [];
+                const instance = kind === undefined ? null : selectAgentInstance(snap.instances, kind, project, sessionId);
+                if (instance === null)
+                    this.paintedSession.delete(key.id);
+                else
+                    this.paintedSession.set(key.id, instance.sessionId);
+                const pane = instance === null ? undefined : agentPaneForTty(snap.panes, instance.tty);
+                let host = "";
+                let hot = false;
+                if (instance !== null && pane !== undefined) {
+                    host = "tmux";
+                    hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
+                }
+                else if (instance !== null && instance.tty === snap.focusedTty) {
+                    hot = true;
+                    host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
+                }
+                const blockedProbe = instance !== null && kind !== undefined
+                    ? await this.blockedOnApproval(kind, host, pane, tmux, captured)
+                    : "clear";
+                const state = decideAgentFace({
+                    hasTarget: kind !== undefined && project !== "",
+                    matchCount: mine.length,
+                    instanceState: instance?.state ?? null,
+                    // Only this key's own agent matters: an unrelated kind's probe
+                    // failing must not gray out a key whose agent was scanned fine.
+                    scanStatus: kind !== undefined && kindTrusted(snap, kind) ? "ok" : "unknown",
+                    hasCapturedId: sessionId !== "",
+                    blockedProbe,
+                });
+                const image = svgToDataUri(buildAgentProjectKeyImage({
+                    kind: kind ?? "claude",
+                    project: kind === undefined ? "hold to teach" : project || "no target",
+                    host,
+                    hot,
+                    state,
+                    spin: this.spin,
+                }));
+                if (this.lastImage.get(key.id) === image)
+                    continue;
+                try {
+                    await key.setImage(image);
+                    this.lastImage.set(key.id, image);
+                }
+                catch (error) {
+                    streamDeck.logger.debug(`AI Project image skipped: ${String(error)}`);
+                }
+            }
+        }
+        async raiseTty(tty) {
+            if (await processRunning("iTerm2")) {
+                const result = await runAppleScript(buildITermRaiseScript(tty));
+                if (result.ok) {
+                    const focus = parseITermFocusResult(result.stdout);
+                    if (focus.status === "ok")
+                        return true;
+                    if (focus.status === "timeout") {
+                        streamDeck.logger.warn(`AI Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
+                        return false;
+                    }
+                }
+            }
+            if (await processRunning(TERMINAL_PROCESS_NAME)) {
+                const result = await runAppleScript(buildTerminalRaiseScript(tty));
+                if (result.ok && result.stdout.includes("ok"))
+                    return true;
+            }
+            return false;
+        }
+        async focus(key) {
+            const settings = await key.getSettings();
+            const kind = settings.agent;
+            const project = await this.canonicalProject((settings.project ?? "").trim());
+            if (kind === undefined || project === "") {
+                await key.showAlert();
+                return;
+            }
+            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
+            // Genuinely fresh: every scanner caches for ~2s, so without dropping those
+            // caches first this would act on a view of the world up to a poll old and
+            // could raise a window for a session that has already exited.
+            invalidateAgentScans([kind]);
+            const snap = await this.snapshot([kind]);
+            if (!kindTrusted(snap, kind)) {
+                streamDeck.logger.warn("AI Project: agent scan unavailable; refusing stale focus.");
+                await key.showAlert();
+                return;
+            }
+            const instance = selectAgentInstance(snap.instances, kind, project, expected);
+            if (instance === null || (expected !== "" && instance.sessionId !== expected)) {
+                streamDeck.logger.warn(`AI Project: ${kind} target missing or ambiguous for ${project}.`);
+                await key.showAlert();
+                return;
+            }
+            const pane = agentPaneForTty(snap.panes, instance.tty);
+            if (pane !== undefined) {
+                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
+                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
+                if (clientTty === null) {
+                    streamDeck.logger.warn(`AI Project: tmux session ${pane.session} has no attached client.`);
+                    await key.showAlert();
+                    return;
+                }
+                if (!(await this.raiseTty(clientTty))) {
+                    await key.showAlert();
+                    return;
+                }
+                const tmux = findTmuxPath();
+                for (const args of agentTmuxFocusArgs(pane, clientTty)) {
+                    const result = await runTmux(args, tmux);
+                    if (!result.ok) {
+                        streamDeck.logger.error(`AI Project tmux ${args[0]} failed: ${result.stderr}`);
+                        await key.showAlert();
+                        return;
+                    }
+                }
+            }
+            else if (!(await this.raiseTty(instance.tty))) {
+                await key.showAlert();
+                return;
+            }
+            await key.showOk();
+            setTimeout(() => void this.refreshAll(), 450);
+        }
+        /**
+         * Work out which agent the operator is looking at. The frontmost terminal
+         * reports the tty of its focused session; under tmux that is the CLIENT's
+         * tty, not the agent's, so it is translated through the attached session to
+         * whichever pane would receive keystrokes.
+         */
+        resolveCapture(snap) {
+            // tmux FIRST. A client's tty is the terminal's own, so an agent that was
+            // started in that terminal and then suspended (Ctrl-Z, then `tmux
+            // attach`) still owns the tty — and would otherwise be captured in
+            // preference to the agent actually on screen in the active pane.
+            for (const [session, clientTtys] of snap.clientTtys) {
+                if (!clientTtys.includes(snap.focusedTty))
+                    continue;
+                const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
+                return pane === undefined ? null : agentForFocusedTty(snap.instances, pane.tty);
+            }
+            // Not a tmux client: the frontmost terminal hosts the agent directly. A
+            // tty CAN still host two agents — one launched from inside another's
+            // terminal inherits it — so more than one match is ambiguous, not a
+            // choice to make on the operator's behalf.
+            return agentForFocusedTty(snap.instances, snap.focusedTty);
+        }
+        async capture(key) {
+            // Capture must consider every kind — this is the one gesture that does
+            // not yet know which agent it is dealing with.
+            // Capture must consider every kind, and every kind must have answered:
+            // binding to the wrong agent is not recoverable by looking again.
+            invalidateAgentScans(kindsToScan(undefined));
+            const snap = await this.snapshot(kindsToScan(undefined));
+            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
+                await key.showAlert();
+                return;
+            }
+            // tmux is clearly alive (it listed panes) but would not list its clients,
+            // so the client->pane translation below cannot run. Falling back to the
+            // raw tty would reintroduce exactly the miscapture that translation
+            // exists to prevent: a suspended agent sharing the terminal's tty.
+            if (!snap.clientsOk && snap.panes.length > 0) {
+                streamDeck.logger.warn("AI Project: tmux listed panes but not clients; refusing an ambiguous capture.");
+                await key.showAlert();
+                return;
+            }
+            const instance = this.resolveCapture(snap);
+            if (instance === null) {
+                await key.showAlert();
+                return;
+            }
+            // Refuse a capture that would not survive its own first refresh. Claude
+            // has no session id, so two Claude sessions in one folder are
+            // indistinguishable afterwards: storing the binding would flash "ok" and
+            // then leave the key permanently ambiguous. Better to decline the gesture
+            // than to accept it and quietly not work.
+            // Compare using the SAME canonical form refresh will use, or the guard
+            // tests an identity the key never actually looks up.
+            const project = await this.canonicalProject(instance.cwd);
+            if (selectAgentInstance(snap.instances, instance.kind, project, instance.sessionId) === null) {
+                streamDeck.logger.warn(`AI Project: refusing capture — ${instance.kind} in ${instance.cwd} cannot be told apart from another session there.`);
+                await key.showAlert();
+                return;
+            }
+            const settings = await key.getSettings();
+            await key.setSettings({ ...settings, agent: instance.kind, project, sessionId: instance.sessionId });
+            this.paintedSession.set(key.id, instance.sessionId);
+            await key.showOk();
+            await this.refreshAll();
+        }
+    });
+    return _classThis;
+})();
 
 const POLL_MS$3 = 2500;
 /** Live key for one interactive Cursor CLI session/project. */
@@ -14117,6 +15112,7 @@ streamDeck.actions.registerAction(new JumpToTab());
 streamDeck.actions.registerAction(new ClaudeProject());
 streamDeck.actions.registerAction(new CodexProject());
 streamDeck.actions.registerAction(new CursorProject());
+streamDeck.actions.registerAction(new AiProject());
 streamDeck.actions.registerAction(new ScrollWindow());
 streamDeck.actions.registerAction(new SwitchApp());
 streamDeck.actions.registerAction(new FocusTmuxWindow());

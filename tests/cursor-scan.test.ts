@@ -201,7 +201,11 @@ describe("Cursor scan", () => {
 			lsof: `p37335\nfcwd\nn${cwd}\nftxt\nn${chat("/Users/j")}/store.db\n`,
 		});
 		expect((await scanCursorSnapshot(ok as unknown as CursorExecFileLike, base)).instances).toHaveLength(1);
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000); // TTL expires
+		// NOTE: capture the real clock BEFORE installing the spy — `vi.spyOn` replaces
+		// Date.now immediately, so evaluating `Date.now()` inside mockReturnValue's
+		// argument reads the not-yet-configured mock and yields NaN.
+		const realNow = Date.now();
+		vi.spyOn(Date, "now").mockReturnValue(realNow + 10_000); // the 2s TTL lapses
 		const broken = vi.fn((file: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
 			if (file === "/usr/bin/pgrep") cb(null, "37335\n", "");
 			else cb(new Error("ps failed"), "", "boom");
