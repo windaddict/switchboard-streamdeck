@@ -11,7 +11,17 @@
 		</sdpi-item>
 
 		<div style="margin-top: 14px; padding-top: 8px; border-top: 1px solid #333; font-size: 11px; color: #888;">
+			<div style="margin-bottom:10px;padding:9px 11px;border:1px solid #3d6ea8;background:#152532;border-radius:6px;color:#bcd9f5;">
+				<b>Replaces</b> the separate Claude&nbsp;Project, Codex&nbsp;Project and
+				Cursor&nbsp;Project keys. Those still work but are marked
+				<i>(legacy)</i> and will be removed in a later release &mdash; hold this
+				key while that agent is frontmost to move it over, then delete the old key.
+			</div>
 			One key for <b>Claude Code</b>, <b>Codex CLI</b>, or <b>Cursor CLI</b>.
+			<b>Cursor</b> here means the <b>terminal agent</b> &mdash; the
+			<code>cursor-agent</code> command you run in iTerm2 or tmux. This key does not
+			drive the Cursor editor, and Codex Desktop and non-interactive
+			<code>codex exec</code> jobs are not targets either.
 			<b>Hold it for &frac12;&nbsp;second</b> while the agent&rsquo;s terminal is
 			frontmost: the key works out which of the three it is looking at, stores
 			that with the project, and takes on that agent&rsquo;s mark &mdash; a coral
