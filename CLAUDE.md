@@ -130,6 +130,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   — Stream Deck respawns the plugin within seconds on the new bundle. Full app
   relaunch (`killall "Stream Deck" && open -a "Elgato Stream Deck"`) only needed
   for manifest changes; an osascript `quit` may be blocked with error -128.
+  If `kill` is denied by the permission prompt, ask the operator to run
+  `! kill <pid>` themselves. An EMPTY `pgrep` means the Stream Deck app isn't
+  running at all — check before concluding the plugin died.
 - **Debugging the LIVE plugin:** temporarily add
   `import { appendFileSync } from "node:fs"` and trace to `/tmp/sb-trace.log`
   inside the poll, rebuild, kill-respawn, read the file, then STRIP the trace.
@@ -322,6 +325,22 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   average ~10. `RESTORE_AFTER_PASTE_MS` is 1200 — ~48x that — and restoration
   is a per-key setting because a remote session or a beachballed app can be
   slower than any fixed wait.
+- **osascript appends its OWN newline** to whatever the script returns, so a
+  script returning `"ok|<types>\n" + ""` arrives as `ok|<types>\n\n`. Framing
+  parsers strip exactly one trailing newline — and TEST FIXTURES must include
+  it, or an empty payload looks malformed instead of empty (this made a real
+  data-loss bug look unreproducible).
+- **A user-facing behaviour change lands in FOUR places,** three of them far
+  from the code: the README bullet, `ui/<action>.html`, the manifest
+  **`Tooltip`** (what Stream Deck shows in its action list), and the module
+  header. The tooltip is the one everyone forgets — and it needs a full SD
+  quit+relaunch to show. Edit manifest values by raw string replacement, not
+  `json.dump`, which reformats the whole file.
+- **Impasse artifacts: send whole files or `git diff`, never a `sed` line
+  range.** A truncated extract produced a confident "this cannot compile"
+  finding for code that compiles. Include the docs that live outside `src/`
+  (`ui/*.html`, the manifest `Tooltip`) — a doc review that omits them misses
+  real errors, because the reviewer can only see what you send.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:
