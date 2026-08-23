@@ -3,10 +3,11 @@
  * pastes the stored text at the cursor; holding it (the shared PressGate
  * long-press gesture) copies whatever's currently selected into the key
  * instead; the key face previews what's stored. Everything here is pure (no
- * child_process, no Stream Deck SDK) so the size cap and the masked/visible
- * default are unit-tested in isolation. The actual macOS mechanics — sending
- * ⌘C/⌘V and reading/writing `NSPasteboard` deliberately, on purpose, without
- * ever restoring what was on it before — live in `clipboard-snippet.ts`.
+ * child_process, no Stream Deck SDK) so the size cap and the face logic are
+ * unit-tested in isolation. The actual macOS mechanics live elsewhere:
+ * sending ⌘C/⌘V and reading/writing `NSPasteboard` in
+ * `clipboard-snippet.ts`, and saving the operator's clipboard before a
+ * gesture and putting it back after in `pasteboard-stash.ts`.
  */
 
 import { escapeXml } from "./tmux-window.js";

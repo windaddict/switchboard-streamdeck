@@ -42,17 +42,22 @@ src/
                             #   named stash pasteboard and back, so a gesture
                             #   borrows the clipboard instead of keeping it.
                             #   NEVER stashes a ConcealedType clipboard.
-  mac/snippet.ts             # Paste Snippet pure logic: size cap, preview/mask face
-                            #   derivation (provenance-based default — captured
-                            #   masks, typed doesn't), key-face SVG
-  mac/ax-text.ts             # Paste Snippet's mechanism: the BUTTON is the storage,
-                            #   not the clipboard. captureSelection/insertSnippet read/
-                            #   write AXSelectedText on the frontmost app's focused
-                            #   element via System Events — never NSPasteboard. The
-                            #   read is framed ok|<base64>/nosel/unsupported/err|<n>
-                            #   so selection text can't corrupt the framing; the write
-                            #   takes its text ONLY via `on run argv` (never
-                            #   interpolated into the script source)
+  mac/snippet.ts             # Paste Snippet pure logic: size cap, and the four key
+                            #   faces — preview (the default, whatever the text's
+                            #   provenance), masked (opt-in per key), blank
+                            #   (whitespace-only) and over-cap. Key-face SVG.
+  mac/clipboard-snippet.ts   # Paste Snippet's ⌘C/⌘V route: the capture poll, the
+                            #   snippet write (build the item, THEN clear), the
+                            #   per-write ownership token, and the gesture
+                            #   orchestration that saves/restores the clipboard
+  mac/ax-text.ts             # Paste Snippet's no-clipboard route, CAPTURE ONLY:
+                            #   captureViaAx reads AXSelectedText on the frontmost
+                            #   app's focused element via System Events. Framed
+                            #   `ok\n<text>` / nosel / unsupported / err|<n> — status
+                            #   on the first line, payload after the first newline, so
+                            #   selection text can't corrupt the framing. insertViaAx
+                            #   exists but is NOT on the live path: the AX write was
+                            #   measured reporting success while inserting nothing
 tests/*.test.ts             # vitest; one file per pure module
 com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js

@@ -54,20 +54,40 @@
 			clipboard, everything on it is copied aside — every item and every
 			format, not just the plain text, so an image, a file or rich text
 			survives — and copied back when the gesture is done. What that does
-			<i>not</i> cover, honestly: if something else copies while the
-			gesture is running, that newer copy wins and yours is left alone; a
-			clipboard already marked secret by a password manager is not copied
-			aside at all (duplicating a password is worse than leaving it), so
-			that gesture replaces it as it used to; content generated on demand
-			by another app (a file promise, a big image) is turned into ordinary
-			data, and if it can't be read the clipboard isn't saved; a clipboard
-			larger than 64&nbsp;MB in total isn't saved either; and after
-			⌘V there is a short wait before your clipboard comes back, because
-			nothing in macOS says when the app you pasted into has finished
-			reading. If an app reads later than that wait, it pastes your old
-			clipboard instead of the snippet — untick the box above for that key
-			if you ever see it. Your clipboard manager will also record the
-			gesture's writes either way.<br /><br />
+			<i>not</i> cover, honestly:
+			<ul style="margin:6px 0 0 16px; padding:0;">
+				<li>If something else copies while the gesture is running, that
+					newer copy almost always wins and yours is left alone. Almost:
+					macOS has no way to swap the clipboard in one atomic step, so a
+					copy landing inside the split second of the swap itself can
+					still be lost.</li>
+				<li>A clipboard already marked secret by a password manager is not
+					copied aside at all — duplicating a password is worse than
+					leaving it — so that gesture replaces it, as it used to.</li>
+				<li>Content generated on demand by another app (a file promise, a
+					big image) is turned into ordinary data, and if it can't be
+					read then nothing is saved.</li>
+				<li>A clipboard larger than 64&nbsp;MiB in total isn't saved
+					either.</li>
+				<li>An empty clipboard isn't "restored" — the gesture's text is
+					just left there, rather than the key clearing your clipboard
+					on your behalf.</li>
+				<li>After ⌘V there is a short wait before your clipboard comes
+					back, because nothing in macOS says when the app you pasted
+					into has finished reading. If an app reads later than that
+					wait, it pastes your old clipboard instead of the snippet —
+					untick the box above for that key if you ever see it.</li>
+				<li>Rarely, the clipboard can be emptied and the rewrite can fail.
+					The key alerts when that happens, and what was there is gone.</li>
+				<li><b>Holding</b> the key can't prove the copy it sees came from
+					its own ⌘C. If another app copies something in that instant,
+					that text can be stored on the button and overwritten by the
+					restore.</li>
+			</ul>
+			A clipboard manager will generally see this activity, though one that
+			honours the "concealed" and "transient" markers should skip the
+			snippet itself — and a direct Accessibility capture never writes to
+			the clipboard for it to see at all.<br /><br />
 			<b>The button is the storage — but the clipboard is the delivery
 			mechanism.</b> Capture prefers the direct Accessibility read where an
 			app supports it (standard text fields do; iTerm2, Safari and ChatGPT
@@ -84,18 +104,20 @@
 			secret field — one that sets neither signal (plenty don't) is
 			captured like any other text, so don't rely on this as a guarantee
 			around sensitive fields.<br /><br />
-			<b>What "press" refuses:</b> it checks that the snippet is still the
-			top of the clipboard immediately before sending ⌘V, and refuses (an
-			alert, not a silent paste) if anything else wrote in between — so a
-			clipboard manager can't cause the key to paste someone else's
-			content.<br /><br />
+			<b>What "press" refuses:</b> immediately before sending ⌘V it checks
+			that the snippet really is what's on the clipboard, by change count
+			and by a marker of its own, and refuses with an alert rather than
+			pasting if anything else got there first. That greatly narrows the
+			chance of the key pasting someone else's content, but it cannot rule
+			it out: a write landing in the instant between that check and the
+			keystroke arrives too late to be caught.<br /><br />
 			<b>Where this lives:</b> the text above is saved as PLAIN, UNENCRYPTED
 			text in the Stream Deck profile on this Mac — profile export, sync, and
 			backups all carry it in the clear. Use "Clear stored text" to remove
 			it. Only text is ever stored — no images, files, or other clipboard
 			content.<br /><br />
-			<b>Requires:</b> Accessibility access for Stream Deck (to read/write a
-			selection directly, and to send the ⌘C/⌘V fallback keystrokes), and
+			<b>Requires:</b> Accessibility access for Stream Deck (to read a
+			selection directly, and to send the ⌘C and ⌘V keystrokes), and
 			Automation access for Stream Deck to control "System Events" (macOS
 			will prompt for this the first time; it can't be checked in advance
 			the way Accessibility can).

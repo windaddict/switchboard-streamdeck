@@ -217,7 +217,7 @@
 			"Name": "Paste Snippet",
 			"UUID": "com.movingavg.switchboard.snippet",
 			"Icon": "imgs/actions/snippet/icon",
-			"Tooltip": "Press to insert the stored text; hold to capture the current selection into the key. Tries reading/writing your selection directly first (no clipboard involved) — works in apps like iTerm2; where an app doesn't expose its selection (Safari, ChatGPT, other web content) it falls back to ⌘C/⌘V, which changes your clipboard and leaves the text on it. Refuses password fields it can detect, but not all of them.",
+			"Tooltip": "Press to insert the stored text; hold to capture the current selection into the key. Uses ⌘C/⌘V in most apps, but saves your clipboard first and puts it back afterwards — including images and files. It won't copy a clipboard your password manager marked secret, and it refuses password fields it can detect, though not all of them.",
 			"PropertyInspectorPath": "ui/paste-snippet.html",
 			"Controllers": [
 				"Keypad"

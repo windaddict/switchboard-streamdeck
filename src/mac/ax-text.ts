@@ -1,19 +1,31 @@
 /**
- * WHAT IT'S FOR: the FIRST-CHOICE route for the Paste Snippet key's two
- * gestures — reading and writing the frontmost app's actual text-control
- * selection through the Accessibility API (`AXSelectedText`), via System
- * Events. Its whole reason to exist is that `clipboard-snippet.ts`'s ⌘C/⌘V
- * route, while universal, ALWAYS touches the system clipboard — displacing
- * whatever the operator had copied, and racing their clipboard manager
- * (CopyBug) over who writes last. Confirmed live in iTerm2 (`AXSelectedText`
- * present, real selection text returned): when an app exposes its selection
- * this way, neither gesture needs to touch the clipboard at all. Confirmed
- * ALSO live that Safari and ChatGPT's web content do not expose
- * `AXSelectedText` on their focused element at all — for those, and anything
- * else that doesn't support it, the clipboard route in `clipboard-snippet.ts`
- * remains the fallback. This module only decides "can accessibility help
- * here right now," and if so, does the read/write; the fallback wiring lives
- * in the action (`../actions/paste-snippet.ts`).
+ * WHAT IT'S FOR: reading the frontmost app's actual text-control selection
+ * through the Accessibility API (`AXSelectedText`, via System Events), so the
+ * Paste Snippet key's CAPTURE gesture can take a selection without touching
+ * the system clipboard at all. Even though the clipboard route now saves and
+ * restores what it displaces, not borrowing the clipboard remains strictly
+ * better than borrowing it: no restore to get wrong, no window in which a
+ * clipboard manager sees the copy, nothing to race.
+ *
+ * HOW MUCH OF THE FEATURE ACTUALLY USES IT — stated plainly, because an
+ * earlier version of this header overstated it in two ways that later
+ * measurement contradicted:
+ *
+ *   - It is used by CAPTURE ONLY. The Accessibility WRITE was measured
+ *     accepting the call, reporting success and inserting nothing (iTerm2,
+ *     three times in a row), so `decideInsertRoute` never chooses it and
+ *     insert always goes through the clipboard. {@link insertViaAx} is kept
+ *     for its tests and for the record, not for the live path.
+ *   - It does NOT cover iTerm2. The first probe here reported the attribute
+ *     present with real text, and this header said so; the careful
+ *     measurement afterwards showed iTerm2 returning `nosel` even when text
+ *     IS selected, while ⌘C copies that selection perfectly. So iTerm2 falls
+ *     back like Safari and ChatGPT's web content, which do not expose the
+ *     attribute at all. What genuinely works here is standard text controls.
+ *
+ * This module only decides "can accessibility help here right now," and if
+ * so, does the read; the routing rule is `decideCaptureRoute` below and the
+ * fallback wiring is in the action (`../actions/paste-snippet.ts`).
  *
  * ASK, DON'T INFER. A naive version would just try to read `AXSelectedText`
  * and treat any thrown error as "unsupported." That's wrong: reading a

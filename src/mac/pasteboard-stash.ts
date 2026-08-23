@@ -1,9 +1,10 @@
 /**
  * WHAT IT'S FOR: putting the operator's clipboard back the way they left it.
  *
- * Paste Snippet delivers text through the system clipboard (⌘C to capture,
- * ⌘V to insert — the Accessibility alternatives were measured unusable; see
- * `clipboard-snippet.ts`). That used to mean every gesture silently replaced
+ * Paste Snippet delivers text through the system clipboard: ⌘V always, and
+ * ⌘C whenever the no-clipboard Accessibility route cannot read the selection
+ * — which is most apps, though not all, so a successful direct capture never
+ * reaches this module at all (see `ax-text.ts` and `clipboard-snippet.ts`). That used to mean every gesture silently replaced
  * whatever the operator had copied. This module saves the clipboard before a
  * gesture and restores it afterwards, so the key stops costing them the thing
  * they were carrying.
@@ -143,8 +144,13 @@ const CONCEALED_TYPE = "org.nspasteboard.ConcealedType";
 export const MAX_STASH_BYTES = 64 * 1024 * 1024;
 
 /**
- * JXA: copy the general pasteboard into the stash, item by item and type by
- * type. argv: `[stashName, maxBytes]`.
+ * Copy the general pasteboard into the stash, item by item and type by type.
+ * argv: `[stashName, maxBytes]`.
+ *
+ * Written in JXA (JavaScript for Automation), run through `osascript`: it is
+ * the scripting language with a direct bridge to AppKit, so it can reach
+ * `NSPasteboard` without a compiled helper. Every script in this module is
+ * JXA for that reason.
  *
  * Returns one of:
  *   - `ok <items> <bytes> <changeCount>` — stashed; `changeCount` is the

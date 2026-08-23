@@ -93,8 +93,10 @@ type PasteSnippetSettings = {
  * accessibility WRITE was measured reporting success in iTerm2 while
  * inserting nothing, and a confident false success is worse than touching the
  * clipboard. So in practice both gestures usually do go through
- * `mac/clipboard-snippet.ts`, which deliberately does not save or restore
- * whatever was on the clipboard before (see that module's header for why).
+ * `mac/clipboard-snippet.ts` — which now saves the operator's clipboard
+ * before a gesture and puts it back afterwards, unless the key's "Put my
+ * clipboard back afterwards" setting is off (`mac/pasteboard-stash.ts` holds
+ * the exact guarantee and its limits).
  * The routing rules themselves — `decideCaptureRoute`/`decideInsertRoute` in
  * `ax-text.ts` — are pure and unit-tested; this shell just calls them and
  * dispatches. One route is logged per gesture (`accessibility` or

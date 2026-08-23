@@ -3,16 +3,25 @@
  * "Paste Snippet" key, and pasting it back out — through the system
  * clipboard, on purpose.
  *
- * This is the FALLBACK route. The first choice, tried before any of this
- * runs, is `ax-text.ts`'s Accessibility route (`AXSelectedText` on the
- * frontmost app's focused element) — it never touches the clipboard at all,
- * confirmed live in iTerm2. This module exists because that route isn't
- * universal: Safari and ChatGPT's web content don't expose `AXSelectedText`
- * on their focused element at all (probed live — Safari's focused element
- * exposed 42 Accessibility attributes, and that wasn't one of them). The
- * routing decision itself (`decideCaptureRoute`/`decideInsertRoute` in
- * `ax-text.ts`) lives outside this module; this module is just what runs
- * once that decision says "fall back."
+ * WHICH GESTURES END UP HERE — the two are not symmetric, and an earlier
+ * version of this header got it wrong by describing them as if they were.
+ *
+ * CAPTURE tries `ax-text.ts`'s Accessibility route first (`AXSelectedText` on
+ * the frontmost app's focused element), which touches no clipboard at all,
+ * and lands here on anything but a clean read. In practice that is most
+ * places: standard text fields work, but iTerm2 reports "nothing selected"
+ * even when text IS selected, and Safari and ChatGPT's web content do not
+ * expose the attribute on their focused element at all (probed live —
+ * Safari's focused element exposed 42 Accessibility attributes and that was
+ * not among them).
+ *
+ * INSERT always lands here. The Accessibility WRITE was measured accepting
+ * the call, reporting success, and inserting nothing (iTerm2, three times in
+ * a row), so `decideInsertRoute` unconditionally chooses this module: a
+ * confident false success is worse than touching the clipboard.
+ *
+ * The routing rules themselves (`decideCaptureRoute`/`decideInsertRoute`)
+ * live in `ax-text.ts`; this module is just what runs once they point here.
  *
  * So this module goes through ⌘C / ⌘V — and therefore takes the operator's
  * clipboard away from them for the duration. It gives it back: both gestures
@@ -32,17 +41,27 @@
  * the snippet, silently. That is why restoration is a per-key setting that
  * can be turned off, and why the wait is generous.
  *
- * Both directions go through small, single-purpose AppleScript/JXA scripts,
- * run via the shared osascript runner (`../applescript/runner.js`). Every one
- * of them has been extracted and actually executed against a real Mac while
- * writing this module — this is not "should work," it is "was run."
+ * Both directions go through small, single-purpose AppleScript and JXA
+ * (JavaScript for Automation) scripts, run through `osascript` via the shared
+ * runner (`../applescript/runner.js`).
+ *
+ * Every script here EXCEPT the ⌘V keystroke has been extracted and actually
+ * executed against a real Mac — this is not "should work," it is "was run."
+ * The exception is deliberate and worth naming: a test harness cannot send
+ * ⌘V without pasting into whatever app happens to be frontmost, so
+ * {@link PASTE_KEYSTROKE_SCRIPT} is stubbed in every harness and its only
+ * real-world exercise is the operator pressing the key on the deck.
  *
  * Two rules hold throughout, because breaking either leaks the operator's
  * text into a place it must never go:
- *   - Snippet/clipboard text is NEVER interpolated into a script. It travels
+ *   - Snippet/clipboard TEXT is NEVER interpolated into a script. It travels
  *     only as a JXA process's STDIN (write) or as a script's stdout (read) —
  *     never spliced into source, never passed as an argv element either (argv
- *     has a real OS length ceiling a 32 KiB snippet can approach).
+ *     has a real OS length ceiling a 32 KiB snippet can approach). Note that
+ *     argv IS used, so the rule is about the TEXT and not about argv: the
+ *     scripts take integers and a pasteboard name that way, and the write
+ *     script takes both at once (`runJxaWithArgsAndStdin`) precisely so the
+ *     payload can stay on stdin while a changeCount rides argv.
  *   - No selection text, snippet text, preview, or AppleScript/JXA error
  *     MESSAGE ever reaches a call to `log`. Only outcome codes, byte counts,
  *     and (non-secret) OS-level numbers — a changeCount, a bundle id — are
@@ -529,15 +548,12 @@ async function readFrontmostBundleId(deps: ClipboardDeps): Promise<string | null
 
 /**
  * Read whatever the operator just selected, for the long-press "teach the
- * button" gesture: refuse Secure Input and password-manager copies, send
- * ⌘C, wait for the pasteboard to reflect it, and validate the result before
- * ever returning it to the caller for storage. NEVER restores whatever was
- * on the clipboard before — that is intentional (see the module header) —
- * and refuses rather than stores on anything short of a confirmed, in-cap,
- * plain-text, non-concealed capture.
- */
-/**
- * Capture, wrapped in the clipboard save/restore.
+ * button" gesture — wrapped in the clipboard save/restore.
+ *
+ * Refuses Secure Input and password-manager copies, sends ⌘C, waits for the
+ * pasteboard to reflect it, and validates before returning anything for
+ * storage: it refuses rather than stores on anything short of a confirmed,
+ * in-cap, plain-text, non-concealed capture.
  *
  * The secure-input probe deliberately runs BEFORE the snapshot: if we are
  * going to refuse the gesture outright, we should not have touched the
@@ -673,10 +689,14 @@ async function captureAfterSnapshot(deps: ClipboardDeps, state: GestureState): P
 /**
  * Write `content` onto the clipboard (marked concealed + transient so
  * clipboard managers and sync skip retaining it) and send ⌘V — the "press"
- * gesture. Confirms the write actually landed (changeCount advanced) before
- * ever sending the paste keystroke, and best-effort-checks the frontmost app
- * hasn't changed out from under it. Leaves the snippet on the clipboard
- * afterward — never restores anything (see the module header).
+ * gesture.
+ *
+ * Before the keystroke it proves the clipboard actually holds OUR write, by
+ * changeCount and by a per-write token, and best-effort-checks that the
+ * frontmost app has not changed. Afterwards it puts the operator's own
+ * clipboard back, having saved it first — see `pasteboard-stash.ts` for the
+ * exact guarantee, and {@link RESTORE_AFTER_PASTE_MS} for why the restore
+ * waits rather than firing immediately.
  */
 export async function insertSnippet(
 	content: string,
@@ -738,10 +758,13 @@ type GestureState = {
  * and give the stash back whatever happened.
  *
  * A stash that outlives its gesture is a copy of the operator's data sitting
- * somewhere they don't know about, so the release is unconditional — with ONE
- * deliberate exception, inside `restoreClipboard`: a restore that failed after
- * clearing the clipboard keeps the stash, because at that moment it holds the
- * only surviving copy.
+ * somewhere they don't know about, so it is released whenever we can — but
+ * NOT unconditionally. The exact rule lives in `restoreClipboard`: release
+ * only on positive evidence that the clipboard is intact. A restore that
+ * failed after clearing, one whose result we cannot classify, and one that
+ * threw all KEEP the stash, because in each case it may hold the only
+ * surviving copy; the next plugin start releases it. That start-up release
+ * can itself fail, and says so in the log rather than pretending otherwise.
  */
 async function finishGesture(
 	deps: ClipboardDeps,
