@@ -8439,9 +8439,16 @@ function classifyError(stderr) {
     }
     return "error";
 }
-function runOsascript(args, exec) {
+/**
+ * Run osascript with the given args, optionally piping `stdin` to it first.
+ * `stdin` is the ONLY safe way to hand a script arbitrary-length user text:
+ * unlike an argv element it has no OS argument-length ceiling, and unlike
+ * script-source interpolation it can never become code — the script must
+ * explicitly choose to read it (see `runJxaWithStdin`).
+ */
+function runOsascript(args, exec, stdin) {
     return new Promise((resolve) => {
-        exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
+        const child = exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
             const out = String(stdout ?? "");
             const err = String(stderr ?? "");
             if (error) {
@@ -8451,10 +8458,22 @@ function runOsascript(args, exec) {
                 resolve({ ok: true, code: "success", stdout: out, stderr: err });
             }
         });
+        if (stdin !== undefined) {
+            const proc = child;
+            proc.stdin?.write(stdin, "utf8");
+            proc.stdin?.end();
+        }
     });
 }
 function runAppleScript(script, exec = execFile) {
     return runOsascript(["-e", script], exec);
+}
+/** Run an AppleScript with ARGUMENTS, delivered to its `on run argv` handler.
+ * The only safe way to hand user text to AppleScript: arguments are data, never
+ * source, so a snippet containing quotes, backslashes or `& do shell script`
+ * cannot become code. NEVER interpolate user text into a script string. */
+function runAppleScriptWithArgs(script, args, exec = execFile) {
+    return runOsascript(["-e", script, "--", ...args], exec);
 }
 /**
  * Run a JXA (JavaScript for Automation) script. Same osascript binary, but the
@@ -8463,6 +8482,23 @@ function runAppleScript(script, exec = execFile) {
  */
 function runJxa(script, exec = execFile) {
     return runOsascript(["-l", "JavaScript", "-e", script], exec);
+}
+/** Run a JXA script with `on run`/`function run(argv)` ARGUMENTS — the JXA
+ * counterpart to {@link runAppleScriptWithArgs}: arguments are data delivered
+ * via argv, never interpolated into the script source. */
+function runJxaWithArgs(script, args, exec = execFile) {
+    return runOsascript(["-l", "JavaScript", "-e", script, "--", ...args], exec);
+}
+/**
+ * Run a JXA script, piping `input` to its STDIN. The script reads it itself
+ * (typically via `NSFileHandle.fileHandleWithStandardInput`) — this is the
+ * preferred way to hand a script large or sensitive user text: it has no
+ * OS argv-length ceiling the way `runJxaWithArgs` does, and — like argv —
+ * it is delivered as data the script must opt into reading, never as script
+ * source.
+ */
+function runJxaWithStdin(script, input, exec = execFile) {
+    return runOsascript(["-l", "JavaScript", "-e", script], exec, input);
 }
 
 /**
@@ -14315,6 +14351,1252 @@ let OpenFile = (() => {
 })();
 
 /**
+ * WHAT IT'S FOR: the FIRST-CHOICE route for the Paste Snippet key's two
+ * gestures — reading and writing the frontmost app's actual text-control
+ * selection through the Accessibility API (`AXSelectedText`), via System
+ * Events. Its whole reason to exist is that `clipboard-snippet.ts`'s ⌘C/⌘V
+ * route, while universal, ALWAYS touches the system clipboard — displacing
+ * whatever the operator had copied, and racing their clipboard manager
+ * (CopyBug) over who writes last. Confirmed live in iTerm2 (`AXSelectedText`
+ * present, real selection text returned): when an app exposes its selection
+ * this way, neither gesture needs to touch the clipboard at all. Confirmed
+ * ALSO live that Safari and ChatGPT's web content do not expose
+ * `AXSelectedText` on their focused element at all — for those, and anything
+ * else that doesn't support it, the clipboard route in `clipboard-snippet.ts`
+ * remains the fallback. This module only decides "can accessibility help
+ * here right now," and if so, does the read/write; the fallback wiring lives
+ * in the action (`../actions/paste-snippet.ts`).
+ *
+ * ASK, DON'T INFER. A naive version would just try to read `AXSelectedText`
+ * and treat any thrown error as "unsupported." That's wrong: reading a
+ * missing/unset attribute raises DIFFERENT AppleEvent errors in different
+ * states (-1700 "can't make some data into the expected type", -1728
+ * "can't get object", and sometimes no error at all with an empty result) —
+ * there's no reliable way to tell "this app doesn't support selections" apart
+ * from "it supports them and none is selected" by pattern-matching a thrown
+ * error. So {@link READ_SELECTION_SCRIPT} asks the question directly instead:
+ * it fetches the focused element's attribute NAMES and checks whether
+ * `"AXSelectedText"` is even in the list, before ever trying to read its
+ * value. Only once presence is confirmed does an empty/missing value get
+ * reported as "nothing is selected" (`nosel`) rather than "not supported"
+ * (`unsupported`) — and that distinction is exactly what the routing rule
+ * below depends on.
+ *
+ * FRAMING (read): a short status word on the FIRST LINE — `ok`, `unsupported`,
+ * `nosel`, or `err|<n>` — and, for `ok` only, EVERYTHING after the first
+ * newline is the selection text, verbatim. Deliberately not base64: a
+ * previous attempt tried `do shell script "..." with input` (not a real
+ * AppleScript form) and separately assumed `Buffer.from(x, "base64")` throws
+ * on malformed input, which it does not — a try/catch "safety net" around it
+ * would have been dead code. Status-line framing needs no such net: it is
+ * verified (this module's tests, plus a real `osascript` run while building
+ * it) to survive quotes, backslashes, tabs, `|`, embedded newlines, accented
+ * characters and emoji. Only the single trailing newline `osascript` itself
+ * appends is stripped — the payload is never trimmed beyond that, because
+ * trimming would eat leading/trailing whitespace the operator actually
+ * selected.
+ *
+ * ERROR NUMBERS ONLY CROSS THE BOUNDARY. AppleScript's `errMsg` can quote the
+ * very content a script failed on (e.g. while trying to set a value); neither
+ * script ever returns it, and neither this module nor its caller ever logs
+ * it. Only `errNum` (an OS-level integer) and status words travel back.
+ *
+ * THE WRITE SIDE TAKES THE TEXT ONLY AS ARGV. {@link WRITE_SELECTION_SCRIPT}
+ * reads `item 1 of argv` inside `on run argv` — never interpolated into the
+ * script source — via {@link runAppleScriptWithArgs}, the one mechanism in
+ * this codebase where arguments are delivered as data a script must opt into
+ * reading, never as code.
+ */
+/**
+ * AppleScript: ask whether the frontmost app's focused UI element exposes
+ * `AXSelectedText` at all, and if so, read it. See the module header for why
+ * this asks rather than infers from a failed read.
+ */
+const READ_SELECTION_SCRIPT = `try
+	tell application "System Events"
+		set frontProc to first application process whose frontmost is true
+		tell frontProc
+			try
+				set theElement to value of attribute "AXFocusedUIElement"
+			on error
+				return "unsupported"
+			end try
+			if theElement is missing value then return "unsupported"
+			try
+				set attrNames to name of attributes of theElement
+			on error
+				return "unsupported"
+			end try
+			if attrNames does not contain "AXSelectedText" then return "unsupported"
+			try
+				set theText to value of attribute "AXSelectedText" of theElement
+			on error
+				return "nosel"
+			end try
+			if theText is missing value then return "nosel"
+			if theText is "" then return "nosel"
+			return "ok" & linefeed & theText
+		end tell
+	end tell
+on error errMsg number errNum
+	return "err|" & errNum
+end try`;
+/** Strip only the single trailing newline `osascript` appends to every
+ * result — never more. Trimming further would eat whitespace that is part
+ * of an actual selection. */
+function stripTrailingNewline(raw) {
+    return raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+}
+/** Parse {@link READ_SELECTION_SCRIPT}'s raw stdout. See the module header
+ * for the exact framing this depends on. */
+function parseAxRead(rawOutput) {
+    const output = stripTrailingNewline(rawOutput);
+    const firstNewline = output.indexOf("\n");
+    const head = firstNewline === -1 ? output : output.slice(0, firstNewline);
+    if (head === "unsupported")
+        return { status: "unsupported" };
+    if (head === "nosel")
+        return { status: "nosel" };
+    const err = /^err\|(-?\d+)$/.exec(head);
+    if (err)
+        return { status: "error", code: Number(err[1]) };
+    if (head === "ok") {
+        // The script's framing guarantees a payload line after "ok", even
+        // though it can never be empty (an empty/missing selection is framed
+        // as "nosel", not "ok" with nothing after it). No payload line at all
+        // means the output is garbled — never treated as a successful read.
+        if (firstNewline === -1)
+            return { status: "malformed" };
+        return { status: "ok", text: output.slice(firstNewline + 1) };
+    }
+    return { status: "malformed" };
+}
+/**
+ * Run {@link READ_SELECTION_SCRIPT} and parse its result. A failure at the
+ * `osascript` process level itself (distinct from the script's own
+ * try/catch, which already turns every internal failure into a framed
+ * status word) is reported as `malformed` — there is no error NUMBER to
+ * carry in that case, only the runner's own classification, which is logged
+ * directly since it is already sanitized (`classifyError` never carries the
+ * AppleScript message).
+ */
+async function captureViaAx(deps) {
+    const result = await deps.runAppleScript(READ_SELECTION_SCRIPT);
+    if (!result.ok) {
+        deps.log?.(`ax-read: osascript failed (code=${result.code})`);
+        return { status: "malformed" };
+    }
+    const parsed = parseAxRead(result.stdout);
+    if (parsed.status === "malformed") {
+        deps.log?.("ax-read: unparseable output");
+    }
+    else if (parsed.status === "error") {
+        deps.log?.(`ax-read: script reported error ${parsed.code}`);
+    }
+    return parsed;
+}
+/**
+ * THE FALLBACK RULE, as a pure function over an {@link AxReadResult} — no
+ * I/O, so it's testable without a single mock. Exact mapping:
+ *   - `ok` -> `use-ax` (the clipboard is never touched).
+ *   - everything else (`unsupported`, `nosel`, `error`, `malformed`) ->
+ *     `fall-back` to the clipboard capture.
+ *
+ * Only a SUCCESSFUL read skips the clipboard; see the comment in the body for
+ * why `nosel` in particular is a fall-back and not a refusal.
+ */
+function decideCaptureRoute(ax) {
+    // ONLY a successful read skips the clipboard. Everything else falls back,
+    // including `nosel`.
+    //
+    // `nosel` used to mean "accessibility can see selections here and there
+    // isn't one", so firing ⌘C was assumed pointless. MEASURED ON THE REAL
+    // MACHINE: iTerm2 reports `nosel` even with text selected — the attribute
+    // exists and stays empty — while ⌘C copies that selection perfectly. So the
+    // old rule blocked the one mechanism that worked. A ⌘C with nothing
+    // selected is harmless (the pasteboard does not move and we report
+    // no-copy); refusing to try is not.
+    return ax.status === "ok" ? "use-ax" : "fall-back";
+}
+
+/**
+ * Pure logic for the "Paste Snippet" key: the BUTTON is the storage. Press
+ * pastes the stored text at the cursor; holding it (the shared PressGate
+ * long-press gesture) copies whatever's currently selected into the key
+ * instead; the key face previews what's stored. Everything here is pure (no
+ * child_process, no Stream Deck SDK) so the size cap and the masked/visible
+ * default are unit-tested in isolation. The actual macOS mechanics — sending
+ * ⌘C/⌘V and reading/writing `NSPasteboard` deliberately, on purpose, without
+ * ever restoring what was on it before — live in `clipboard-snippet.ts`.
+ */
+/** Hard cap on stored snippet size, in BYTES (not characters) — a 32 KiB
+ * plaintext blob is already generous for a "paste this" key, and refusing
+ * over-cap content is safer than silently truncating it (a truncated paste
+ * is a corrupted paste). */
+const MAX_SNIPPET_BYTES = 32_768;
+/** True when `content`'s UTF-8 byte length is within {@link MAX_SNIPPET_BYTES}
+ * (inclusive). Byte length, not `.length` — a string well under 32,768
+ * *characters* can still exceed the cap once multi-byte UTF-8 is counted. */
+function withinSizeCap(content) {
+    return Buffer.byteLength(content, "utf8") <= MAX_SNIPPET_BYTES;
+}
+const PREVIEW_MAX_LINES = 3;
+const PREVIEW_LINE_WIDTH = 10;
+/** Length and slicing in CODE POINTS, not UTF-16 units: `"👍".length` is 2, so a
+ * width-based slice can cut an emoji in half and render replacement characters
+ * on the key. */
+function chars(text) {
+    return Array.from(text);
+}
+function cut(text, n) {
+    return chars(text).slice(0, n).join("");
+}
+/** Truncate one row to {@link PREVIEW_LINE_WIDTH}, matching the codebase's
+ * existing label-truncation convention (`truncate()` in tmux-window.ts):
+ * cut to width-1 plus a trailing "…" so the row still signals "there's more"
+ * without silently growing past the key face. */
+function truncateRow(line) {
+    // Code points, like wrapWords — `.length`/`.slice` count UTF-16 units and
+    // would cut an emoji in half on the multi-line path.
+    return chars(line).length > PREVIEW_LINE_WIDTH ? `${cut(line, PREVIEW_LINE_WIDTH - 1)}…` : line;
+}
+/**
+ * Reduce arbitrary snippet text to up to 3 rows of up to 10 characters each,
+ * for the key-face preview. Tabs collapse to a single space and carriage
+ * returns are stripped before splitting on "\n"; blank lines are dropped
+ * (leading or otherwise) rather than shown as gaps.
+ *
+ * A single non-empty line with no newlines WRAPS across the available rows
+ * (consecutive 10-char slices) instead of being shown once and cut off; if
+ * more of it exists than 3 rows can hold, the last row ends in "…". With more
+ * than one non-empty line, the first 3 are shown as-is (each individually
+ * truncated to the row width, with its own "…" when it didn't fit) — any
+ * lines beyond the third are dropped, with the third row ending in "…" so the
+ * face never implies the snippet is only as long as what fits.
+ *
+ * Deterministic: the same input always maps to the same rows, which is what
+ * the tests pin down.
+ */
+function previewLines(content) {
+    const normalized = content.replace(/\t/g, " ").replace(/\r/g, "");
+    const nonEmpty = normalized
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    if (nonEmpty.length === 0)
+        return [];
+    if (nonEmpty.length === 1)
+        return wrapWords(nonEmpty[0]);
+    const shown = nonEmpty.slice(0, PREVIEW_MAX_LINES).map(truncateRow);
+    // Say so when lines were dropped. Cutting silently at three rows makes a
+    // 200-line snippet look like a 3-line one, and the operator's only cue that
+    // the key holds more would be pasting it somewhere to find out.
+    if (nonEmpty.length > PREVIEW_MAX_LINES) {
+        const last = shown[shown.length - 1];
+        shown[shown.length - 1] = last.endsWith("…") ? last : `${cut(last, PREVIEW_LINE_WIDTH - 1).trimEnd()}…`;
+    }
+    return shown;
+}
+/**
+ * Wrap one line across the key face, breaking at SPACES where it can.
+ *
+ * Slicing every PREVIEW_LINE_WIDTH characters is simpler but reads badly at key
+ * size: "npm run build" became "npm run bu" / "ild", which is harder to
+ * recognise at a glance than the text it is previewing. Breaking on words gives
+ * "npm run" / "build". A single word longer than the line is still hard-broken
+ * — there is nowhere else to break it — and anything past the last line is cut
+ * by one character to make room for the ellipsis.
+ */
+function wrapWords(line) {
+    const rows = [];
+    let rest = line;
+    while (rest.length > 0 && rows.length < PREVIEW_MAX_LINES) {
+        if (chars(rest).length <= PREVIEW_LINE_WIDTH) {
+            rows.push(rest);
+            rest = "";
+            break;
+        }
+        // Prefer the last space that still fits; fall back to a hard break for
+        // a single over-long word.
+        const window = cut(rest, PREVIEW_LINE_WIDTH + 1);
+        const breakAt = chars(window).lastIndexOf(" ");
+        const take = breakAt > 0 ? breakAt : PREVIEW_LINE_WIDTH;
+        rows.push(cut(rest, take).trimEnd());
+        rest = chars(rest).slice(take).join("").trimStart();
+    }
+    if (rest.length > 0 && rows.length > 0) {
+        const last = rows[rows.length - 1];
+        rows[rows.length - 1] = `${cut(last, Math.max(0, PREVIEW_LINE_WIDTH - 1)).trimEnd()}…`;
+    }
+    return rows;
+}
+/**
+ * Which face this key should paint.
+ *
+ * Empty content shows the teach hint. Otherwise the real text is previewed —
+ * that is the point of the key face, and it is what the operator asked for.
+ * `mask` replaces it with dots plus a character count for keys that hold
+ * something they would rather not have readable across the room; it is opt-in
+ * and applies whether the text was captured or typed. Provenance (`source` on
+ * the action's settings) deliberately plays no part — see the note there.
+ */
+function resolveSnippetFace(settings) {
+    const content = settings.content ?? "";
+    // Checked before anything else: an over-cap snippet is unusable whether or
+    // not it is masked, and the face must say so rather than preview text the
+    // key will refuse to paste.
+    if (!withinSizeCap(content))
+        return { kind: "over-cap", bytes: Buffer.byteLength(content, "utf8") };
+    // Only genuinely absent content shows the teach hint. A snippet of spaces
+    // or newlines is real text the operator captured on purpose — showing the
+    // "hold to teach" face for it would claim the key is untaught when it is not.
+    if (content === "")
+        return { kind: "empty" };
+    // The preview shows the real text by default, whatever its provenance.
+    // Captured text used to default to MASKED on the theory that an accidental
+    // capture shouldn't be readable on a desk device — but the operator's whole
+    // reason for a preview is seeing what the key holds, and a row of dots
+    // answers the wrong question. Masking is now opt-in per key.
+    const masked = settings.mask ?? false;
+    if (masked)
+        return { kind: "masked", chars: content.length };
+    const lines = previewLines(content);
+    // Whitespace-only content previews as no rows at all. Painting that would
+    // give a blank key indistinguishable from a broken one.
+    if (lines.length === 0)
+        return { kind: "blank", chars: content.length };
+    return { kind: "preview", lines };
+}
+const INK = "#0F1211";
+const TEAL = "#3EC9C4"; // files family, matching Open File's jack-line
+const SIGNAL = "#F2FFF6";
+const MUTED = "#8B9490";
+const WARN = "#E8B14C"; // the amber used for "needs you" elsewhere on the deck
+const PREVIEW_ROW_Y = [22, 36, 50];
+// A FIXED bullet string, never derived from the real content — the masked
+// face must not leak line count, line length, or anything else about what's
+// stored, only the character count printed below it.
+const MASK_ROW = "••••••••••";
+function jackLine() {
+    return `<rect x="8" y="62.5" width="56" height="3.5" rx="1.75" fill="${TEAL}" opacity="0.95"/>`;
+}
+/** A dimmed clipboard outline, used for the empty face. */
+function clipboardGlyph(color) {
+    return (
+    // Sized to end well above the hint's baseline (y=53). The first version ran to
+    // y=52 and the hint printed straight through it.
+    `<rect x="24" y="12" width="24" height="28" rx="4" fill="none" stroke="${color}" stroke-width="3"/>` +
+        `<rect x="30" y="8" width="12" height="6" rx="2" fill="${color}"/>`);
+}
+/**
+ * Build the 72×72 key-face SVG for the given face. Hex colours only — the
+ * KEY rasterizer (unlike the touchscreen pixmap pipeline) paints `hsl()` as
+ * solid black. Any real snippet text (the preview lines) is XML-escaped;
+ * the masked face never touches the real content at all, by construction.
+ */
+function buildSnippetKeyImage(face) {
+    let body;
+    if (face.kind === "empty") {
+        body =
+            clipboardGlyph(MUTED) +
+                `<text x="36" y="53" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+                `font-size="9" fill="${MUTED}">hold to teach</text>`;
+    }
+    else if (face.kind === "masked") {
+        const rows = PREVIEW_ROW_Y.map((y) => `<text x="36" y="${y}" text-anchor="middle" font-family="Menlo, Monaco, monospace" ` +
+            `font-size="10" fill="${SIGNAL}">${MASK_ROW}</text>`).join("");
+        body =
+            rows +
+                `<text x="36" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+                `font-size="8" fill="${MUTED}">${face.chars} ch</text>`;
+    }
+    else if (face.kind === "over-cap") {
+        body =
+            `<text x="36" y="30" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+                `font-size="10" fill="${WARN}">too big</text>` +
+                `<text x="36" y="44" text-anchor="middle" font-family="Menlo, Monaco, monospace" ` +
+                `font-size="9" fill="${MUTED}">${Math.round(face.bytes / 1024)} KB</text>` +
+                `<text x="36" y="57" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+                `font-size="8" fill="${MUTED}">shorten it</text>`;
+    }
+    else if (face.kind === "blank") {
+        body =
+            clipboardGlyph(TEAL) +
+                `<text x="36" y="53" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" ` +
+                `font-size="8" fill="${MUTED}">whitespace · ${face.chars} ch</text>`;
+    }
+    else {
+        body = face.lines
+            .map((line, i) => `<text x="36" y="${PREVIEW_ROW_Y[i]}" text-anchor="middle" font-family="Menlo, Monaco, monospace" ` +
+            `font-size="10" fill="${SIGNAL}">${escapeXml(line)}</text>`)
+            .join("");
+    }
+    return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
+        `<rect width="72" height="72" fill="${INK}"/>${body}${jackLine()}</svg>`);
+}
+
+/**
+ * WHAT IT'S FOR: capturing the operator's current text selection into the
+ * "Paste Snippet" key, and pasting it back out — through the system
+ * clipboard, on purpose.
+ *
+ * This is the FALLBACK route. The first choice, tried before any of this
+ * runs, is `ax-text.ts`'s Accessibility route (`AXSelectedText` on the
+ * frontmost app's focused element) — it never touches the clipboard at all,
+ * confirmed live in iTerm2. This module exists because that route isn't
+ * universal: Safari and ChatGPT's web content don't expose `AXSelectedText`
+ * on their focused element at all (probed live — Safari's focused element
+ * exposed 42 Accessibility attributes, and that wasn't one of them). The
+ * routing decision itself (`decideCaptureRoute`/`decideInsertRoute` in
+ * `ax-text.ts`) lives outside this module; this module is just what runs
+ * once that decision says "fall back."
+ *
+ * So this module goes through ⌘C / ⌘V — but explicitly WITHOUT saving and
+ * restoring whatever was on the clipboard before. The operator said plainly
+ * that this key changing the clipboard is fine. That one decision is what
+ * makes the rest of this simple: no snapshot-and-restore, no race against a
+ * clipboard manager over who gets to write last, no "restore clobbered an
+ * image I had copied." Capture leaves the just-copied text on the clipboard;
+ * insert leaves the snippet on the clipboard. Neither ever restores anything.
+ *
+ * Both directions go through small, single-purpose AppleScript/JXA scripts,
+ * run via the shared osascript runner (`../applescript/runner.js`). Every one
+ * of them has been extracted and actually executed against a real Mac while
+ * writing this module — this is not "should work," it is "was run."
+ *
+ * Two rules hold throughout, because breaking either leaks the operator's
+ * text into a place it must never go:
+ *   - Snippet/clipboard text is NEVER interpolated into a script. It travels
+ *     only as a JXA process's STDIN (write) or as a script's stdout (read) —
+ *     never spliced into source, never passed as an argv element either (argv
+ *     has a real OS length ceiling a 32 KiB snippet can approach).
+ *   - No selection text, snippet text, preview, or AppleScript/JXA error
+ *     MESSAGE ever reaches a call to `log`. Only outcome codes, byte counts,
+ *     and (non-secret) OS-level numbers — a changeCount, a bundle id — are
+ *     logged. An AppleScript error message can quote the content it failed
+ *     on, which is exactly why only error NUMBERS survive
+ *     (`classifyError` in `../applescript/runner.js`), never the message.
+ *
+ * FRAMING, used by every script that returns non-trivial data: a short status
+ * word (plus, where useful, a piece of non-secret numeric context) on the
+ * FIRST LINE; for the one status that carries a payload, EVERYTHING after the
+ * first newline is that payload, verbatim. Deliberately not base64: the
+ * payload is arbitrary user text, so any in-band delimiter could occur inside
+ * it, whereas "before the first newline" is the one thing the status word
+ * itself cannot do. Verified end to end (see the module's test suite and the
+ * commands run while building this) that quotes, backslashes, tabs, `|`,
+ * embedded newlines, accents and emoji all survive the round trip intact.
+ *
+ * KNOWN LIMITS, stated plainly:
+ *   - Capture refuses when macOS itself reports Secure Input is on, and when
+ *     the copied item carries `org.nspasteboard.ConcealedType` (the marker
+ *     password managers use). It CANNOT recognise every secret — a field
+ *     that doesn't set either signal (plenty don't) is copied like any other.
+ *   - Before sending ⌘V, insert re-reads the pasteboard's changeCount and
+ *     requires it to still equal the one OUR write produced. That is an exact
+ *     check that nothing else has written since — not a lock: another process
+ *     can still write in the instant between that read and the keystroke.
+ *   - The frontmost-app check before pasting is a MITIGATION, not a
+ *     guarantee: it catches the operator switching apps between our write and
+ *     our ⌘V, not every way focus could move in that gap.
+ *   - Nothing here can tell a genuine, isolated pasteboard change (the
+ *     operator's own ⌘C) apart from some OTHER process changing the
+ *     clipboard in the same instant. A clipboard manager that reacts to a
+ *     copy by promptly re-touching the pasteboard (adding its own metadata)
+ *     is exactly what `churn` below is for — but a change that lands in the
+ *     narrow window BEFORE our own ⌘C is not distinguishable from our
+ *     result, and is not detected.
+ */
+/** How long the capture poll waits for the ⌘C we just sent to land, in ms. */
+const CAPTURE_POLL_DEADLINE_MS = 1200;
+/** How often the capture poll checks the pasteboard's changeCount, in ms. */
+const CAPTURE_POLL_INTERVAL_MS = 50;
+/**
+ * JXA: ask Carbon whether Secure Input is currently on. Refusing ONLY when
+ * this affirmatively says "true" (never when the probe fails or returns
+ * something unexpected) is deliberate: false alarms would make the key
+ * unusable, so the rule is "refuse only when we KNOW the field is secure."
+ * Verified live: `osascript -l JavaScript -e '<this>'` printed "false" in a
+ * normal Terminal window.
+ */
+const SECURE_INPUT_PROBE_SCRIPT = `function run() {
+	ObjC.import("Carbon");
+	try {
+		return String($.IsSecureEventInputEnabled());
+	} catch (e) {
+		return "probe-failed";
+	}
+}`;
+/** JXA: read the general pasteboard's `changeCount` — a plain, non-secret
+ * integer used as a before/after fingerprint. Never the pasteboard's content. */
+const READ_CHANGE_COUNT_SCRIPT = `function run() {
+	ObjC.import("AppKit");
+	try {
+		return String($.NSPasteboard.generalPasteboard.changeCount);
+	} catch (e) {
+		return "read-failed";
+	}
+}`;
+/** JXA: read the frontmost application's bundle identifier — again, a plain
+ * non-secret string, used only to notice "the frontmost app changed." Empty
+ * output means "couldn't tell," never a real bundle id. */
+const READ_FRONTMOST_BUNDLE_SCRIPT = `function run() {
+	ObjC.import("AppKit");
+	try {
+		var bid = $.NSWorkspace.sharedWorkspace.frontmostApplication.bundleIdentifier;
+		var unwrapped = ObjC.unwrap(bid);
+		return unwrapped === null || unwrapped === undefined ? "" : unwrapped;
+	} catch (e) {
+		return "";
+	}
+}`;
+/** AppleScript: the ⌘C the capture gesture sends. */
+const COPY_KEYSTROKE_SCRIPT = `tell application "System Events" to keystroke "c" using {command down}`;
+/** AppleScript: the ⌘V the insert gesture sends. Intentionally NOT executed
+ * during development/verification (it would fire into whatever is
+ * frontmost) — only compiled. */
+const PASTE_KEYSTROKE_SCRIPT = `tell application "System Events" to keystroke "v" using {command down}`;
+/**
+ * JXA, given the pre-⌘C `changeCount` as `argv[0]`: poll the pasteboard
+ * (every {@link CAPTURE_POLL_INTERVAL_MS}ms, up to {@link CAPTURE_POLL_DEADLINE_MS}ms)
+ * until it changes, then snapshot its TYPES and TEXT together in one pass,
+ * then re-read `changeCount` a third time to catch a TORN read — something
+ * (our own ⌘C, or another process) changing the pasteboard again while we
+ * were mid-snapshot. A single external process, not a JS-side poll loop:
+ * the whole wait-then-snapshot happens inside one `osascript` invocation, so
+ * there is nothing for this module's own timers to coordinate.
+ *
+ * Output, per the module's framing: `unchanged|<n>` (nothing changed within
+ * the deadline — the ⌘C copied nothing), `churn|<n>` (changed again during
+ * the snapshot — refuse, don't guess which write is real), `readfail|<n>`
+ * (changed, but reading it threw), or `ok|<comma-joined types>` + LINEFEED +
+ * the raw text (verbatim; empty when the pasteboard has no plain-text
+ * representation at all — the JS side decides what that means).
+ *
+ * Verified live end-to-end: a background poll of this exact loop correctly
+ * caught a real pasteboard write (including multi-byte emoji) made by a
+ * second process ~150-300ms after the poll started.
+ */
+const CAPTURE_POLL_SCRIPT = `function run(argv) {
+	ObjC.import("AppKit");
+	ObjC.import("Foundation");
+	var baseline = parseInt(argv[0], 10);
+	var pb = $.NSPasteboard.generalPasteboard;
+	var deadline = Date.now() + ${CAPTURE_POLL_DEADLINE_MS};
+	var cur = pb.changeCount;
+	var changed = false;
+	while (Date.now() < deadline) {
+		cur = pb.changeCount;
+		if (cur !== baseline) { changed = true; break; }
+		$.NSThread.sleepForTimeInterval(${CAPTURE_POLL_INTERVAL_MS / 1000});
+	}
+	if (!changed) return "unchanged|" + cur;
+	var types, text;
+	try {
+		var nsTypes = pb.types;
+		types = [];
+		var count = nsTypes.count;
+		for (var i = 0; i < count; i++) {
+			types.push(ObjC.unwrap(nsTypes.objectAtIndex(i)));
+		}
+		var nsText = pb.stringForType("public.utf8-plain-text");
+		text = nsText.isNil() ? null : ObjC.unwrap(nsText);
+	} catch (e) {
+		return "readfail|" + pb.changeCount;
+	}
+	var after = pb.changeCount;
+	if (after !== cur) return "churn|" + after;
+	return "ok|" + types.join(",") + "\\n" + (text === null ? "" : text);
+}`;
+/**
+ * JXA, reading the snippet text from STDIN (never argv, never script
+ * source): write it to the pasteboard as a `NSPasteboardItem` carrying THREE
+ * representations on the same item — `public.utf8-plain-text` (the text
+ * itself), plus `org.nspasteboard.ConcealedType` and
+ * `org.nspasteboard.TransientType` (empty marker data; their PRESENCE, not
+ * their content, is what clipboard managers and Universal Clipboard look for
+ * to skip retaining/syncing an entry). Every ObjC call that can fail is
+ * checked explicitly and reported as a distinct `fail-*` code — nothing here
+ * assumes success.
+ *
+ * Verified live: after running this exact script with real UTF-8 (including
+ * emoji) piped to its stdin, `pbpaste` read the text back correctly and a
+ * fresh read of the pasteboard's types showed BOTH marker types present
+ * alongside `public.utf8-plain-text`.
+ */
+const WRITE_SNIPPET_SCRIPT = `function run() {
+	ObjC.import("AppKit");
+	ObjC.import("Foundation");
+	var nsString;
+	try {
+		var data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+		if (!data) return "fail-stdin";
+		nsString = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+		if (!nsString) return "fail-decode";
+	} catch (e) {
+		return "fail-stdin";
+	}
+	try {
+		var pb = $.NSPasteboard.generalPasteboard;
+		var token = $.NSUUID.UUID.UUIDString.js;
+		pb.clearContents;
+		var item = $.NSPasteboardItem.alloc.init;
+		var okText = item.setStringForType(nsString, "public.utf8-plain-text");
+		if (!okText) return "fail-write-text";
+		var emptyData = $.NSData.alloc.init;
+		var okConcealed = item.setDataForType(emptyData, "org.nspasteboard.ConcealedType");
+		if (!okConcealed) return "fail-write-concealed";
+		var okTransient = item.setDataForType(emptyData, "org.nspasteboard.TransientType");
+		if (!okTransient) return "fail-write-transient";
+		// A per-write ownership token on a private type. changeCount alone
+		// cannot prove the item on the pasteboard is OURS: reading the count
+		// after writeObjects is not atomic with it, so a writer landing in
+		// between yields a count that describes THEIR write and then never
+		// moves again. Reading this token back identifies the item itself.
+		var okToken = item.setStringForType($(token), ${JSON.stringify("com.movingavg.switchboard.snippet-token")});
+		if (!okToken) return "fail-write-token";
+		var wrote = pb.writeObjects($([item]));
+		if (!wrote) return "fail-writeobjects";
+		return "ok " + pb.changeCount + " " + token;
+	} catch (e) {
+		return "fail-write";
+	}
+}`;
+/**
+ * JXA: read back the ownership token written by {@link WRITE_SNIPPET_SCRIPT}.
+ * Returns the token (a UUID string — never content) or "none". Run
+ * immediately before ⌘V: it answers "is the item I wrote still what will be
+ * pasted?", which changeCount equality alone cannot.
+ */
+const READ_SNIPPET_TOKEN_SCRIPT = `function run() {
+	ObjC.import("AppKit");
+	try {
+		var pb = $.NSPasteboard.generalPasteboard;
+		var value = pb.stringForType(${JSON.stringify("com.movingavg.switchboard.snippet-token")});
+		if (!value) return "none";
+		var js = value.js;
+		return js ? js : "none";
+	} catch (e) {
+		return "none";
+	}
+}`;
+/** Parse {@link SECURE_INPUT_PROBE_SCRIPT}'s output. Anything other than an
+ * exact "true"/"false" is "unknown" — including a thrown/caught probe — so
+ * the caller can apply "refuse only when we KNOW it's secure." */
+function parseSecureInputProbe(output) {
+    const trimmed = output.trim();
+    if (trimmed === "true")
+        return "secure";
+    if (trimmed === "false")
+        return "not-secure";
+    return "unknown";
+}
+/** Parse a plain-integer script result (changeCount). Null on anything that
+ * isn't exactly an integer — never coerced, never guessed. */
+function parseChangeCount(output) {
+    const trimmed = output.trim();
+    return /^-?\d+$/.test(trimmed) ? Number(trimmed) : null;
+}
+/** Parse {@link READ_FRONTMOST_BUNDLE_SCRIPT}'s output. Empty means
+ * "couldn't tell," represented as null so callers can't mistake it for a
+ * real (if oddly empty) bundle id. */
+/** Every `fail-*` code {@link WRITE_SNIPPET_SCRIPT} can return, plus the two
+ * this module synthesises. An EXACT allowlist, not a pattern: a value is
+ * logged because it is one of these, never because it merely looks like one. */
+const WRITE_FAIL_CODES = new Set([
+    "fail-stdin",
+    "fail-decode",
+    "fail-write-text",
+    "fail-write-concealed",
+    "fail-write-transient",
+    "fail-write-token",
+    "fail-writeobjects",
+    "fail-write",
+    "empty",
+    "bad-changecount",
+    "incomplete-write-receipt",
+]);
+/**
+ * Reduce any string bound for a LOG LINE to a token we can prove is safe.
+ *
+ * WHY: every value this feature logs comes from a child process's stdout, and
+ * this action's whole contract is that the operator's selection text never
+ * reaches a log at any level. A `fail-*` code and a bundle id are safe to log
+ * because of their SHAPE, not because of where they came from — an osascript
+ * that emits a warning, a partial read, or an unexpected error puts arbitrary
+ * text in the same field. Anything that is not a short, identifier-shaped,
+ * dot/dash-separated token becomes "unrecognised": the log keeps its
+ * diagnostic value for the codes that matter and cannot carry content.
+ */
+function safeLogToken(value) {
+    const trimmed = value.trim();
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(trimmed) ? trimmed : "unrecognised";
+}
+function parseBundleId(output) {
+    const trimmed = output.trim();
+    return trimmed === "" ? null : trimmed;
+}
+/** Parse {@link CAPTURE_POLL_SCRIPT}'s output. Null on anything that isn't
+ * exactly one of the four framed shapes — a garbled or partial osascript
+ * result must never be read as a real capture. */
+function parseCapturePoll(output) {
+    const body = output.endsWith("\n") ? output.slice(0, -1) : output;
+    const split = body.indexOf("\n");
+    const head = split === -1 ? body : body.slice(0, split);
+    const unchanged = /^unchanged\|(-?\d+)$/.exec(head);
+    if (unchanged)
+        return { status: "unchanged", changeCount: Number(unchanged[1]) };
+    const churn = /^churn\|(-?\d+)$/.exec(head);
+    if (churn)
+        return { status: "churn", changeCount: Number(churn[1]) };
+    const readfail = /^readfail\|(-?\d+)$/.exec(head);
+    if (readfail)
+        return { status: "readfail", changeCount: Number(readfail[1]) };
+    const ok = /^ok\|(.*)$/.exec(head);
+    if (ok) {
+        // "ok|..." with no LF at all is malformed — the framing guarantees a
+        // payload line, even if that payload is empty.
+        if (split === -1)
+            return null;
+        const types = ok[1] === "" ? [] : ok[1].split(",");
+        return { status: "ok", types, text: body.slice(split + 1) };
+    }
+    return null;
+}
+/** Parse {@link WRITE_SNIPPET_SCRIPT}'s output: exactly "ok", or any
+ * `fail-*` (or garbled/empty) reason — never partially trusted. */
+function parseWriteResult(output) {
+    const trimmed = output.trim();
+    // A success MUST carry BOTH the changeCount the write produced and the
+    // ownership token. A bare "ok" is not accepted: it would satisfy the
+    // caller's success check while silently skipping the pre-⌘V ownership
+    // verification those two values exist to make possible.
+    const parts = /^ok (-?\d+) ([0-9A-Fa-f-]{36})$/.exec(trimmed);
+    if (parts) {
+        const count = Number(parts[1]);
+        if (Number.isSafeInteger(count))
+            return { ok: true, changeCount: count, token: parts[2] };
+        return { ok: false, reason: "bad-changecount" };
+    }
+    if (/^ok\b/.test(trimmed))
+        return { ok: false, reason: "incomplete-write-receipt" };
+    // The reason is logged, so it passes through the shape check: the script's
+    // own `fail-*` codes survive it, anything unexpected does not.
+    // An EXACT allowlist. A shape check would pass through any identifier-shaped
+    // stdout — including one that happens to be a short secret — so an
+    // unexpected value is reported as "unrecognised" and the value itself is
+    // dropped rather than logged.
+    if (trimmed === "")
+        return { ok: false, reason: "empty" };
+    return { ok: false, reason: WRITE_FAIL_CODES.has(trimmed) ? trimmed : "unrecognised" };
+}
+async function readChangeCount(deps) {
+    const result = await deps.runJxa(READ_CHANGE_COUNT_SCRIPT);
+    if (!result.ok) {
+        deps.log?.(`clipboard: could not read changeCount (code=${result.code})`);
+        return null;
+    }
+    return parseChangeCount(result.stdout);
+}
+async function readFrontmostBundleId(deps) {
+    const result = await deps.runJxa(READ_FRONTMOST_BUNDLE_SCRIPT);
+    if (!result.ok) {
+        deps.log?.(`clipboard: could not read the frontmost app (code=${result.code})`);
+        return null;
+    }
+    return parseBundleId(result.stdout);
+}
+/**
+ * Read whatever the operator just selected, for the long-press "teach the
+ * button" gesture: refuse Secure Input and password-manager copies, send
+ * ⌘C, wait for the pasteboard to reflect it, and validate the result before
+ * ever returning it to the caller for storage. NEVER restores whatever was
+ * on the clipboard before — that is intentional (see the module header) —
+ * and refuses rather than stores on anything short of a confirmed, in-cap,
+ * plain-text, non-concealed capture.
+ */
+async function captureSnippet(deps) {
+    const secureResult = await deps.runJxa(SECURE_INPUT_PROBE_SCRIPT);
+    if (secureResult.ok) {
+        const probe = parseSecureInputProbe(secureResult.stdout);
+        if (probe === "secure") {
+            deps.log?.("capture: refused — Secure Input is on (a password field is likely focused)");
+            return { status: "secure-input" };
+        }
+        if (probe === "unknown") {
+            deps.log?.("capture: secure-input probe returned an unexpected result; proceeding");
+        }
+    }
+    else {
+        deps.log?.(`capture: secure-input probe failed (code=${secureResult.code}); proceeding`);
+    }
+    const baseline = await readChangeCount(deps);
+    if (baseline === null) {
+        deps.log?.("capture: refused — could not read the clipboard's baseline changeCount");
+        return { status: "error", detail: "baseline-unreadable" };
+    }
+    const copyResult = await deps.runAppleScript(COPY_KEYSTROKE_SCRIPT);
+    if (!copyResult.ok) {
+        if (copyResult.code === "permission-denied") {
+            deps.log?.("capture: permission-denied sending ⌘C");
+            return { status: "permission-denied" };
+        }
+        deps.log?.(`capture: ⌘C keystroke failed (code=${copyResult.code})`);
+        return { status: "error", detail: copyResult.code };
+    }
+    const pollResult = await deps.runJxaWithArgs(CAPTURE_POLL_SCRIPT, [String(baseline)]);
+    if (!pollResult.ok) {
+        if (pollResult.code === "permission-denied") {
+            deps.log?.("capture: permission-denied reading the clipboard");
+            return { status: "permission-denied" };
+        }
+        deps.log?.(`capture: poll script failed (code=${pollResult.code})`);
+        return { status: "error", detail: pollResult.code };
+    }
+    const parsed = parseCapturePoll(pollResult.stdout);
+    if (parsed === null) {
+        deps.log?.("capture: refused — unparseable poll output");
+        return { status: "error", detail: "unparseable" };
+    }
+    switch (parsed.status) {
+        case "unchanged":
+            deps.log?.(`capture: nothing was copied (changeCount stayed at ${parsed.changeCount})`);
+            return { status: "no-selection" };
+        case "churn":
+            deps.log?.(`capture: refused — clipboard changed again mid-read (changeCount ${parsed.changeCount})`);
+            return { status: "churn" };
+        case "readfail":
+            deps.log?.("capture: refused — could not read the clipboard after the copy");
+            return { status: "read-fail" };
+        case "ok": {
+            if (parsed.types.includes("org.nspasteboard.ConcealedType")) {
+                deps.log?.("capture: refused — copied item is marked concealed (likely a password manager)");
+                return { status: "concealed" };
+            }
+            if (!parsed.types.includes("public.utf8-plain-text")) {
+                deps.log?.("capture: refused — no plain text on the clipboard after the copy");
+                return { status: "not-text" };
+            }
+            // EXACTLY empty is treated as nothing copied, not as a capture of
+            // "". Storing it would overwrite the operator's existing snippet
+            // with nothing — a destructive result from a gesture that found no
+            // selection. Whitespace-only text is NOT empty and is kept: they
+            // may well have meant to capture an indent (the blank key face
+            // exists precisely to show that).
+            if (parsed.text === "") {
+                deps.log?.("capture: nothing was copied (the clipboard carried plain text, but it was empty)");
+                return { status: "no-selection" };
+            }
+            if (!withinSizeCap(parsed.text)) {
+                deps.log?.(`capture: refused — selection is ${Buffer.byteLength(parsed.text, "utf8")} bytes, over the size cap`);
+                return { status: "too-big" };
+            }
+            deps.log?.(`capture: ok (${Buffer.byteLength(parsed.text, "utf8")} bytes)`);
+            return { status: "ok", content: parsed.text };
+        }
+    }
+}
+/**
+ * Write `content` onto the clipboard (marked concealed + transient so
+ * clipboard managers and sync skip retaining it) and send ⌘V — the "press"
+ * gesture. Confirms the write actually landed (changeCount advanced) before
+ * ever sending the paste keystroke, and best-effort-checks the frontmost app
+ * hasn't changed out from under it. Leaves the snippet on the clipboard
+ * afterward — never restores anything (see the module header).
+ */
+async function insertSnippet(content, deps) {
+    if (!withinSizeCap(content)) {
+        deps.log?.(`insert: refused — content is ${Buffer.byteLength(content, "utf8")} bytes, over the size cap`);
+        return { status: "too-big" };
+    }
+    const beforeBundle = await readFrontmostBundleId(deps);
+    const beforeChangeCount = await readChangeCount(deps);
+    const writeResult = await deps.runJxaWithStdin(WRITE_SNIPPET_SCRIPT, content);
+    if (!writeResult.ok) {
+        if (writeResult.code === "permission-denied") {
+            deps.log?.("insert: permission-denied writing the clipboard");
+            return { status: "permission-denied" };
+        }
+        deps.log?.(`insert: write script failed (code=${writeResult.code})`);
+        return { status: "error", detail: writeResult.code };
+    }
+    const written = parseWriteResult(writeResult.stdout);
+    if (!written.ok) {
+        deps.log?.(`insert: refused — write reported ${written.reason}`);
+        return { status: "write-failed", detail: written.reason };
+    }
+    const afterChangeCount = await readChangeCount(deps);
+    if (beforeChangeCount === null || afterChangeCount === null || !(afterChangeCount > beforeChangeCount)) {
+        deps.log?.("insert: refused — clipboard changeCount did not advance past our pre-write baseline; not sending ⌘V");
+        return { status: "not-confirmed" };
+    }
+    // Best-effort only (see module header): only abort when BOTH reads
+    // succeeded and disagree. An unreadable frontmost app on either side
+    // can't tell us anything, so it doesn't block the paste.
+    const afterBundle = await readFrontmostBundleId(deps);
+    if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
+        deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
+        return { status: "frontmost-changed" };
+    }
+    // Confirm OUR OWN write is still what the pasteboard holds, at the last
+    // moment we can check. Everything above proves the write happened; only this proves it
+    // has not since been replaced — by a clipboard manager, another app, or the
+    // operator — in the window between the write and the keystroke. Without it
+    // ⌘V can paste a stranger's content into wherever the cursor is.
+    const nowChangeCount = await readChangeCount(deps);
+    if (nowChangeCount === null || nowChangeCount !== written.changeCount) {
+        deps.log?.("insert: refused — the pasteboard changed after our write; not sending ⌘V");
+        return { status: "clobbered" };
+    }
+    // Identity, not just stability: read our own per-write token back. This is
+    // what catches a writer that landed between writeObjects and our reading of
+    // changeCount — their write would give us a count that then never moves,
+    // passing the check above while the pasteboard holds THEIR content.
+    const tokenRead = await deps.runJxa(READ_SNIPPET_TOKEN_SCRIPT);
+    const token = tokenRead.ok ? tokenRead.stdout.trim() : "";
+    if (token !== written.token) {
+        deps.log?.("insert: refused — the pasteboard does not hold our own write; not sending ⌘V");
+        return { status: "clobbered" };
+    }
+    const pasteResult = await deps.runAppleScript(PASTE_KEYSTROKE_SCRIPT);
+    if (!pasteResult.ok) {
+        if (pasteResult.code === "permission-denied") {
+            deps.log?.("insert: permission-denied sending ⌘V");
+            return { status: "permission-denied" };
+        }
+        deps.log?.(`insert: ⌘V keystroke failed (code=${pasteResult.code})`);
+        return { status: "error", detail: pasteResult.code };
+    }
+    deps.log?.(`insert: ok (${Buffer.byteLength(content, "utf8")} bytes)`);
+    return { status: "ok" };
+}
+
+const KNOWN_ERROR_NAMES = new Set([
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "EvalError",
+    "URIError",
+    "AggregateError",
+    "DOMException",
+]);
+function errorClass(error) {
+    if (error === null || error === undefined)
+        return typeof error;
+    // An EXACT allowlist of the built-in error types, not a shape check: a
+    // class name is normally a safe identifier, but a dynamically named
+    // constructor can be built from arbitrary text — and a name-shaped secret
+    // would pass any pattern. Anything else logs as the useless-but-safe
+    // "Error", which is the whole point of this function.
+    const ctor = error.constructor;
+    const name = typeof ctor?.name === "string" ? ctor.name : "";
+    return KNOWN_ERROR_NAMES.has(name) ? name : error instanceof Error ? "Error" : typeof error;
+}
+/**
+ * One key, two gestures: press inserts the stored text at the cursor; a
+ * long-press (the shared PressGate gesture, 500ms) captures whatever's
+ * currently selected into the key instead. The BUTTON is the storage.
+ *
+ * THE TWO GESTURES ROUTE DIFFERENTLY, and the asymmetry is deliberate.
+ * CAPTURE tries ACCESSIBILITY FIRST — reading `AXSelectedText` on the
+ * frontmost app's focused element via `mac/ax-text.ts` — because that route
+ * never touches the system clipboard; it falls back to ⌘C on anything but a
+ * successful read, which in practice is most places (measured: iTerm2 reports
+ * "nothing selected" even when text IS selected, and Safari and ChatGPT's web
+ * content don't expose the attribute at all). INSERT always uses ⌘V: the
+ * accessibility WRITE was measured reporting success in iTerm2 while
+ * inserting nothing, and a confident false success is worse than touching the
+ * clipboard. So in practice both gestures usually do go through
+ * `mac/clipboard-snippet.ts`, which deliberately does not save or restore
+ * whatever was on the clipboard before (see that module's header for why).
+ * The routing rules themselves — `decideCaptureRoute`/`decideInsertRoute` in
+ * `ax-text.ts` — are pure and unit-tested; this shell just calls them and
+ * dispatches. One route is logged per gesture (`accessibility` or
+ * `clipboard`) as a plain outcome code, never with any selection/snippet
+ * content.
+ *
+ * The face previews what's stored, however the text arrived; ticking "show
+ * dots" per key replaces the preview with a character count. It also has
+ * faces for the two states that would otherwise look like a broken key: text
+ * with nothing printable in it, and text over the size cap (see
+ * `resolveSnippetFace` in mac/snippet.ts).
+ *
+ * All the AppleScript/JXA plumbing — Accessibility probing, the Secure Input
+ * and concealed-copy refusals, framing pasteboard/AX reads so selection text
+ * can never be confused with the framing itself, and delivering text ONLY
+ * via STDIN/argv so it can never become script source — lives in
+ * `mac/ax-text.ts` and `mac/clipboard-snippet.ts`, tested against injected
+ * dependencies. This shell is just SDK wiring: build the real dependencies,
+ * call the pure orchestration, map the outcome to showOk/showAlert/log,
+ * repaint.
+ */
+let PasteSnippet = (() => {
+    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.snippet" })];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    let _classSuper = SingletonAction;
+    (class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        gate = new PressGate();
+        visible = new Map();
+        async onWillAppear(ev) {
+            if (!ev.action.isKey())
+                return;
+            this.visible.set(ev.action.id, ev.action);
+            // Persisted settings are INPUT, not truth: a value written by an older
+            // build, restored from a profile backup, or hand-edited in the profile
+            // JSON can exceed the cap.
+            const settings = ev.payload.settings;
+            if (!withinSizeCap(settings.content ?? "")) {
+                streamDeck.logger.warn(`Paste Snippet: stored content is over the ${MAX_SNIPPET_BYTES}-byte cap; ` +
+                    "this key will not paste until it is shortened in its settings.");
+            }
+            // The operator's data is left EXACTLY as it is in every case. Refusing
+            // to use an over-cap snippet is honest; rewriting, truncating or
+            // reverting their content to make the key work would destroy something
+            // they may want and cannot get back. The key face says why it is inert.
+            await this.repaint(ev.action, settings);
+        }
+        onWillDisappear(ev) {
+            this.gate.cancel(ev.action.id);
+            this.visible.delete(ev.action.id);
+        }
+        async onDidReceiveSettings(ev) {
+            if (!ev.action.isKey())
+                return;
+            const settings = ev.payload.settings;
+            const content = settings.content ?? "";
+            if (!withinSizeCap(content)) {
+                // Refuse to USE it, never truncate it, and never revert it: this is
+                // text the operator just typed or pasted into their own settings
+                // field, and silently replacing it loses work. Alert + an explicit
+                // key face, then leave it to them to shorten.
+                streamDeck.logger.warn(`Paste Snippet: stored content is ${Buffer.byteLength(content, "utf8")} bytes, ` +
+                    `over the ${MAX_SNIPPET_BYTES}-byte cap — this key will not paste until it is shortened.`);
+                await ev.action.showAlert();
+            }
+            await this.repaint(ev.action, settings);
+        }
+        onKeyDown(ev) {
+            this.gate.down(ev.action.id, () => {
+                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Paste Snippet: capture threw (${errorClass(error)}) — details omitted, they can carry selection text.`));
+            });
+        }
+        async onKeyUp(ev) {
+            if (!this.gate.up(ev.action.id))
+                return; // long-press already fired capture()
+            await this.paste(ev.action);
+        }
+        /** Answer the property inspector's live Accessibility-permission check. */
+        async onSendToPlugin(ev) {
+            await respondToAccessibilityCheck(ev.payload, import.meta.url);
+        }
+        deps() {
+            return {
+                runAppleScript: (script) => runAppleScript(script),
+                runJxa: (script) => runJxa(script),
+                runJxaWithArgs: (script, args) => runJxaWithArgs(script, args),
+                runJxaWithStdin: (script, input) => runJxaWithStdin(script, input),
+                // Content-free, structural logging only — byte counts and outcome
+                // codes, never clipboard/snippet text.
+                log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),
+            };
+        }
+        axDeps() {
+            return {
+                runAppleScript: (script) => runAppleScript(script),
+                runAppleScriptWithArgs: (script, args) => runAppleScriptWithArgs(script, args),
+                // Content-free, structural logging only — outcome codes and OS-level
+                // error NUMBERS, never selection/snippet text or an error MESSAGE.
+                log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),
+            };
+        }
+        /** Save a confirmed-good captured value (from either route) onto the key. */
+        async saveCaptured(action, content) {
+            const settings = await action.getSettings();
+            const next = { ...settings, content, source: "captured" };
+            await action.setSettings(next);
+            await action.showOk();
+            await this.repaint(action, next);
+        }
+        /**
+         * Which app will actually receive this gesture. Logged as a bundle id —
+         * an identifier, never content — because "it reported success but nothing
+         * happened" is almost always this: the frontmost app at key-time is not the
+         * one the operator is looking at. Clicking the key in the Stream Deck WINDOW
+         * makes Stream Deck frontmost; pressing the physical deck does not.
+         */
+        /** The frontmost bundle id, shape-checked before it can reach a log line
+         * (see safeLogToken) — it is raw child stdout like every other value here. */
+        async frontmostApp() {
+            const res = await runJxa(READ_FRONTMOST_BUNDLE_SCRIPT);
+            if (!res.ok)
+                return "";
+            const trimmed = res.stdout.trim();
+            return trimmed === "" ? "" : safeLogToken(trimmed);
+        }
+        async capture(action) {
+            streamDeck.logger.info(`Paste Snippet: capture targeting frontmost=${(await this.frontmostApp()) || "unknown"}`);
+            // SECURE INPUT IS CHECKED HERE, BEFORE EITHER ROUTE — not inside the
+            // clipboard path. The accessibility route reads the selection directly
+            // and never goes near the pasteboard, so a guard living only in the
+            // clipboard code left the operator's own rule ("refuse when we KNOW the
+            // field is marked secure") unenforced on exactly the path that skips it.
+            // A failed probe proceeds and logs: we refuse only when we KNOW.
+            const secure = await runJxa(SECURE_INPUT_PROBE_SCRIPT);
+            const secureState = secure.ok ? parseSecureInputProbe(secure.stdout) : "unknown";
+            if (secureState === "secure") {
+                streamDeck.logger.warn("Paste Snippet: capture refused — secure input is active (a password field has focus).");
+                await action.showAlert();
+                return;
+            }
+            if (secureState === "unknown") {
+                streamDeck.logger.warn("Paste Snippet: secure-input probe unavailable; proceeding (we refuse only when we KNOW).");
+            }
+            const axResult = await captureViaAx(this.axDeps());
+            const route = decideCaptureRoute(axResult);
+            if (route === "use-ax") {
+                // decideCaptureRoute only returns "use-ax" for an "ok" AxReadResult.
+                const text = axResult.text;
+                if (!withinSizeCap(text)) {
+                    streamDeck.logger.warn(`Paste Snippet: capture refused — selection exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);
+                    await action.showAlert();
+                    return;
+                }
+                streamDeck.logger.info("Paste Snippet: capture route=accessibility");
+                await this.saveCaptured(action, text);
+                return;
+            }
+            // fall-back: accessibility couldn't help here (unsupported, or we
+            // couldn't tell) — go through the clipboard instead.
+            const outcome = await captureSnippet(this.deps());
+            switch (outcome.status) {
+                case "ok":
+                    streamDeck.logger.info("Paste Snippet: capture route=clipboard");
+                    await this.saveCaptured(action, outcome.content);
+                    return;
+                case "secure-input":
+                    streamDeck.logger.warn("Paste Snippet: capture refused — Secure Input is on (a password field is likely focused).");
+                    await action.showAlert();
+                    return;
+                case "no-selection":
+                    streamDeck.logger.warn("Paste Snippet: capture found nothing selected.");
+                    await action.showAlert();
+                    return;
+                case "concealed":
+                    streamDeck.logger.warn("Paste Snippet: capture refused — the copied item is marked concealed (likely a password manager copy).");
+                    await action.showAlert();
+                    return;
+                case "not-text":
+                    streamDeck.logger.warn("Paste Snippet: capture refused — no plain text was on the clipboard after the copy.");
+                    await action.showAlert();
+                    return;
+                case "churn":
+                    streamDeck.logger.warn("Paste Snippet: capture refused — the clipboard changed again while reading it.");
+                    await action.showAlert();
+                    return;
+                case "read-fail":
+                    streamDeck.logger.warn("Paste Snippet: capture refused — could not read the clipboard after the copy.");
+                    await action.showAlert();
+                    return;
+                case "too-big":
+                    streamDeck.logger.warn(`Paste Snippet: capture refused — selection exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);
+                    await action.showAlert();
+                    return;
+                case "permission-denied":
+                    streamDeck.logger.error("Paste Snippet: capture needs Accessibility access for Stream Deck.");
+                    await action.showAlert();
+                    return;
+                case "error":
+                default:
+                    streamDeck.logger.error(`Paste Snippet: capture failed (${safeLogToken(outcome.detail ?? "unknown")}).`);
+                    await action.showAlert();
+                    return;
+            }
+        }
+        /** Stored content is INPUT on every path, not just when it arrives. */
+        async paste(action) {
+            streamDeck.logger.info(`Paste Snippet: insert targeting frontmost=${(await this.frontmostApp()) || "unknown"}`);
+            const settings = await action.getSettings();
+            const content = settings.content ?? "";
+            if (content === "") {
+                await action.showAlert();
+                return;
+            }
+            // The cap is checked here too, not only where content ARRIVES. A value
+            // restored from a profile backup, written by an older build, or edited
+            // into the profile JSON reaches this path without ever passing through
+            // the load or settings-change checks.
+            if (!withinSizeCap(content)) {
+                streamDeck.logger.warn(`Paste Snippet: refusing to paste — stored content exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);
+                await action.showAlert();
+                return;
+            }
+            // Insert ALWAYS goes through the clipboard — see decideInsertRoute. The
+            // accessibility write cannot be verified and was measured lying: iTerm2
+            // accepted it, reported ok, and inserted nothing. A confident false
+            // success is worse than touching the clipboard.
+            const outcome = await insertSnippet(content, this.deps());
+            switch (outcome.status) {
+                case "ok":
+                    streamDeck.logger.info("Paste Snippet: insert route=clipboard");
+                    await action.showOk();
+                    return;
+                case "too-big":
+                    streamDeck.logger.warn(`Paste Snippet: refusing to paste — stored content exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);
+                    await action.showAlert();
+                    return;
+                case "write-failed":
+                    streamDeck.logger.warn(`Paste Snippet: paste refused — writing the clipboard failed (${safeLogToken(outcome.detail)}).`);
+                    await action.showAlert();
+                    return;
+                case "not-confirmed":
+                    streamDeck.logger.warn("Paste Snippet: paste refused — could not confirm the clipboard write landed.");
+                    await action.showAlert();
+                    return;
+                case "frontmost-changed":
+                    streamDeck.logger.warn("Paste Snippet: paste refused — the frontmost app changed before the paste keystroke.");
+                    await action.showAlert();
+                    return;
+                case "clobbered":
+                    streamDeck.logger.warn("Paste Snippet: paste refused — something else wrote to the clipboard after us; ⌘V would have pasted that instead.");
+                    await action.showAlert();
+                    return;
+                case "permission-denied":
+                    streamDeck.logger.error("Paste Snippet: paste needs Accessibility access for Stream Deck.");
+                    await action.showAlert();
+                    return;
+                case "error":
+                default:
+                    streamDeck.logger.warn(`Paste Snippet: paste failed (${safeLogToken(outcome.detail ?? "unknown")}).`);
+                    await action.showAlert();
+                    return;
+            }
+        }
+        async repaint(action, settings) {
+            try {
+                const face = resolveSnippetFace(settings);
+                await action.setImage(svgToDataUri(buildSnippetKeyImage(face)));
+            }
+            catch (err) {
+                streamDeck.logger.debug(`Paste Snippet: key image update skipped (${errorClass(err)}).`);
+            }
+        }
+    });
+    return _classThis;
+})();
+
+/**
  * Pure logic for the "scroll the frontmost window" Stream Deck dial.
  *
  * This module models a dial rotation as a {@link KeystrokePlan} and renders
@@ -15535,6 +16817,7 @@ streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
 streamDeck.actions.registerAction(new OpenFile());
 streamDeck.actions.registerAction(new WindowRing());
+streamDeck.actions.registerAction(new PasteSnippet());
 streamDeck.actions.registerAction(new ArrangeWindow());
 streamDeck.connect();
 //# sourceMappingURL=plugin.js.map

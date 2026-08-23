@@ -6,7 +6,7 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Fifteen actions today (the manifest is the
+that script before ever renaming again. Sixteen actions today (the manifest is the
 source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
@@ -37,6 +37,17 @@ src/
                             #   ✳=waiting; tmux pane-tty map), claude-transcript (~/.claude/
                             #   projects freshness), claude-project (state decision + key face)
   mac/{coalesce,serialize,press-gate}.ts  # shared async plumbing (all unit-tested)
+  mac/snippet.ts             # Paste Snippet pure logic: size cap, preview/mask face
+                            #   derivation (provenance-based default — captured
+                            #   masks, typed doesn't), key-face SVG
+  mac/ax-text.ts             # Paste Snippet's mechanism: the BUTTON is the storage,
+                            #   not the clipboard. captureSelection/insertSnippet read/
+                            #   write AXSelectedText on the frontmost app's focused
+                            #   element via System Events — never NSPasteboard. The
+                            #   read is framed ok|<base64>/nosel/unsupported/err|<n>
+                            #   so selection text can't corrupt the framing; the write
+                            #   takes its text ONLY via `on run argv` (never
+                            #   interpolated into the script source)
 tests/*.test.ts             # vitest; one file per pure module
 com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js
@@ -82,7 +93,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 593 tests today
+npm test              # vitest (pure modules) — 762 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain

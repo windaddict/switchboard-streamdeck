@@ -135,6 +135,16 @@ def glyph_bbeditdoc() -> str:
     )
 
 
+def glyph_snippet() -> str:
+    """Clipboard holding a few lines of text, with a small down-arrow for paste."""
+    return (
+        f'<rect x="15" y="12" width="26" height="34" rx="4" stroke="{TEAL}" stroke-width="3" fill="none"/>'
+        f'<rect x="22" y="8" width="12" height="6" rx="2" fill="{TEAL}"/>'
+        f'<path d="M20 22h14M20 28h14M20 34h9" stroke="{TEAL}" stroke-width="2.5" opacity="0.8" stroke-linecap="round"/>'
+        f'<path d="M50 20v18m-6-6 6 6 6-6" stroke="{SIGNAL}" stroke-width="3" {S}/>'
+    )
+
+
 def glyph_openfile() -> str:
     """Document opening outward."""
     return (
@@ -200,6 +210,7 @@ ACTIONS = {
     "jump": (glyph_jump, AZURE),
     "bbeditdoc": (glyph_bbeditdoc, AMBER),
     "openfile": (glyph_openfile, TEAL),
+    "snippet": (glyph_snippet, TEAL),
 }
 
 

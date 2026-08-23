@@ -24,7 +24,7 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 
 ## What it does
 
-Fifteen actions, grouped by what they route your attention to.
+Sixteen actions, grouped by what they route your attention to.
 
 **Coding agents**
 - **AI Project** *(key)* — one live face for a **Claude Code**, **Codex CLI**, or **Cursor CLI** (`cursor-agent`, the terminal agent — not the Cursor editor) session. Hold the key for ½ second while the agent's terminal is frontmost and it works out which of the three it is looking at, then takes on that agent's mark: a coral spark for Claude, a violet square for Codex, an arrow for Cursor. Blue with a moving dot means a turn is running, amber means the agent is waiting on *you*, white means the prompt is idle, gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane.
@@ -67,6 +67,9 @@ These still work and are unchanged, but **AI Project replaces all three** and th
 
 **Files**
 - **Open File** *(key)* — open the newest, latest-modified, or pattern-matched file in a folder, with your default app / BBEdit / a chosen app, and a live ✓/✗ status badge.
+
+**Text**
+- **Paste Snippet** *(key)* — the button is the storage. Press writes the stored text into whatever app is frontmost; hold the key (~half a second) to read the current selection into the key instead of typing it into the settings screen. Capture reads the selection directly through macOS's Accessibility API where an app supports that (standard text fields do; iTerm2, Safari and ChatGPT do not) and falls back to ⌘C where it doesn't; inserting always uses ⌘V, because the direct write was measured reporting success while inserting nothing. So both gestures usually do change your clipboard and leave the text on it — nothing is saved or restored. Capture refuses while macOS reports Secure Input is on, and refuses a copy a password manager marked concealed; it cannot recognise every secret field. Press refuses if anything else wrote to the clipboard between the key's write and the ⌘V. The key face previews the stored text (tick a box to show dots and a character count instead). The stored text is plain, unencrypted, and lives in the Stream Deck profile on this Mac.
 
 ---
 
@@ -179,7 +182,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 593 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 708 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

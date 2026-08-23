@@ -9,6 +9,7 @@ import { BBEditDocDial } from "./actions/bbedit-doc-dial.js";
 import { FocusTmuxWindow } from "./actions/focus-tmux.js";
 import { JumpToTab } from "./actions/jump-to-tab.js";
 import { OpenFile } from "./actions/open-file.js";
+import { PasteSnippet } from "./actions/paste-snippet.js";
 import { ScrollWindow } from "./actions/scroll-dial.js";
 import { SwitchApp } from "./actions/switch-app.js";
 import { ArrangeWindow } from "./actions/tile-dial.js";
@@ -32,6 +33,7 @@ streamDeck.actions.registerAction(new CycleAppWindows());
 streamDeck.actions.registerAction(new BBEditDocDial());
 streamDeck.actions.registerAction(new OpenFile());
 streamDeck.actions.registerAction(new WindowRing());
+streamDeck.actions.registerAction(new PasteSnippet());
 streamDeck.actions.registerAction(new ArrangeWindow());
 
 streamDeck.connect();

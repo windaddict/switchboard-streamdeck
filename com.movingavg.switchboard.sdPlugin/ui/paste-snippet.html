@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<title>Paste Snippet</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<div class="muted" style="margin-bottom: 10px; font-size: 12px; color: #ccc;">
+			<b>This key stores the text.</b> <b>Press</b> inserts the text below at
+			the cursor; <b>hold</b> the key (~half a second) to capture whatever's
+			currently selected and store that into the key instead of typing it
+			here.
+			<br /><br />
+			<b>Hold</b> tries to read your selection <b>directly</b> through
+			macOS's Accessibility API first — no clipboard involved — and falls
+			back to ⌘C where that doesn't work (which is most places, including
+			iTerm2, Safari and ChatGPT). <b>Press</b> always goes through ⌘V.
+			So in practice both gestures usually DO change your clipboard, and
+			leave the text on it afterward — nothing is saved or restored.
+		</div>
+
+		<sdpi-item label="Text">
+			<!-- No `setting="content"` here on purpose: this field's own script
+			     (below) writes `content` together with `source: "typed"` in one
+			     merged setSettings call. Auto-binding via `setting=` would race
+			     that write on the same input event and could drop `source`. -->
+			<sdpi-textarea id="contentField" placeholder="Type or paste the snippet here…" rows="6"></sdpi-textarea>
+		</sdpi-item>
+		<div id="capWarning" style="display: none; margin: -6px 0 10px; font-size: 11px; color: #ff8a8a;">
+			Over the 32 KiB limit. Your text is kept exactly as typed — nothing is
+			truncated or deleted — but the key won't paste it until it's shorter.
+		</div>
+
+		<sdpi-item label="On the key">
+			<sdpi-checkbox id="maskField" setting="mask" label="Show dots + character count instead of the text"></sdpi-checkbox>
+		</sdpi-item>
+
+		<div style="margin-top: 4px;">
+			<button type="button" id="clearButton">Clear stored text</button>
+		</div>
+
+		<div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid #333; font-size: 11px; color: #999; line-height: 1.5;">
+			<b>The button is the storage — but the clipboard is the delivery
+			mechanism.</b> Capture prefers the direct Accessibility read where an
+			app supports it (standard text fields do; iTerm2, Safari and ChatGPT
+			do not); inserting always uses ⌘V, because the direct WRITE was
+			measured reporting success while inserting nothing, and a confident
+			false success is worse than touching the clipboard. Whatever was on
+			your clipboard before is never saved or restored, so after a gesture
+			your clipboard holds the text involved — the snippet you pasted, or
+			the selection you just captured.<br /><br />
+			<b>What "hold" refuses, and what it can't catch:</b> capture refuses
+			outright while macOS reports Secure Input is on (a password field is
+			very likely focused) — checked before either route, so it applies
+			whichever one runs. On the clipboard route it also refuses a copy
+			marked by a password manager as concealed. It CANNOT recognise every
+			secret field — one that sets neither signal (plenty don't) is
+			captured like any other text, so don't rely on this as a guarantee
+			around sensitive fields.<br /><br />
+			<b>What "press" refuses:</b> it checks that the snippet is still the
+			top of the clipboard immediately before sending ⌘V, and refuses (an
+			alert, not a silent paste) if anything else wrote in between — so a
+			clipboard manager can't cause the key to paste someone else's
+			content.<br /><br />
+			<b>Where this lives:</b> the text above is saved as PLAIN, UNENCRYPTED
+			text in the Stream Deck profile on this Mac — profile export, sync, and
+			backups all carry it in the clear. Use "Clear stored text" to remove
+			it. Only text is ever stored — no images, files, or other clipboard
+			content.<br /><br />
+			<b>Requires:</b> Accessibility access for Stream Deck (to read/write a
+			selection directly, and to send the ⌘C/⌘V fallback keystrokes), and
+			Automation access for Stream Deck to control "System Events" (macOS
+			will prompt for this the first time; it can't be checked in advance
+			the way Accessibility can).
+		</div>
+
+		<script src="lib/permissions.js"></script>
+		<script>
+			const sd = window.SDPIComponents?.streamDeckClient;
+			const contentField = document.getElementById("contentField");
+			const capWarning = document.getElementById("capWarning");
+			const clearButton = document.getElementById("clearButton");
+			const MAX_SNIPPET_BYTES = 32768;
+
+			function byteLength(s) {
+				return new TextEncoder().encode(s || "").length;
+			}
+
+			function checkCap(value) {
+				capWarning.style.display = byteLength(value) > MAX_SNIPPET_BYTES ? "" : "none";
+			}
+
+			// Writes are SERIALIZED through this chain, and each one re-reads the
+			// settings at the moment it runs.
+			//
+			// WHY: every write here is a read-modify-write. Fired concurrently
+			// (each keystroke starts one, and `void` leaves them in flight),
+			// two of them can both read the same "before" state and the slower
+			// one then writes a whole object built from a snapshot that is
+			// already stale — silently reverting the other. The dangerous case
+			// is not two keystrokes racing but a long-press CAPTURE on the
+			// physical key landing between an inspector write's read and its
+			// write: the just-captured snippet is replaced by whatever was in
+			// the text box beforehand, and the operator's capture is gone.
+			let writeChain = Promise.resolve();
+			function mergeSettings(patch) {
+				if (!sd) return Promise.resolve();
+				writeChain = writeChain.then(async () => {
+					let current = {};
+					try {
+						const res = await sd.getSettings();
+						current = (res && res.settings) ? res.settings : (res || {});
+					} catch (_) {
+						/* fall through with empty current */
+					}
+					await sd.setSettings({ ...current, ...patch });
+				}).catch((err) => {
+					// Never let one failed write break the chain for every
+					// later one — but do not swallow it silently either.
+					console.error("Paste Snippet inspector: settings write failed", err);
+				});
+				return writeChain;
+			}
+
+			// `source` records provenance only — it does NOT drive the key face
+			// (the face shows the text unless "mask" is ticked, whichever way the
+			// text arrived). Kept because it's useful when diagnosing a key.
+			if (contentField) {
+				contentField.addEventListener("input", () => {
+					checkCap(contentField.value);
+					void mergeSettings({ content: contentField.value, source: "typed" });
+				});
+				contentField.addEventListener("change", () => {
+					checkCap(contentField.value);
+					void mergeSettings({ content: contentField.value, source: "typed" });
+				});
+			}
+
+			if (clearButton) {
+				clearButton.addEventListener("click", () => {
+					if (contentField) contentField.value = "";
+					checkCap("");
+					void mergeSettings({ content: "", source: "typed" });
+				});
+			}
+
+			// Since `content` isn't auto-bound (see the comment above the
+			// textarea), this field alone is responsible for populating it from
+			// settings on load and whenever settings change elsewhere (e.g. a
+			// long-press capture on the actual key while this inspector is open).
+			function populate(settings) {
+				const value = settings.content ?? "";
+				if (contentField && contentField.value !== value) contentField.value = value;
+				checkCap(value);
+			}
+
+			/** Apply an external settings update only once our own in-flight
+			 * writes have drained. Otherwise a capture that lands mid-chain is
+			 * shown, then immediately overwritten by a queued write carrying
+			 * the older text. */
+			function populateAfterOurWrites(settings) {
+				writeChain.then(() => populate(settings));
+			}
+
+			if (sd) {
+				sd.didReceiveSettings.subscribe((e) => {
+					populateAfterOurWrites(e?.payload?.settings ?? {});
+				});
+				sd.getSettings().then((res) => {
+					populate((res && res.settings) ? res.settings : (res || {}));
+				});
+			}
+		</script>
+	</body>
+</html>
