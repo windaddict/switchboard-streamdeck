@@ -42,12 +42,27 @@ export function classifyError(stderr: string): Exclude<ErrorCode, "success"> {
 	return "error";
 }
 
+/** Minimal shape of the ChildProcess `execFile` returns — just enough to pipe
+ * `stdin` to it before its callback fires. Real Node processes satisfy this;
+ * tests inject a fake exec whose return value may omit `stdin` entirely. */
+type ChildWithStdin = {
+	stdin?: { write(chunk: string, encoding: string): unknown; end(): unknown } | null;
+};
+
+/**
+ * Run osascript with the given args, optionally piping `stdin` to it first.
+ * `stdin` is the ONLY safe way to hand a script arbitrary-length user text:
+ * unlike an argv element it has no OS argument-length ceiling, and unlike
+ * script-source interpolation it can never become code — the script must
+ * explicitly choose to read it (see `runJxaWithStdin`).
+ */
 function runOsascript(
 	args: readonly string[],
 	exec: ExecFileLike,
+	stdin?: string,
 ): Promise<RunResult> {
 	return new Promise((resolve) => {
-		exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
+		const child = exec("/usr/bin/osascript", args, { timeout: 8000, env: UTF8_ENV }, (error, stdout, stderr) => {
 			const out = String(stdout ?? "");
 			const err = String(stderr ?? "");
 			if (error) {
@@ -56,6 +71,11 @@ function runOsascript(
 				resolve({ ok: true, code: "success", stdout: out, stderr: err });
 			}
 		});
+		if (stdin !== undefined) {
+			const proc = child as ChildWithStdin;
+			proc.stdin?.write(stdin, "utf8");
+			proc.stdin?.end();
+		}
 	});
 }
 
@@ -64,6 +84,18 @@ export function runAppleScript(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
 ): Promise<RunResult> {
 	return runOsascript(["-e", script], exec);
+}
+
+/** Run an AppleScript with ARGUMENTS, delivered to its `on run argv` handler.
+ * The only safe way to hand user text to AppleScript: arguments are data, never
+ * source, so a snippet containing quotes, backslashes or `& do shell script`
+ * cannot become code. NEVER interpolate user text into a script string. */
+export function runAppleScriptWithArgs(
+	script: string,
+	args: readonly string[],
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-e", script, "--", ...args], exec);
 }
 
 /**
@@ -76,4 +108,31 @@ export function runJxa(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
 ): Promise<RunResult> {
 	return runOsascript(["-l", "JavaScript", "-e", script], exec);
+}
+
+/** Run a JXA script with `on run`/`function run(argv)` ARGUMENTS — the JXA
+ * counterpart to {@link runAppleScriptWithArgs}: arguments are data delivered
+ * via argv, never interpolated into the script source. */
+export function runJxaWithArgs(
+	script: string,
+	args: readonly string[],
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-l", "JavaScript", "-e", script, "--", ...args], exec);
+}
+
+/**
+ * Run a JXA script, piping `input` to its STDIN. The script reads it itself
+ * (typically via `NSFileHandle.fileHandleWithStandardInput`) — this is the
+ * preferred way to hand a script large or sensitive user text: it has no
+ * OS argv-length ceiling the way `runJxaWithArgs` does, and — like argv —
+ * it is delivered as data the script must opt into reading, never as script
+ * source.
+ */
+export function runJxaWithStdin(
+	script: string,
+	input: string,
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-l", "JavaScript", "-e", script], exec, input);
 }
