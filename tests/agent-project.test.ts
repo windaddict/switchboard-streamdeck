@@ -5,13 +5,20 @@ import {
 	type AgentHost,
 	type AgentInstance,
 	type AgentKind,
+	agentBindingKey,
 	agentForFocusedTty,
 	agentTickInteresting,
+	type AgentTurnMemory,
+	agentUnknownIsAmbiguity,
 	blockedEvidenceFor,
 	blockedProbeForMissingPane,
+	commitIsStale,
 	buildAgentProjectKeyImage,
 	decideAgentFace,
+	initialTurnMemory,
 	paneShowsAgentPrompt,
+	trackAgentTurn,
+	unseenIsActionable,
 } from "../src/mac/agent-project.js";
 
 const KINDS: readonly AgentKind[] = ["claude", "codex", "cursor"];
@@ -300,7 +307,9 @@ describe("Agent key face", () => {
 			for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
 				for (const hot of [true, false]) {
 					for (const host of HOSTS) {
-						expect(buildAgentProjectKeyImage({ ...args, kind, state, hot, host })).not.toContain("hsl(");
+						for (const unseen of [true, false]) {
+							expect(buildAgentProjectKeyImage({ ...args, kind, state, hot, host, unseen })).not.toContain("hsl(");
+						}
 					}
 				}
 			}
@@ -370,6 +379,54 @@ describe("Agent key face", () => {
 	});
 });
 
+describe("The unread mark on the key face", () => {
+	const args = { kind: "claude" as AgentKind, project: "/Users/j/code/switchboard", host: "tmux" as const, hot: false, state: "waiting" as const };
+	const STRIPE = '<rect x="0" y="0" width="4" height="57" fill="#FF4A4A"/>';
+
+	it("draws the stripe only when asked", () => {
+		for (const kind of KINDS) {
+			expect(buildAgentProjectKeyImage({ ...args, kind, unseen: true })).toContain(STRIPE);
+			expect(buildAgentProjectKeyImage({ ...args, kind, unseen: false })).not.toContain("#FF4A4A");
+			expect(buildAgentProjectKeyImage({ ...args, kind })).not.toContain("#FF4A4A");
+		}
+	});
+
+	/**
+	 * The mark is a LAYER, not a state colour: the face underneath must go on
+	 * saying what the session is doing. Asserting the state colour is still
+	 * PRESENT would not show that — the whole face could have changed around
+	 * it. This asserts the marked face is byte-for-byte the unmarked one with
+	 * the stripe appended, which is the actual claim.
+	 */
+	it("changes nothing on the face except adding the stripe", () => {
+		for (const kind of KINDS) {
+			for (const state of ["working", "blocked", "waiting", "unknown", "none"] as const) {
+				for (const hot of [true, false]) {
+					const plain = buildAgentProjectKeyImage({ ...args, kind, state, hot });
+					const marked = buildAgentProjectKeyImage({ ...args, kind, state, hot, unseen: true });
+					expect(marked).toBe(plain.replace("</svg>", `${STRIPE}</svg>`));
+				}
+			}
+		}
+	});
+
+	/** The foot bar means "your keystrokes reach this session", which is the
+	 * exact condition under which the mark cannot be showing. The stripe stops
+	 * at y=57 so the two never touch. */
+	it("stops short of the foot bar", () => {
+		expect(STRIPE).toContain('height="57"');
+		const svg = buildAgentProjectKeyImage({ ...args, hot: true, unseen: true });
+		expect(svg).toContain('y="57"'); // the hot bar's own top edge
+		expect(svg).toContain(STRIPE);
+	});
+
+	it("is painted last, so nothing can overdraw it", () => {
+		const svg = buildAgentProjectKeyImage({ ...args, unseen: true });
+		expect(svg.indexOf(STRIPE)).toBeGreaterThan(svg.indexOf("switchbo…"));
+		expect(svg.endsWith(`${STRIPE}</svg>`)).toBe(true);
+	});
+});
+
 describe("Whether the AI Project poller should stay at full cadence (F7)", () => {
 	const idle = (kind: AgentKind, tty: string): AgentInstance =>
 		({ kind, pid: 1, tty, cwd: "/Users/j/code/app", sessionId: "", state: "waiting" });
@@ -379,18 +436,18 @@ describe("Whether the AI Project poller should stay at full cadence (F7)", () =>
 		({ kind, pid: 1, tty, cwd: "/Users/j/code/app", sessionId: "", state: "blocked" });
 
 	it("stays interesting whenever a terminal is focused", () => {
-		expect(agentTickInteresting({ focusedTty: "/dev/ttys001", instances: [], blockedProbes: [] })).toBe(true);
+		expect(agentTickInteresting({ focusedTty: "/dev/ttys001", instances: [], blockedProbes: [], unseenActionable: false })).toBe(true);
 	});
 
 	it("stays interesting when any instance is working", () => {
 		expect(agentTickInteresting({
-			focusedTty: "", instances: [working("codex", "/dev/ttys001")], blockedProbes: ["clear"],
+			focusedTty: "", instances: [working("codex", "/dev/ttys001")], blockedProbes: ["clear"], unseenActionable: false,
 		})).toBe(true);
 	});
 
 	it("stays interesting for a working (or blocked) codex instance", () => {
 		expect(agentTickInteresting({
-			focusedTty: "", instances: [blocked("codex", "/dev/ttys001")], blockedProbes: ["clear"],
+			focusedTty: "", instances: [blocked("codex", "/dev/ttys001")], blockedProbes: ["clear"], unseenActionable: false,
 		})).toBe(true);
 	});
 
@@ -407,7 +464,7 @@ describe("Whether the AI Project poller should stay at full cadence (F7)", () =>
 		expect(agentTickInteresting({
 			focusedTty: "",
 			instances: [idle("claude", "/dev/ttys001")],
-			blockedProbes: ["blocked"],
+			blockedProbes: ["blocked"], unseenActionable: false,
 		})).toBe(true);
 	});
 
@@ -415,7 +472,7 @@ describe("Whether the AI Project poller should stay at full cadence (F7)", () =>
 		expect(agentTickInteresting({
 			focusedTty: "",
 			instances: [idle("claude", "/dev/ttys001")],
-			blockedProbes: ["failed"],
+			blockedProbes: ["failed"], unseenActionable: false,
 		})).toBe(true);
 	});
 
@@ -423,8 +480,303 @@ describe("Whether the AI Project poller should stay at full cadence (F7)", () =>
 		expect(agentTickInteresting({
 			focusedTty: "",
 			instances: [idle("claude", "/dev/ttys001"), idle("cursor", "/dev/ttys002")],
-			blockedProbes: ["clear", "clear"],
+			blockedProbes: ["clear", "clear"], unseenActionable: false,
 		})).toBe(false);
-		expect(agentTickInteresting({ focusedTty: "", instances: [], blockedProbes: [] })).toBe(false);
+		expect(agentTickInteresting({ focusedTty: "", instances: [], blockedProbes: [], unseenActionable: false })).toBe(false);
+	});
+});
+
+describe("The unread mark's memory", () => {
+	const BIND = agentBindingKey("claude", "/Users/j/code/app", "");
+	const start = (): AgentTurnMemory => initialTurnMemory(BIND);
+
+	/** Feed a sequence of [face, hot] observations through one memory. */
+	/** Every step defaults to pid 1 — ONE steady process — so a test only has to
+	 * say `pid` when the point is that the process changed. */
+	const run = (
+		steps: ReadonlyArray<readonly [AgentState, boolean] | readonly [AgentState, boolean, { ambiguous?: boolean; binding?: string; pid?: number }]>,
+		from: AgentTurnMemory = start(),
+	): AgentTurnMemory =>
+		steps.reduce<AgentTurnMemory>((memory, [face, hot, opts]) => trackAgentTurn(memory, {
+			binding: opts?.binding ?? BIND,
+			face,
+			hot,
+			ambiguous: opts?.ambiguous ?? false,
+			pid: opts?.pid ?? (face === "none" || face === "unknown" ? 0 : 1),
+		}), from);
+
+	/**
+	 * COLD START, and the reason the memory carries `sawActivity` at all. A key
+	 * that appears beside an agent already sitting at an idle prompt has watched
+	 * no transition, so it has nothing to report. This is structural — there is
+	 * no "first tick" special case to forget.
+	 */
+	it("cannot mark a turn unread when it never saw one run", () => {
+		expect(run([["waiting", false]]).unseen).toBe(false);
+		expect(run([["waiting", false], ["waiting", false], ["waiting", false]]).unseen).toBe(false);
+		expect(run([["unknown", false], ["waiting", false]]).unseen).toBe(false);
+	});
+
+	it("marks a turn unread when it finishes while the operator is elsewhere", () => {
+		expect(run([["working", false], ["waiting", false]]).unseen).toBe(true);
+	});
+
+	/** Watching a turn START is not seeing its RESULT — the operator switched
+	 * away before it finished, which is exactly the case this feature exists for. */
+	it("marks a turn unread even though the operator watched it start", () => {
+		expect(run([["working", true], ["working", false], ["waiting", false]]).unseen).toBe(true);
+	});
+
+	it("does not mark a turn unread when it finishes with the operator right there", () => {
+		expect(run([["working", false], ["waiting", true]]).unseen).toBe(false);
+	});
+
+	it("clears the mark as soon as the key goes hot", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(armed.unseen).toBe(true);
+		expect(run([["waiting", true]], armed).unseen).toBe(false);
+	});
+
+	/** Dismissal must not depend on the tick being able to see anything. If the
+	 * operator is demonstrably at the terminal, the mark is answered whatever
+	 * the probes managed to say this time round. */
+	it("clears the mark on a hot tick even when the face is unknown", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(run([["unknown", true]], armed).unseen).toBe(false);
+	});
+
+	/**
+	 * F002 OF THE PLAN REVIEW. `unknown` from a failed probe means "we could not
+	 * look this tick", not "nothing happened". Forgetting the memory there would
+	 * let one transient tmux hiccup swallow the notification entirely.
+	 */
+	it("carries the memory through an unknown caused by a probe that could not answer", () => {
+		expect(run([["working", false], ["unknown", false], ["unknown", false], ["waiting", false]]).unseen).toBe(true);
+	});
+
+	it("keeps an armed mark alive across an unanswerable tick", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(run([["unknown", false], ["waiting", false]], armed).unseen).toBe(true);
+	});
+
+	/**
+	 * THE OTHER HALF OF F002, and the one that would have shipped a lie.
+	 * `unknown` also means "two live sessions match this folder" — reachable in
+	 * normal use, because Claude Code exposes no session id. Activity credited
+	 * to the key before the ambiguity may belong to the OTHER session, so when
+	 * one of them exits the survivor must not inherit a completion it never made.
+	 */
+	it("forgets the memory when it can no longer tell which session the key watches", () => {
+		expect(run([
+			["working", false],
+			["unknown", false, { ambiguous: true }],
+			["waiting", false],
+		]).unseen).toBe(false);
+	});
+
+	it("drops an already-armed mark when the target becomes ambiguous", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(run([["unknown", false, { ambiguous: true }]], armed).unseen).toBe(false);
+	});
+
+	/** OPERATOR DECISION (2026-08-23): a new turn supersedes the previous
+	 * result, so the key shows plain blue while working and re-marks when that
+	 * turn ends. The documented guarantee is therefore about the MOST RECENT
+	 * completed turn, not about every result ever produced. */
+	it("clears the mark when the agent starts a new turn", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(run([["working", false]], armed).unseen).toBe(false);
+		expect(run([["working", false], ["waiting", false]], armed).unseen).toBe(true);
+	});
+
+	/**
+	 * F004 OF THE PLAN REVIEW. A blocked agent is by definition NOT working, so
+	 * `blocked` must never manufacture the evidence that a turn ran. Two ways
+	 * this fires without any work: the operator dismisses an approval prompt
+	 * with Esc, or the pane scrape matches prompt-like text in ordinary output.
+	 * Either way the face returns to `waiting` with nothing accomplished.
+	 */
+	it("does not mark a turn unread when an approval prompt merely came and went", () => {
+		expect(run([["blocked", false], ["waiting", false]]).unseen).toBe(false);
+	});
+
+	/** But a turn that ran, stopped for approval, and then finished IS a
+	 * completed turn — blocked preserves the evidence it must not create. */
+	it("marks a turn unread when work paused for approval and then finished", () => {
+		expect(run([["working", false], ["blocked", false], ["waiting", false]]).unseen).toBe(true);
+	});
+
+	it("clears the mark when the agent reaches an approval prompt, because a turn is running again", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(run([["blocked", false]], armed).unseen).toBe(false);
+	});
+
+	/** A mark on a dead session could never be dismissed — pressing the key
+	 * raises nothing — so it must not survive the session's exit, and the next
+	 * session to appear in that folder starts cold. */
+	it("forgets everything when the session exits", () => {
+		expect(run([["working", false], ["none", false]])).toEqual(initialTurnMemory(BIND));
+		expect(run([["working", false], ["none", false], ["waiting", false]]).unseen).toBe(false);
+	});
+
+	it("spends the evidence, so one finished turn cannot re-arm on later idle ticks", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		expect(armed).toEqual({ binding: BIND, instancePid: 1, sawActivity: false, unseen: true });
+		const later = run([["waiting", false], ["waiting", false]], armed);
+		expect(later).toEqual({ binding: BIND, instancePid: 1, sawActivity: false, unseen: true });
+		expect(run([["waiting", true], ["waiting", false]], armed).unseen).toBe(false);
+	});
+
+	/**
+	 * F003 OF THE PLAN REVIEW — the concurrency guarantee, expressed purely.
+	 * A refresh pass reads settings, spends several hundred milliseconds
+	 * probing, and only then commits. If the operator re-teaches the key in
+	 * that window, the pass arrives carrying the OLD binding. Comparing the
+	 * binding is what makes that commit harmless with no lock anywhere.
+	 */
+	it("starts over rather than merging when the commit describes a different target", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		const other = agentBindingKey("codex", "/Users/j/code/other", "sess-1");
+		expect(trackAgentTurn(armed, { binding: other, face: "waiting", hot: false, ambiguous: false, pid: 1 }))
+			.toEqual({ binding: other, instancePid: 1, sawActivity: false, unseen: false });
+	});
+
+	it("does not let a re-taught key inherit the previous target's finished turn", () => {
+		const armed = run([["working", false], ["waiting", false]]);
+		const other = agentBindingKey("cursor", "/Users/j/code/other", "sess-9");
+		expect(run([["waiting", false, { binding: other }], ["waiting", false, { binding: other }]], armed).unseen)
+			.toBe(false);
+	});
+
+	/**
+	 * F003 OF THE DIFF REVIEW, and the reason the memory carries a pid at all.
+	 * Claude Code has no session id, so it binds by project path only: a
+	 * session that exits and a different Claude started in the same folder are
+	 * one binding. If a scan failure hides the swap — and a failed scan
+	 * deliberately preserves the memory — the first session's unfinished turn
+	 * would be handed to whichever Claude was sitting idle afterwards.
+	 */
+	it("does not hand one Claude session's unfinished turn to its replacement", () => {
+		expect(run([
+			["working", false, { pid: 4001 }],
+			["unknown", false],
+			["waiting", false, { pid: 4002 }],
+		]).unseen).toBe(false);
+	});
+
+	it("drops an armed mark when the session behind it was replaced", () => {
+		const armed = run([["working", false, { pid: 4001 }], ["waiting", false, { pid: 4001 }]]);
+		expect(armed.unseen).toBe(true);
+		expect(run([["waiting", false, { pid: 4002 }]], armed).unseen).toBe(false);
+	});
+
+	/** A tick that selected nothing reports pid 0. That is silence — the probe
+	 * could not see the session — and must not read as "the process changed",
+	 * or every unreadable tick would wipe the memory it is meant to protect. */
+	it("treats a tick that selected no session as silence, not as a new process", () => {
+		expect(run([
+			["working", false, { pid: 4001 }],
+			["unknown", false, { pid: 0 }],
+			["unknown", false, { pid: 0 }],
+			["waiting", false, { pid: 4001 }],
+		]).unseen).toBe(true);
+	});
+
+	it("remembers the pid across unreadable ticks so a later swap is still caught", () => {
+		expect(run([
+			["working", false, { pid: 4001 }],
+			["unknown", false, { pid: 0 }],
+			["waiting", false, { pid: 4002 }],
+		]).unseen).toBe(false);
+	});
+
+	it("keys the binding on all three parts of what a key targets", () => {
+		expect(agentBindingKey("claude", "/a", "")).not.toBe(agentBindingKey("codex", "/a", ""));
+		expect(agentBindingKey("claude", "/a", "")).not.toBe(agentBindingKey("claude", "/b", ""));
+		expect(agentBindingKey("codex", "/a", "s1")).not.toBe(agentBindingKey("codex", "/a", "s2"));
+		expect(agentBindingKey(undefined, "", "")).toBe(agentBindingKey(undefined, "", ""));
+	});
+});
+
+describe("Which unknown face means the key lost track of its session", () => {
+	const args = { scanStatus: "ok" as const, hasCapturedId: false, instanceSelected: false, matchCount: 2 };
+
+	/** Mirrors decideAgentFace's matchCount > 1 branch exactly. */
+	it("calls it ambiguity when a trustworthy scan found several unnameable sessions", () => {
+		expect(agentUnknownIsAmbiguity(args)).toBe(true);
+	});
+
+	it("does not call it ambiguity when the scan itself could not be trusted", () => {
+		expect(agentUnknownIsAmbiguity({ ...args, scanStatus: "unknown" })).toBe(false);
+	});
+
+	/** A captured session id IS the disambiguator, so neighbours in the folder
+	 * are irrelevant — the key knows precisely which session is its own. */
+	it("does not call it ambiguity when the key captured a session id", () => {
+		expect(agentUnknownIsAmbiguity({ ...args, hasCapturedId: true })).toBe(false);
+	});
+
+	it("does not call it ambiguity when a session was selected, or when only one matched", () => {
+		expect(agentUnknownIsAmbiguity({ ...args, instanceSelected: true })).toBe(false);
+		expect(agentUnknownIsAmbiguity({ ...args, matchCount: 1 })).toBe(false);
+		expect(agentUnknownIsAmbiguity({ ...args, matchCount: 0 })).toBe(false);
+	});
+});
+
+describe("When an unread mark deserves the full poll cadence", () => {
+	const armed: AgentTurnMemory = { binding: "b", instancePid: 1, sawActivity: false, unseen: true };
+
+	/** Dismissal is what the cadence buys: without it the poller can sit at a
+	 * quarter rate while the operator walks over to the session, leaving the
+	 * mark showing for up to a further ~10s after it stopped being true. */
+	it("holds full cadence for a mark the operator could dismiss right now", () => {
+		expect(unseenIsActionable(armed, "waiting")).toBe(true);
+	});
+
+	/**
+	 * F006 OF THE PLAN REVIEW. A mark carried across an unknown face is
+	 * remembered history about a target we currently cannot see. Letting it
+	 * hold the cadence would mean one persistently broken probe pins every
+	 * visible key at 2.5s for as long as it stays broken.
+	 */
+	it("does not hold full cadence for a mark on a face we could not read", () => {
+		expect(unseenIsActionable(armed, "unknown")).toBe(false);
+	});
+
+	it("holds nothing when there is no mark", () => {
+		expect(unseenIsActionable({ binding: "b", instancePid: 1, sawActivity: true, unseen: false }, "waiting")).toBe(false);
+	});
+
+	it("feeds the cadence gate: an actionable mark alone keeps the poller awake", () => {
+		expect(agentTickInteresting({
+			focusedTty: "", instances: [], blockedProbes: ["clear"], unseenActionable: true,
+		})).toBe(true);
+		expect(agentTickInteresting({
+			focusedTty: "", instances: [], blockedProbes: ["clear"], unseenActionable: false,
+		})).toBe(false);
+	});
+});
+
+describe("Whether a refresh pass should throw away what it computed for a key", () => {
+	/**
+	 * The pass reads a key's settings, spends several hundred milliseconds
+	 * probing, and only then commits. Anything that happened in between makes
+	 * the result worthless rather than merely late.
+	 */
+	it("commits when the key is still there and nothing was pressed", () => {
+		expect(commitIsStale({ stillVisible: true, genAtRead: 3, genNow: 3 })).toBe(false);
+	});
+
+	/** A capture or a successful raise bumps the generation. Both mean the
+	 * operator has already moved past whatever this pass observed. */
+	it("throws the result away when a press landed during the pass", () => {
+		expect(commitIsStale({ stillVisible: true, genAtRead: 3, genNow: 4 })).toBe(true);
+	});
+
+	/** Committing for a key that has gone would leave state behind for a key
+	 * nobody can see. */
+	it("throws the result away when the key disappeared during the pass", () => {
+		expect(commitIsStale({ stillVisible: false, genAtRead: 3, genNow: 3 })).toBe(true);
+		expect(commitIsStale({ stillVisible: false, genAtRead: 3, genNow: 9 })).toBe(true);
 	});
 });

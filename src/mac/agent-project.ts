@@ -34,6 +34,12 @@
  *     the same thing as an instance's own state (an incomplete scan can force
  *     `unknown` over a perfectly confident instance).
  *   - "hot" — this key's project is the one the operator is looking at now.
+ *   - "unseen" — a turn was observed WORKING and later observed finished while the
+ *     key was not hot, and the key has not been hot since. Its role is the deck's
+ *     unread mark: it answers "did something finish while I was looking elsewhere?",
+ *     which no single-tick face can answer. It is memory, not an observation, so it
+ *     is armed only by a transition this plugin actually watched happen — a key that
+ *     first appears next to an already-idle agent can never claim one.
  */
 
 import { normalizeProjectPath } from "./codex-project.js";
@@ -214,11 +220,18 @@ export function agentTickInteresting(args: {
 	focusedTty: string;
 	instances: readonly AgentInstance[];
 	blockedProbes: ReadonlyArray<"clear" | "blocked" | "failed">;
+	/** Any visible key showing a DISMISSIBLE unread mark ({@link unseenIsActionable}).
+	 * Without this the idle gate would drop to a quarter cadence exactly while a
+	 * mark is waiting to be dismissed, so going to the session would leave the
+	 * key claiming "unread" for up to a further ~10s — the mark lying. Required
+	 * rather than optional so every caller has to answer it. */
+	unseenActionable: boolean;
 }): boolean {
 	return (
 		args.focusedTty !== "" ||
 		args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
-		args.blockedProbes.some((p) => p !== "clear")
+		args.blockedProbes.some((p) => p !== "clear") ||
+		args.unseenActionable
 	);
 }
 
@@ -292,6 +305,208 @@ export function decideAgentFace(args: {
 	return args.instanceState;
 }
 
+/**
+ * The per-key memory behind the unread mark.
+ *
+ * It is deliberately tiny and deliberately BOUND to one target: a key that gets
+ * re-taught, or whose project is retyped in the settings screen, must not
+ * inherit the previous target's history. {@link trackAgentTurn} compares
+ * `binding` on every commit and starts over when it differs, which is also what
+ * makes the whole thing safe against a slow refresh pass committing after a
+ * capture has already changed the key (there is no lock; a stale commit simply
+ * carries a stale binding and is discarded).
+ */
+export interface AgentTurnMemory {
+	/** Which target this memory describes — see {@link agentBindingKey}. */
+	binding: string;
+	/**
+	 * The pid of the process this history was observed on, or 0 before any
+	 * session has been seen.
+	 *
+	 * The binding alone is not enough for Claude Code, which exposes no session
+	 * id and is therefore bound by project path only: a session that exits and
+	 * a DIFFERENT Claude started in the same folder share one binding exactly.
+	 * Without the pid, a working turn that never finished could hand its
+	 * evidence to whichever session was sitting at an idle prompt afterwards —
+	 * reachable whenever a scan failure hides the swap, since a failed scan
+	 * deliberately preserves the memory. Codex and Cursor get this for free
+	 * from their session ids; this is what gives Claude the same guarantee.
+	 */
+	instancePid: number;
+	/**
+	 * A `working` face has been observed since the last time the turn was seen
+	 * to end. This is the "a turn really did run" evidence, and ONLY `working`
+	 * sets it. `blocked` deliberately does not: a blocked agent is by definition
+	 * not working, so an approval prompt that appears and is then dismissed —
+	 * or a pane scrape that matched prompt-like text in ordinary output — would
+	 * otherwise manufacture a completion that never happened.
+	 */
+	sawActivity: boolean;
+	/** A turn ended while the key was not hot, and the key has not been hot since. */
+	unseen: boolean;
+}
+
+/**
+ * The identity a memory belongs to: the exact triple a key is bound to.
+ *
+ * Any change to it — a re-teach, a hand-typed project path, a key that has not
+ * been taught yet — produces a different string and therefore a fresh memory.
+ */
+export function agentBindingKey(kind: AgentKind | undefined, project: string, sessionId: string): string {
+	return `${kind ?? "-"}|${project}|${sessionId}`;
+}
+
+/** A memory that has observed nothing yet. Cold start lives here: with
+ * `sawActivity` false there is no transition to complete, so the very first
+ * tick of a key sitting next to an already-idle agent cannot arm the mark. */
+export function initialTurnMemory(binding: string): AgentTurnMemory {
+	return { binding, instancePid: 0, sawActivity: false, unseen: false };
+}
+
+/**
+ * One tick's observation of a key, as far as the unread mark is concerned.
+ *
+ * `ambiguous` is the reason this is not just an {@link AgentState}: the
+ * `unknown` face has several causes and they must not be treated alike. A
+ * failed pane probe or an untrusted scan means "we could not look this tick",
+ * and forgetting the memory there would let any transient hiccup swallow a
+ * notification. Two live sessions matching one folder is a different thing
+ * entirely — the key can no longer say WHICH session it is watching, so
+ * activity credited to it may belong to the other one. See
+ * {@link agentUnknownIsAmbiguity}.
+ */
+export interface AgentTurnObservation {
+	binding: string;
+	face: AgentState;
+	hot: boolean;
+	/** Only meaningful when `face` is `unknown`. */
+	ambiguous: boolean;
+	/** The pid of the session selected this tick, or 0 when none was — an
+	 * unreadable tick, not a claim that the process changed. See
+	 * {@link AgentTurnMemory.instancePid}. */
+	pid: number;
+}
+
+/**
+ * Advance the unread-mark memory by one observed tick.
+ *
+ * The exact guarantee, which the documentation must not round up: the mark says
+ * *the most recently completed turn finished while you were not looking at this
+ * session, and you have not looked since*. It does NOT say the session has
+ * unread output in any general sense, and it does not survive a new turn —
+ * starting more work supersedes the previous result (an operator decision;
+ * the cost is that a turn started by someone the plugin cannot see, such as a
+ * second tmux client over ssh, silently discards the earlier mark).
+ *
+ * The other limit, which the user-facing text also has to state: this is a
+ * SAMPLED signal. A turn that starts and finishes between two polls is never
+ * observed working, so it leaves no mark. The mark reports turns the plugin
+ * watched run, not every turn that happened.
+ *
+ * Order matters in one place: `hot` is applied LAST, so being at the terminal
+ * dismisses the mark whatever this tick's face turned out to be — including an
+ * `unknown` face, where the honest reading is that we could not check but the
+ * operator is demonstrably right there.
+ */
+export function trackAgentTurn(prev: AgentTurnMemory, obs: AgentTurnObservation): AgentTurnMemory {
+	// A commit for a different target is not this memory's business. This is
+	// also the whole concurrency story: a refresh that started before a capture
+	// changed the key arrives carrying the OLD binding and resets instead of
+	// merging, so no lock is needed between the poll and the press paths.
+	const rebound = prev.binding === obs.binding ? prev : initialTurnMemory(obs.binding);
+	// A pid of 0 means "nothing was selected this tick", which is silence, not a
+	// change — the memory must survive a tick that could not see the session.
+	// A DIFFERENT pid is a different process, and its predecessor's turn is not
+	// its own however identical the binding looks.
+	const base = obs.pid !== 0 && rebound.instancePid !== 0 && rebound.instancePid !== obs.pid
+		? initialTurnMemory(obs.binding)
+		: rebound;
+	const pid = obs.pid !== 0 ? obs.pid : base.instancePid;
+	let next: AgentTurnMemory;
+	switch (obs.face) {
+		case "working":
+			// The only edge that proves a turn ran.
+			next = { binding: obs.binding, instancePid: pid, sawActivity: true, unseen: false };
+			break;
+		case "blocked":
+			// Preserves the evidence, never creates it (see `sawActivity`), and
+			// clears the mark because reaching an approval prompt means a turn is
+			// in flight again.
+			next = { binding: obs.binding, instancePid: pid, sawActivity: base.sawActivity, unseen: false };
+			break;
+		case "waiting":
+			// The turn ended. Arm only if we actually watched it run, and spend
+			// the evidence so a second idle tick cannot re-arm from the same turn.
+			next = { binding: obs.binding, instancePid: pid, sawActivity: false, unseen: base.unseen || base.sawActivity };
+			break;
+		case "none":
+			// The session is gone. A mark on a dead session could never be
+			// dismissed — pressing the key raises nothing — so it must not exist.
+			next = initialTurnMemory(obs.binding);
+			break;
+		case "unknown":
+			// Transparent for "could not look", reset for "no longer know which
+			// session this is" — the distinction F002 of the plan review turned on.
+			next = obs.ambiguous ? initialTurnMemory(obs.binding) : { ...base, binding: obs.binding, instancePid: pid };
+			break;
+	}
+	return obs.hot ? { ...next, unseen: false } : next;
+}
+
+/**
+ * Is this tick's `unknown` face caused by not knowing WHICH session the key
+ * watches, rather than by a probe that could not answer?
+ *
+ * Mirrors the `matchCount > 1` branch of {@link decideAgentFace} exactly: a
+ * trustworthy scan, no captured session id to disambiguate with, nothing
+ * selected, and more than one live session in the folder. That is reachable in
+ * normal use — Claude Code exposes no session id, so two Claude sessions in one
+ * project produce it — and it is the one `unknown` that must forget history.
+ */
+export function agentUnknownIsAmbiguity(args: {
+	scanStatus: "ok" | "unknown";
+	hasCapturedId: boolean;
+	instanceSelected: boolean;
+	matchCount: number;
+}): boolean {
+	return args.scanStatus === "ok" && !args.hasCapturedId && !args.instanceSelected && args.matchCount > 1;
+}
+
+/**
+ * Should a refresh pass throw away what it computed for one key?
+ *
+ * A pass reads each key's settings, spends several hundred milliseconds on
+ * probes, and only then commits. Two things can happen in that window and both
+ * make the result worthless rather than merely late:
+ *
+ *   - the key disappeared (a page switch), so committing would leave state
+ *     behind for a key nobody can see; or
+ *   - the operator pressed it — a capture changed what the key means, or a
+ *     successful raise means they are now AT the session and have answered the
+ *     very question the unread mark was asking.
+ *
+ * The generation must be sampled before that key's settings are read, not
+ * after: sampling it later lets a press that lands between the two go
+ * undetected, because it is already counted in the generation while the
+ * settings still describe the world before it.
+ */
+export function commitIsStale(args: { stillVisible: boolean; genAtRead: number; genNow: number }): boolean {
+	return !args.stillVisible || args.genAtRead !== args.genNow;
+}
+
+/**
+ * Does a key's unread mark deserve the full poll cadence this tick?
+ *
+ * Only when the mark is BOTH armed and dismissible: the face is `waiting`, so
+ * the session is really there and going to it would clear the mark. A mark
+ * carried across an `unknown` face is remembered history on a target we cannot
+ * currently see, and letting that hold the poller at 2.5s would mean one broken
+ * probe pins every visible key at full rate for as long as it stays broken.
+ */
+export function unseenIsActionable(memory: AgentTurnMemory, face: AgentState): boolean {
+	return memory.unseen && face === "waiting";
+}
+
 function projectBasename(path: string): string {
 	const p = normalizeProjectPath(path);
 	return p.slice(p.lastIndexOf("/") + 1) || "?";
@@ -302,6 +517,9 @@ function truncate(value: string, max: number): string {
 }
 
 const MONO = "Menlo, Monaco, monospace";
+
+/** The unread mark's red. Not a state colour — see {@link buildAgentProjectKeyImage}. */
+const UNREAD_RED = "#FF4A4A";
 
 /** Twelve positions around the state glyph. The glyphs are close to
  * rotationally symmetric at key size, so spinning them collapses to a wobble
@@ -343,8 +561,18 @@ function footMark(kind: AgentKind, color: string): string {
  * Hex colours ONLY — the KEY rasterizer paints `hsl()` as solid black (the
  * touchscreen pixmap pipeline renders it fine), so every hue goes through
  * {@link hslToHex}; a unit test asserts no `hsl(` literal survives for any
- * kind/state/hot combination. The project name is XML-escaped and truncated to
- * what fits the key.
+ * kind/state/hot/unseen combination. The project name is XML-escaped and
+ * truncated to what fits the key.
+ *
+ * The unread mark is a stripe down the LEFT EDGE rather than a change of ground
+ * or state colour, and that is a deliberate constraint, not a style preference:
+ * the deck runs one colour language — blue working, amber waiting on you, white
+ * idle — and amber is the loudest thing on it because a blocked agent needs you
+ * now. An unread finished turn is less urgent than that, so it gets its own
+ * layer instead of a fourth state colour, and the face underneath keeps saying
+ * what the session is doing. Measured at 216px through inkscape: 4px clears
+ * both the longest project name and the foot bar, and a corner dot does not —
+ * it collides with the "TERMINAL" eyebrow.
  */
 export function buildAgentProjectKeyImage(args: {
 	kind: AgentKind;
@@ -353,6 +581,9 @@ export function buildAgentProjectKeyImage(args: {
 	hot: boolean;
 	state: AgentState;
 	spin?: number;
+	/** Paint the unread mark. The builder draws it whenever asked; keeping it
+	 * honest is {@link trackAgentTurn}'s job, not this function's. */
+	unseen?: boolean;
 }): string {
 	const base = projectBasename(args.project);
 	const name = truncate(base, 9);
@@ -385,5 +616,9 @@ export function buildAgentProjectKeyImage(args: {
 		}
 	}
 	const mark = footMark(args.kind, active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490");
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+	// Painted last so nothing can overdraw it, and stopped at y=57 so it never
+	// touches the foot bar, whose one meaning is "your keystrokes reach this
+	// session" — the exact condition under which this mark cannot be showing.
+	const unread = args.unseen ? `<rect x="0" y="0" width="4" height="57" fill="${UNREAD_RED}"/>` : "";
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}${unread}</svg>`;
 }

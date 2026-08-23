@@ -31,6 +31,21 @@
 			waiting on <i>you</i>, white means the prompt is idle, and gray means the
 			state is unknown or more than one session matches. The bar lights when your
 			keystrokes would reach that exact session.<br /><br />
+			<b>The red stripe is an unread mark.</b> It appears when the agent finishes
+			a turn while you are looking somewhere else, and it clears when you press
+			the key (on a raise that actually succeeds &mdash; if raising the window
+			fails, the key shows its alert and the mark stays) or on the first check
+			that finds you already at that session. What it claims is narrow, on purpose: the
+			<i>most recent</i> finished turn has not been seen. Starting a new turn
+			clears it &mdash; the key goes back to blue and marks again when that turn
+			ends. It needs the plugin watching to see the transition at all, so a plugin
+			restart, or switching Stream Deck pages and back, forgets a pending mark
+			rather than inventing one it never observed. It also samples every
+			2&frac12; seconds, so a turn that starts and finishes inside one gap is
+			never seen running and leaves no mark &mdash; the mark reports turns this
+			key watched run, not every turn that happened. Focus this key cannot see
+			&mdash; another machine attached to the same tmux session over ssh &mdash;
+			cannot clear it either.<br /><br />
 			<b>Requires:</b> Automation access for iTerm2 and/or Terminal for the hot
 			indicator, capture, and focusing (macOS prompts on first use). Finding
 			sessions and reading their state needs no permission.<br /><br />

@@ -228,7 +228,12 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   white = idle.** The tmux key's Claude spark was amber-for-working, which meant
   the opposite of amber on the agent keys — two states demanding opposite actions
   sharing a colour on one deck. It is blue now. The two superseded per-agent keys
-  keep the old scheme and die with it; don't "fix" them.
+  keep the old scheme and die with it; don't "fix" them. RED is not a fourth
+  state: it is AI Project's unread stripe, a LAYER over whatever state colour
+  the key already shows (`UNREAD_RED` in `agent-project.ts`). The operator asked
+  for a full red ground and was talked into the stripe, because red-as-ground
+  out-shouts amber — and amber means "blocked, needs you now", which is more
+  urgent than "finished". Don't promote red to a state.
 - **README figures are code-generated.** docs/tmux-live-keys.png and claude-spark.gif now
   regenerate together via `python3 scripts/make-tmux-figure.py` (tsx -> the REAL
   buildTmuxKeyImage -> inkscape -> magick); claude-project-keys.png and

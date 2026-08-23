@@ -13,17 +13,24 @@ import { homedir } from "node:os";
 import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import {
+	agentBindingKey,
 	agentForFocusedTty,
 	agentTickInteresting,
 	type AgentHost,
 	type AgentInstance,
 	type AgentKind,
 	type AgentState,
+	type AgentTurnMemory,
+	agentUnknownIsAmbiguity,
+	commitIsStale,
 	blockedEvidenceFor,
 	blockedProbeForMissingPane,
 	buildAgentProjectKeyImage,
 	decideAgentFace,
+	initialTurnMemory,
 	paneShowsAgentPrompt,
+	trackAgentTurn,
+	unseenIsActionable,
 } from "../mac/agent-project.js";
 import {
 	type AgentPane,
@@ -101,6 +108,28 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	private readonly gate = new PressGate();
 	private readonly visible = new Map<string, KeyAction<AiProjectSettings>>();
 	private readonly lastImage = new Map<string, string>();
+	/**
+	 * The unread mark's memory, one entry per visible key.
+	 *
+	 * In memory on purpose, not in settings: it changes on most transition ticks
+	 * (settings are not a 2.5s scratchpad), and persisting it would let a
+	 * restarted plugin display a mark for a transition it never watched — which
+	 * is the one thing the mark is not allowed to do. The cost is stated in the
+	 * docs: a restart or a page switch forgets a pending mark.
+	 */
+	private readonly turnMemory = new Map<string, AgentTurnMemory>();
+	/**
+	 * Bumped whenever something OUTSIDE the poll changes what a key means or
+	 * what it has acknowledged — a capture, or a successful raise.
+	 *
+	 * A refresh pass reads settings up front and then spends several hundred
+	 * milliseconds on probes before it commits anything. Without this, a press
+	 * landing inside that window would be undone: the pass would write back the
+	 * memory it computed from the pre-press world, and the key would go on
+	 * claiming an unread result the operator is currently looking at. The pass
+	 * compares the counter it started with and drops its commit if it moved.
+	 */
+	private readonly pressGen = new Map<string, number>();
 	private readonly refresher = new CoalescedRunner(() => this.doRefreshAll());
 	private timer?: ReturnType<typeof setInterval>;
 	private spin = 0;
@@ -122,6 +151,8 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		this.gate.cancel(ev.action.id);
 		this.visible.delete(ev.action.id);
 		this.lastImage.delete(ev.action.id);
+		this.turnMemory.delete(ev.action.id);
+		this.pressGen.delete(ev.action.id);
 		if (this.visible.size === 0 && this.timer !== undefined) {
 			clearInterval(this.timer);
 			this.timer = undefined;
@@ -139,9 +170,24 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		await runExclusive("iterm-focus", () => this.focus(ev.action));
 	}
 
-	/** Every visible key with its settings, read exactly once per tick. */
-	private async readKeys(): Promise<Array<{ key: KeyAction<AiProjectSettings>; settings: AiProjectSettings }>> {
-		return Promise.all([...this.visible.values()].map(async (key) => ({ key, settings: await key.getSettings() })));
+	/**
+	 * Every visible key with its settings and the press generation it was read
+	 * at, exactly once per tick.
+	 *
+	 * `gen` is sampled SYNCHRONOUSLY, before this key's settings read is even
+	 * started, and that ordering is the whole point. Reading it afterwards — as
+	 * an earlier cut of this did, once for all keys after `Promise.all` had
+	 * resolved — left a real window: key A's settings can resolve while key B's
+	 * is still pending, so a capture on A committing in that gap was already
+	 * counted in the generation while `entries` still held A's OLD settings.
+	 * The commit check then passed and the pass wrote back the pre-press world.
+	 * An independent review of the finished diff caught exactly that.
+	 */
+	private async readKeys(): Promise<Array<{ key: KeyAction<AiProjectSettings>; settings: AiProjectSettings; gen: number }>> {
+		return Promise.all([...this.visible.values()].map(async (key) => {
+			const gen = this.pressGen.get(key.id) ?? 0;
+			return { key, settings: await key.getSettings(), gen };
+		}));
 	}
 
 	/** The kinds this tick must scan, derived from the SAME settings read that
@@ -286,10 +332,11 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		// shared via its PROMISE — see blockedOnApproval.
 		const captured = new Map<string, Promise<{ ok: boolean; text: string }>>();
 		const blockedProbes: Array<"clear" | "blocked" | "failed"> = [];
+		const unseenActionable: boolean[] = [];
 
 		// Per-key bodies run CONCURRENTLY (F5): each does its own setImage,
 		// guarded by the existing lastImage dedupe.
-		await Promise.all(entries.map(async ({ key, settings }) => {
+		await Promise.all(entries.map(async ({ key, settings, gen }) => {
 			const kind = settings.agent;
 			const project = canonicalByRaw.get((settings.project ?? "").trim()) ?? "";
 			const sessionId = (settings.sessionId ?? "").trim();
@@ -320,6 +367,34 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 				hasCapturedId: sessionId !== "",
 				blockedProbe,
 			});
+			// A key that disappeared while this pass was awaiting its probes must
+			// not have memory written back for it — the entry would outlive the
+			// key and be inherited by whatever appears next under that id.
+			// A capture or a raise landed after this key's settings were read, so
+			// what this pass computed describes a world the operator has already
+			// moved past — and a key that vanished mid-pass must not have memory
+			// written back for it, or the entry outlives the key.
+			if (commitIsStale({ stillVisible: this.visible.get(key.id) === key, genAtRead: gen, genNow: this.pressGen.get(key.id) ?? 0 })) return;
+			const binding = agentBindingKey(kind, project, sessionId);
+			const memory = trackAgentTurn(this.turnMemory.get(key.id) ?? initialTurnMemory(binding), {
+				binding,
+				face: state,
+				hot,
+				// Only an `unknown` caused by two live sessions in one folder should
+				// forget the memory; an `unknown` from a failed probe must not, or a
+				// transient tmux hiccup would swallow the notification.
+				// 0 = nothing selected this tick, which must read as silence rather
+				// than as "the process changed" (see AgentTurnMemory.instancePid).
+				pid: instance?.pid ?? 0,
+				ambiguous: agentUnknownIsAmbiguity({
+					scanStatus: kind !== undefined && kindTrusted(snap, kind) ? "ok" : "unknown",
+					hasCapturedId: sessionId !== "",
+					instanceSelected: instance !== null,
+					matchCount: mine.length,
+				}),
+			});
+			this.turnMemory.set(key.id, memory);
+			unseenActionable.push(unseenIsActionable(memory, state));
 			const image = svgToDataUri(buildAgentProjectKeyImage({
 				kind: kind ?? "claude",
 				project: kind === undefined ? "hold to teach" : project || "no target",
@@ -327,6 +402,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 				hot,
 				state,
 				spin: this.spin,
+				unseen: memory.unseen,
 			}));
 			if (this.lastImage.get(key.id) === image) return;
 			try { await key.setImage(image); this.lastImage.set(key.id, image); }
@@ -339,7 +415,24 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			focusedTty: snap.focusedTty,
 			instances: snap.instances,
 			blockedProbes,
+			unseenActionable: unseenActionable.some(Boolean),
 		});
+	}
+
+	/**
+	 * Record that the operator has dealt with this key: clear its unread mark
+	 * and invalidate any refresh pass already in flight for it.
+	 *
+	 * Takes the key rather than its id so it can check the key is still on
+	 * screen. Both callers reach here after several awaits, and without the
+	 * check a press that finishes AFTER its key disappeared would write both
+	 * maps back and leave entries behind for a key nobody can see.
+	 */
+	private acknowledge(key: KeyAction<AiProjectSettings>): void {
+		if (this.visible.get(key.id) !== key) return;
+		this.pressGen.set(key.id, (this.pressGen.get(key.id) ?? 0) + 1);
+		const remembered = this.turnMemory.get(key.id);
+		if (remembered !== undefined) this.turnMemory.set(key.id, { ...remembered, unseen: false });
 	}
 
 	private async raiseTty(tty: string): Promise<boolean> {
@@ -417,8 +510,16 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			await key.showAlert();
 			return;
 		}
-		await key.showOk();
+		// The raise succeeded, so the operator IS at that session now — that is
+		// the unread mark's dismissal condition, and waiting for a later poll to
+		// infer it would leave the mark showing on a key the operator just went
+		// to. This runs BEFORE showOk deliberately: showOk is cosmetic deck
+		// feedback, and letting it fail would otherwise swallow the
+		// acknowledgement of a raise that demonstrably worked.
+		this.acknowledge(key);
+		void this.refreshAll();
 		setTimeout(() => void this.refreshAll(), 450);
+		await key.showOk();
 	}
 
 	/**
@@ -481,6 +582,13 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		}
 		const settings = await key.getSettings();
 		await key.setSettings({ ...settings, agent: instance.kind, project, sessionId: instance.sessionId });
+		// The new binding gives the key a fresh memory on its next commit; this
+		// additionally drops any commit from a pass that read the OLD settings
+		// and has not finished, which the binding alone cannot do. Before
+		// showOk for the same reason as in focus(): the capture has already been
+		// committed to settings, so cosmetic feedback failing must not leave the
+		// in-flight pass free to write the old target back.
+		this.acknowledge(key);
 		await key.showOk();
 		await this.refreshAll();
 	}

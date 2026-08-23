@@ -27,7 +27,7 @@ Read the full story in the flagship essay → [I Directed an AI to Ship Real Sof
 Sixteen actions, grouped by what they route your attention to.
 
 **Coding agents**
-- **AI Project** *(key)* — one live face for a **Claude Code**, **Codex CLI**, or **Cursor CLI** (`cursor-agent`, the terminal agent — not the Cursor editor) session. Hold the key for ½ second while the agent's terminal is frontmost and it works out which of the three it is looking at, then takes on that agent's mark: a coral spark for Claude, a violet square for Codex, an arrow for Cursor. Blue with a moving dot means a turn is running, amber means the agent is waiting on *you*, white means the prompt is idle, gray means unknown or ambiguous. Press to raise its terminal and exact tmux pane.
+- **AI Project** *(key)* — one live face for a **Claude Code**, **Codex CLI**, or **Cursor CLI** (`cursor-agent`, the terminal agent — not the Cursor editor) session. Hold the key for ½ second while the agent's terminal is frontmost and it works out which of the three it is looking at, then takes on that agent's mark: a coral spark for Claude, a violet square for Codex, an arrow for Cursor. Blue with a moving dot means a turn is running, amber means the agent is waiting on *you*, white means the prompt is idle, gray means unknown or ambiguous. A **red stripe down the left edge is an unread mark**: the agent finished a turn while you were looking somewhere else. It clears when pressing the key successfully raises that session, or on the first check that finds you already there; a press that cannot raise the window shows an alert and leaves the mark alone. The key samples every 2½ seconds, so a turn that starts and finishes inside one gap is never seen running and leaves no mark. Press to raise its terminal and exact tmux pane.
 
   *Amber is not equally available to all three.* Codex records "waiting for your approval" in its own session log, so it works in any terminal. Claude Code and Cursor write nothing that distinguishes it from ordinary work — the only evidence is the prompt on screen, which the key can read for **tmux-hosted sessions only**; elsewhere those two show an approval prompt as blue. Codex and Cursor bind to one exact session; Claude Code has no session identifier and binds by project folder, so two Claude sessions in one folder read as ambiguous rather than being guessed between.
 
@@ -85,7 +85,7 @@ Two honest limits on the amber "waiting on you" state, and they are not the same
 
 <img src="docs/claude-spark.gif" width="120" alt="Animated key face: the blue spark turns while a coding agent works" />
 
-Across every key: **blue means working** (leave it alone), **amber means the agent is waiting on you** (go there now), **white means idle at the prompt**. The one exception is the superseded **Claude Project** key, which predates that scheme and still uses amber for *working* — one more reason to move it to AI Project. (Codex Project and Cursor Project already used blue/amber.)
+Across every key: **blue means working** (leave it alone), **amber means the agent is waiting on you** (go there now), **white means idle at the prompt**. Red is not a fourth state — it is the AI Project key's unread mark, a stripe layered over whichever state colour the key is already showing. The one exception is the superseded **Claude Project** key, which predates that scheme and still uses amber for *working* — one more reason to move it to AI Project. (Codex Project and Cursor Project already used blue/amber.)
 
 The dial touchscreens speak the same color language — green drives tmux, blue drives macOS windows and apps, amber drives BBEdit — and the ⇄ mark appears exactly where a tap flips the dial's mode:
 
@@ -182,7 +182,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 708 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 850 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

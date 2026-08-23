@@ -275,7 +275,7 @@
 			"Name": "AI Project",
 			"UUID": "com.movingavg.switchboard.aiproject",
 			"Icon": "imgs/actions/aiproject/icon",
-			"Tooltip": "Replaces the separate Claude/Codex/Cursor Project keys. Live face for a Claude Code, Codex, or Cursor CLI session (cursor-agent in the terminal, not the Cursor editor) \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane.",
+			"Tooltip": "Replaces the separate Claude/Codex/Cursor Project keys. Live face for a Claude Code, Codex, or Cursor CLI session (cursor-agent in the terminal, not the Cursor editor) \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane. A red edge stripe marks a turn that finished while you were looking elsewhere; going to that session clears it.",
 			"PropertyInspectorPath": "ui/ai-project.html",
 			"Controllers": [
 				"Keypad"

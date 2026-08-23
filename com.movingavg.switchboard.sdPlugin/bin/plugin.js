@@ -11224,6 +11224,12 @@ let CodexProject = (() => {
  *     the same thing as an instance's own state (an incomplete scan can force
  *     `unknown` over a perfectly confident instance).
  *   - "hot" — this key's project is the one the operator is looking at now.
+ *   - "unseen" — a turn was observed WORKING and later observed finished while the
+ *     key was not hot, and the key has not been hot since. Its role is the deck's
+ *     unread mark: it answers "did something finish while I was looking elsewhere?",
+ *     which no single-tick face can answer. It is memory, not an observation, so it
+ *     is armed only by a transition this plugin actually watched happen — a key that
+ *     first appears next to an already-idle agent can never claim one.
  */
 /**
  * What kind of evidence a `blocked` verdict could rest on for this kind+host.
@@ -11346,7 +11352,8 @@ function agentForFocusedTty(instances, focusedTty) {
 function agentTickInteresting(args) {
     return (args.focusedTty !== "" ||
         args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
-        args.blockedProbes.some((p) => p !== "clear"));
+        args.blockedProbes.some((p) => p !== "clear") ||
+        args.unseenActionable);
 }
 /**
  * Compose the face a key should paint from every piece of evidence at once.
@@ -11404,6 +11411,132 @@ function decideAgentFace(args) {
         return "unknown";
     return args.instanceState;
 }
+/**
+ * The identity a memory belongs to: the exact triple a key is bound to.
+ *
+ * Any change to it — a re-teach, a hand-typed project path, a key that has not
+ * been taught yet — produces a different string and therefore a fresh memory.
+ */
+function agentBindingKey(kind, project, sessionId) {
+    return `${kind ?? "-"}|${project}|${sessionId}`;
+}
+/** A memory that has observed nothing yet. Cold start lives here: with
+ * `sawActivity` false there is no transition to complete, so the very first
+ * tick of a key sitting next to an already-idle agent cannot arm the mark. */
+function initialTurnMemory(binding) {
+    return { binding, instancePid: 0, sawActivity: false, unseen: false };
+}
+/**
+ * Advance the unread-mark memory by one observed tick.
+ *
+ * The exact guarantee, which the documentation must not round up: the mark says
+ * *the most recently completed turn finished while you were not looking at this
+ * session, and you have not looked since*. It does NOT say the session has
+ * unread output in any general sense, and it does not survive a new turn —
+ * starting more work supersedes the previous result (an operator decision;
+ * the cost is that a turn started by someone the plugin cannot see, such as a
+ * second tmux client over ssh, silently discards the earlier mark).
+ *
+ * The other limit, which the user-facing text also has to state: this is a
+ * SAMPLED signal. A turn that starts and finishes between two polls is never
+ * observed working, so it leaves no mark. The mark reports turns the plugin
+ * watched run, not every turn that happened.
+ *
+ * Order matters in one place: `hot` is applied LAST, so being at the terminal
+ * dismisses the mark whatever this tick's face turned out to be — including an
+ * `unknown` face, where the honest reading is that we could not check but the
+ * operator is demonstrably right there.
+ */
+function trackAgentTurn(prev, obs) {
+    // A commit for a different target is not this memory's business. This is
+    // also the whole concurrency story: a refresh that started before a capture
+    // changed the key arrives carrying the OLD binding and resets instead of
+    // merging, so no lock is needed between the poll and the press paths.
+    const rebound = prev.binding === obs.binding ? prev : initialTurnMemory(obs.binding);
+    // A pid of 0 means "nothing was selected this tick", which is silence, not a
+    // change — the memory must survive a tick that could not see the session.
+    // A DIFFERENT pid is a different process, and its predecessor's turn is not
+    // its own however identical the binding looks.
+    const base = obs.pid !== 0 && rebound.instancePid !== 0 && rebound.instancePid !== obs.pid
+        ? initialTurnMemory(obs.binding)
+        : rebound;
+    const pid = obs.pid !== 0 ? obs.pid : base.instancePid;
+    let next;
+    switch (obs.face) {
+        case "working":
+            // The only edge that proves a turn ran.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: true, unseen: false };
+            break;
+        case "blocked":
+            // Preserves the evidence, never creates it (see `sawActivity`), and
+            // clears the mark because reaching an approval prompt means a turn is
+            // in flight again.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: base.sawActivity, unseen: false };
+            break;
+        case "waiting":
+            // The turn ended. Arm only if we actually watched it run, and spend
+            // the evidence so a second idle tick cannot re-arm from the same turn.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: false, unseen: base.unseen || base.sawActivity };
+            break;
+        case "none":
+            // The session is gone. A mark on a dead session could never be
+            // dismissed — pressing the key raises nothing — so it must not exist.
+            next = initialTurnMemory(obs.binding);
+            break;
+        case "unknown":
+            // Transparent for "could not look", reset for "no longer know which
+            // session this is" — the distinction F002 of the plan review turned on.
+            next = obs.ambiguous ? initialTurnMemory(obs.binding) : { ...base, binding: obs.binding, instancePid: pid };
+            break;
+    }
+    return obs.hot ? { ...next, unseen: false } : next;
+}
+/**
+ * Is this tick's `unknown` face caused by not knowing WHICH session the key
+ * watches, rather than by a probe that could not answer?
+ *
+ * Mirrors the `matchCount > 1` branch of {@link decideAgentFace} exactly: a
+ * trustworthy scan, no captured session id to disambiguate with, nothing
+ * selected, and more than one live session in the folder. That is reachable in
+ * normal use — Claude Code exposes no session id, so two Claude sessions in one
+ * project produce it — and it is the one `unknown` that must forget history.
+ */
+function agentUnknownIsAmbiguity(args) {
+    return args.scanStatus === "ok" && !args.hasCapturedId && !args.instanceSelected && args.matchCount > 1;
+}
+/**
+ * Should a refresh pass throw away what it computed for one key?
+ *
+ * A pass reads each key's settings, spends several hundred milliseconds on
+ * probes, and only then commits. Two things can happen in that window and both
+ * make the result worthless rather than merely late:
+ *
+ *   - the key disappeared (a page switch), so committing would leave state
+ *     behind for a key nobody can see; or
+ *   - the operator pressed it — a capture changed what the key means, or a
+ *     successful raise means they are now AT the session and have answered the
+ *     very question the unread mark was asking.
+ *
+ * The generation must be sampled before that key's settings are read, not
+ * after: sampling it later lets a press that lands between the two go
+ * undetected, because it is already counted in the generation while the
+ * settings still describe the world before it.
+ */
+function commitIsStale(args) {
+    return !args.stillVisible || args.genAtRead !== args.genNow;
+}
+/**
+ * Does a key's unread mark deserve the full poll cadence this tick?
+ *
+ * Only when the mark is BOTH armed and dismissible: the face is `waiting`, so
+ * the session is really there and going to it would clear the mark. A mark
+ * carried across an `unknown` face is remembered history on a target we cannot
+ * currently see, and letting that hold the poller at 2.5s would mean one broken
+ * probe pins every visible key at full rate for as long as it stays broken.
+ */
+function unseenIsActionable(memory, face) {
+    return memory.unseen && face === "waiting";
+}
 function projectBasename$1(path) {
     const p = normalizeProjectPath(path);
     return p.slice(p.lastIndexOf("/") + 1) || "?";
@@ -11412,6 +11545,8 @@ function truncate$2(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 const MONO$2 = "Menlo, Monaco, monospace";
+/** The unread mark's red. Not a state colour — see {@link buildAgentProjectKeyImage}. */
+const UNREAD_RED = "#FF4A4A";
 /** Twelve positions around the state glyph. The glyphs are close to
  * rotationally symmetric at key size, so spinning them collapses to a wobble
  * you cannot see; an orbiting dot gives 12 genuinely distinct frames. */
@@ -11449,8 +11584,18 @@ function footMark(kind, color) {
  * Hex colours ONLY — the KEY rasterizer paints `hsl()` as solid black (the
  * touchscreen pixmap pipeline renders it fine), so every hue goes through
  * {@link hslToHex}; a unit test asserts no `hsl(` literal survives for any
- * kind/state/hot combination. The project name is XML-escaped and truncated to
- * what fits the key.
+ * kind/state/hot/unseen combination. The project name is XML-escaped and
+ * truncated to what fits the key.
+ *
+ * The unread mark is a stripe down the LEFT EDGE rather than a change of ground
+ * or state colour, and that is a deliberate constraint, not a style preference:
+ * the deck runs one colour language — blue working, amber waiting on you, white
+ * idle — and amber is the loudest thing on it because a blocked agent needs you
+ * now. An unread finished turn is less urgent than that, so it gets its own
+ * layer instead of a fourth state colour, and the face underneath keeps saying
+ * what the session is doing. Measured at 216px through inkscape: 4px clears
+ * both the longest project name and the foot bar, and a corner dot does not —
+ * it collides with the "TERMINAL" eyebrow.
  */
 function buildAgentProjectKeyImage(args) {
     const base = projectBasename$1(args.project);
@@ -11484,7 +11629,11 @@ function buildAgentProjectKeyImage(args) {
         }
     }
     const mark = footMark(args.kind, active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490");
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
+    // Painted last so nothing can overdraw it, and stopped at y=57 so it never
+    // touches the foot bar, whose one meaning is "your keystrokes reach this
+    // session" — the exact condition under which this mark cannot be showing.
+    const unread = args.unseen ? `<rect x="0" y="0" width="4" height="57" fill="${UNREAD_RED}"/>` : "";
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}${unread}</svg>`;
 }
 
 /**
@@ -12491,6 +12640,28 @@ let AiProject = (() => {
         gate = new PressGate();
         visible = new Map();
         lastImage = new Map();
+        /**
+         * The unread mark's memory, one entry per visible key.
+         *
+         * In memory on purpose, not in settings: it changes on most transition ticks
+         * (settings are not a 2.5s scratchpad), and persisting it would let a
+         * restarted plugin display a mark for a transition it never watched — which
+         * is the one thing the mark is not allowed to do. The cost is stated in the
+         * docs: a restart or a page switch forgets a pending mark.
+         */
+        turnMemory = new Map();
+        /**
+         * Bumped whenever something OUTSIDE the poll changes what a key means or
+         * what it has acknowledged — a capture, or a successful raise.
+         *
+         * A refresh pass reads settings up front and then spends several hundred
+         * milliseconds on probes before it commits anything. Without this, a press
+         * landing inside that window would be undone: the pass would write back the
+         * memory it computed from the pre-press world, and the key would go on
+         * claiming an unread result the operator is currently looking at. The pass
+         * compares the counter it started with and drops its commit if it moved.
+         */
+        pressGen = new Map();
         refresher = new CoalescedRunner(() => this.doRefreshAll());
         timer;
         spin = 0;
@@ -12512,6 +12683,8 @@ let AiProject = (() => {
             this.gate.cancel(ev.action.id);
             this.visible.delete(ev.action.id);
             this.lastImage.delete(ev.action.id);
+            this.turnMemory.delete(ev.action.id);
+            this.pressGen.delete(ev.action.id);
             if (this.visible.size === 0 && this.timer !== undefined) {
                 clearInterval(this.timer);
                 this.timer = undefined;
@@ -12527,9 +12700,24 @@ let AiProject = (() => {
                 return;
             await runExclusive("iterm-focus", () => this.focus(ev.action));
         }
-        /** Every visible key with its settings, read exactly once per tick. */
+        /**
+         * Every visible key with its settings and the press generation it was read
+         * at, exactly once per tick.
+         *
+         * `gen` is sampled SYNCHRONOUSLY, before this key's settings read is even
+         * started, and that ordering is the whole point. Reading it afterwards — as
+         * an earlier cut of this did, once for all keys after `Promise.all` had
+         * resolved — left a real window: key A's settings can resolve while key B's
+         * is still pending, so a capture on A committing in that gap was already
+         * counted in the generation while `entries` still held A's OLD settings.
+         * The commit check then passed and the pass wrote back the pre-press world.
+         * An independent review of the finished diff caught exactly that.
+         */
         async readKeys() {
-            return Promise.all([...this.visible.values()].map(async (key) => ({ key, settings: await key.getSettings() })));
+            return Promise.all([...this.visible.values()].map(async (key) => {
+                const gen = this.pressGen.get(key.id) ?? 0;
+                return { key, settings: await key.getSettings(), gen };
+            }));
         }
         /** The kinds this tick must scan, derived from the SAME settings read that
          * will paint the keys — reading twice invites a key whose agent changed in
@@ -12667,9 +12855,10 @@ let AiProject = (() => {
             // shared via its PROMISE — see blockedOnApproval.
             const captured = new Map();
             const blockedProbes = [];
+            const unseenActionable = [];
             // Per-key bodies run CONCURRENTLY (F5): each does its own setImage,
             // guarded by the existing lastImage dedupe.
-            await Promise.all(entries.map(async ({ key, settings }) => {
+            await Promise.all(entries.map(async ({ key, settings, gen }) => {
                 const kind = settings.agent;
                 const project = canonicalByRaw.get((settings.project ?? "").trim()) ?? "";
                 const sessionId = (settings.sessionId ?? "").trim();
@@ -12700,6 +12889,35 @@ let AiProject = (() => {
                     hasCapturedId: sessionId !== "",
                     blockedProbe,
                 });
+                // A key that disappeared while this pass was awaiting its probes must
+                // not have memory written back for it — the entry would outlive the
+                // key and be inherited by whatever appears next under that id.
+                // A capture or a raise landed after this key's settings were read, so
+                // what this pass computed describes a world the operator has already
+                // moved past — and a key that vanished mid-pass must not have memory
+                // written back for it, or the entry outlives the key.
+                if (commitIsStale({ stillVisible: this.visible.get(key.id) === key, genAtRead: gen, genNow: this.pressGen.get(key.id) ?? 0 }))
+                    return;
+                const binding = agentBindingKey(kind, project, sessionId);
+                const memory = trackAgentTurn(this.turnMemory.get(key.id) ?? initialTurnMemory(binding), {
+                    binding,
+                    face: state,
+                    hot,
+                    // Only an `unknown` caused by two live sessions in one folder should
+                    // forget the memory; an `unknown` from a failed probe must not, or a
+                    // transient tmux hiccup would swallow the notification.
+                    // 0 = nothing selected this tick, which must read as silence rather
+                    // than as "the process changed" (see AgentTurnMemory.instancePid).
+                    pid: instance?.pid ?? 0,
+                    ambiguous: agentUnknownIsAmbiguity({
+                        scanStatus: kind !== undefined && kindTrusted(snap, kind) ? "ok" : "unknown",
+                        hasCapturedId: sessionId !== "",
+                        instanceSelected: instance !== null,
+                        matchCount: mine.length,
+                    }),
+                });
+                this.turnMemory.set(key.id, memory);
+                unseenActionable.push(unseenIsActionable(memory, state));
                 const image = svgToDataUri(buildAgentProjectKeyImage({
                     kind: kind ?? "claude",
                     project: kind === undefined ? "hold to teach" : project || "no target",
@@ -12707,6 +12925,7 @@ let AiProject = (() => {
                     hot,
                     state,
                     spin: this.spin,
+                    unseen: memory.unseen,
                 }));
                 if (this.lastImage.get(key.id) === image)
                     return;
@@ -12724,7 +12943,25 @@ let AiProject = (() => {
                 focusedTty: snap.focusedTty,
                 instances: snap.instances,
                 blockedProbes,
+                unseenActionable: unseenActionable.some(Boolean),
             });
+        }
+        /**
+         * Record that the operator has dealt with this key: clear its unread mark
+         * and invalidate any refresh pass already in flight for it.
+         *
+         * Takes the key rather than its id so it can check the key is still on
+         * screen. Both callers reach here after several awaits, and without the
+         * check a press that finishes AFTER its key disappeared would write both
+         * maps back and leave entries behind for a key nobody can see.
+         */
+        acknowledge(key) {
+            if (this.visible.get(key.id) !== key)
+                return;
+            this.pressGen.set(key.id, (this.pressGen.get(key.id) ?? 0) + 1);
+            const remembered = this.turnMemory.get(key.id);
+            if (remembered !== undefined)
+                this.turnMemory.set(key.id, { ...remembered, unseen: false });
         }
         async raiseTty(tty) {
             if (await processRunning("iTerm2")) {
@@ -12810,8 +13047,16 @@ let AiProject = (() => {
                 await key.showAlert();
                 return;
             }
-            await key.showOk();
+            // The raise succeeded, so the operator IS at that session now — that is
+            // the unread mark's dismissal condition, and waiting for a later poll to
+            // infer it would leave the mark showing on a key the operator just went
+            // to. This runs BEFORE showOk deliberately: showOk is cosmetic deck
+            // feedback, and letting it fail would otherwise swallow the
+            // acknowledgement of a raise that demonstrably worked.
+            this.acknowledge(key);
+            void this.refreshAll();
             setTimeout(() => void this.refreshAll(), 450);
+            await key.showOk();
         }
         /**
          * Work out which agent the operator is looking at. The frontmost terminal
@@ -12877,6 +13122,13 @@ let AiProject = (() => {
             }
             const settings = await key.getSettings();
             await key.setSettings({ ...settings, agent: instance.kind, project, sessionId: instance.sessionId });
+            // The new binding gives the key a fresh memory on its next commit; this
+            // additionally drops any commit from a pass that read the OLD settings
+            // and has not finished, which the binding alone cannot do. Before
+            // showOk for the same reason as in focus(): the capture has already been
+            // committed to settings, so cosmetic feedback failing must not leave the
+            // in-flight pass free to write the old target back.
+            this.acknowledge(key);
             await key.showOk();
             await this.refreshAll();
         }
