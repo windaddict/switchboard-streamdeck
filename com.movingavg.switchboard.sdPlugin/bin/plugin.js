@@ -8490,6 +8490,17 @@ function runJxaWithArgs(script, args, exec = execFile) {
     return runOsascript(["-l", "JavaScript", "-e", script, "--", ...args], exec);
 }
 /**
+ * Run a JXA script with BOTH argv arguments and STDIN.
+ *
+ * Exists for the one script that needs both: the snippet text is far too large
+ * and too sensitive for argv, while the pasteboard state the script must check
+ * against is a bare integer that has no business travelling through stdin
+ * alongside the payload.
+ */
+function runJxaWithArgsAndStdin(script, args, input, exec = execFile) {
+    return runOsascript(["-l", "JavaScript", "-e", script, "--", ...args], exec, input);
+}
+/**
  * Run a JXA script, piping `input` to its STDIN. The script reads it itself
  * (typically via `NSFileHandle.fileHandleWithStandardInput`) — this is the
  * preferred way to hand a script large or sensitive user text: it has no
@@ -14899,8 +14910,12 @@ async function restoreClipboard(deps, snapshot, expectedChangeCount) {
             String(expectedChangeCount),
         ]);
         if (!result.ok) {
-            deps.log?.(`clipboard-stash: restore script failed (code=${result.code})`);
-            await releaseStash(deps);
+            // The script may have been killed AFTER clearing the clipboard — a
+            // timeout can land anywhere — so we cannot tell whether the stash
+            // is now the only copy. Keep it, on the same rule as an
+            // unrecognised result below: release only on positive evidence
+            // that the clipboard is intact.
+            deps.log?.(`clipboard-stash: restore script failed (code=${result.code}); keeping the saved copy`);
             return { status: "failed" };
         }
         const parsed = parseRestore(result.stdout);
@@ -14918,18 +14933,28 @@ async function restoreClipboard(deps, snapshot, expectedChangeCount) {
             deps.log?.("clipboard-stash: RESTORE FAILED AFTER CLEARING — keeping the saved copy in the stash");
         else
             deps.log?.("clipboard-stash: restore failed; the clipboard keeps this gesture's text");
-        // DELIBERATELY NOT RELEASED after a post-clear failure: at that moment
-        // the stash holds the ONLY surviving copy of the operator's clipboard,
-        // and releasing it would turn a recoverable failure into permanent
-        // loss. The retention policy is explicit: it stays until the next
-        // plugin start releases it (see STASH_PASTEBOARD_NAME), and the
-        // operator is alerted rather than only logged at.
+        // THE RELEASE RULE, one sentence: give the stash back only on positive
+        // evidence that the operator's clipboard is intact.
+        //
+        // "restored" and "abandoned" are that evidence. So is "failed", but
+        // only because every failure code the script can return other than
+        // `fail-after-clear` is raised BEFORE `gen.clearContents` — check that
+        // still holds before adding one. "lost" is the opposite: the clipboard
+        // was cleared and could not be rewritten, so the stash is the ONLY
+        // surviving copy and releasing it would turn a recoverable failure
+        // into permanent loss. It stays until the next plugin start releases
+        // it (see STASH_PASTEBOARD_NAME), and the operator is alerted rather
+        // than only logged at.
         if (parsed.status !== "lost")
             await releaseStash(deps);
         return parsed;
     }
     catch (error) {
-        await releaseStash(deps);
+        // Same rule: an exception tells us nothing about whether the clipboard
+        // was cleared, so the stash stays. A stash that lingers until the next
+        // plugin start is a cost; destroying the operator's only copy is not
+        // recoverable at all.
+        deps.log?.("clipboard-stash: restore threw; keeping the saved copy");
         throw error;
     }
 }
@@ -15245,7 +15270,14 @@ function buildSnippetKeyImage(face) {
  *     our ⌘V, not every way focus could move in that gap.
  *   - Nothing here can tell a genuine, isolated pasteboard change (the
  *     operator's own ⌘C) apart from some OTHER process changing the
- *     clipboard in the same instant. A clipboard manager that reacts to a
+ *     clipboard in the same instant. This is why capture's "ok" result is
+ *     treated as the best available evidence of ownership rather than proof
+ *     of it: an app that wrote to the clipboard on its own between our
+ *     baseline read and our ⌘C looks exactly like the source app answering.
+ *     Such a write can therefore be captured into the key AND overwritten by
+ *     the restore. No correlation mechanism exists — a keystroke leaves no
+ *     mark on the resulting pasteboard item — so this is stated rather than
+ *     solved. A clipboard manager that reacts to a
  *     copy by promptly re-touching the pasteboard (adding its own metadata)
  *     is exactly what `churn` below is for — but a change that lands in the
  *     narrow window BEFORE our own ⌘C is not distinguishable from our
@@ -15373,7 +15405,7 @@ const CAPTURE_POLL_SCRIPT = `function run(argv) {
  * fresh read of the pasteboard's types showed BOTH marker types present
  * alongside `public.utf8-plain-text`.
  */
-const WRITE_SNIPPET_SCRIPT = `function run() {
+const WRITE_SNIPPET_SCRIPT = `function run(argv) {
 	ObjC.import("AppKit");
 	ObjC.import("Foundation");
 	var nsString;
@@ -15388,7 +15420,10 @@ const WRITE_SNIPPET_SCRIPT = `function run() {
 	try {
 		var pb = $.NSPasteboard.generalPasteboard;
 		var token = $.NSUUID.UUID.UUIDString.js;
-		pb.clearContents;
+		// BUILD FIRST, CLEAR LAST. Every one of the checked calls below can
+		// fail, and clearing before them would leave the operator with an
+		// EMPTY clipboard and us with a fail code — destroying what they had
+		// in order to report that we could not replace it.
 		var item = $.NSPasteboardItem.alloc.init;
 		var okText = item.setStringForType(nsString, "public.utf8-plain-text");
 		if (!okText) return "fail-write-text";
@@ -15404,9 +15439,21 @@ const WRITE_SNIPPET_SCRIPT = `function run() {
 		// moves again. Reading this token back identifies the item itself.
 		var okToken = item.setStringForType($(token), ${JSON.stringify("com.movingavg.switchboard.snippet-token")});
 		if (!okToken) return "fail-write-token";
-		var wrote = pb.writeObjects($([item]));
-		if (!wrote) return "fail-writeobjects";
-		return "ok " + pb.changeCount + " " + token;
+
+		// The LAST-MOMENT baseline check, inside this one process, immediately
+		// before the clear. The caller checked the clipboard too, but a whole
+		// osascript launch ago; anything copied in that gap would be destroyed
+		// here without ever being noticed. -1 disables the check.
+		var expected = Number(argv[0]);
+		if (expected >= 0 && Number(pb.changeCount) !== expected) return "stale " + Number(pb.changeCount);
+
+		// From here the clipboard is gone until writeObjects lands, so retry
+		// rather than giving up on one failure.
+		for (var attempt = 0; attempt < 3; attempt++) {
+			pb.clearContents;
+			if (pb.writeObjects($([item]))) return "ok " + Number(pb.changeCount) + " " + token;
+		}
+		return "fail-after-clear";
 	} catch (e) {
 		return "fail-write";
 	}
@@ -15461,6 +15508,8 @@ const WRITE_FAIL_CODES = new Set([
     "fail-write-token",
     "fail-writeobjects",
     "fail-write",
+    "fail-after-clear",
+    "stale-baseline",
     "empty",
     "bad-changecount",
     "incomplete-write-receipt",
@@ -15532,6 +15581,11 @@ function parseWriteResult(output) {
     }
     if (/^ok\b/.test(trimmed))
         return { ok: false, reason: "incomplete-write-receipt" };
+    // The clipboard moved between the caller's check and the script's own, so
+    // the write was abandoned BEFORE the clear — the operator's clipboard is
+    // untouched and their newer copy is intact.
+    if (/^stale(\s|$)/.test(trimmed))
+        return { ok: false, reason: "stale-baseline" };
     // The reason is logged, so it passes through the shape check: the script's
     // own `fail-*` codes survive it, anything unexpected does not.
     // An EXACT allowlist. A shape check would pass through any identifier-shaped
@@ -15658,8 +15712,13 @@ async function captureAfterSnapshot(deps, state) {
             deps.log?.("capture: refused — could not read the clipboard after the copy");
             return { status: "read-fail" };
         case "ok": {
-            // The one branch that DOES establish ownership: our ⌘C produced
-            // this exact pasteboard state and nothing has moved since.
+            // The best evidence available, which is not proof. A single stable
+            // change after our ⌘C is ASSUMED to be our ⌘C: nothing correlates a
+            // pasteboard write with the keystroke that caused it, so an app
+            // that copied something of its own in this window is
+            // indistinguishable from the source app answering us. Irreducible
+            // — see the module header. churn and readfail do not even reach
+            // this bar and establish nothing.
             state.ours = parsed.changeCount;
             if (parsed.types.includes("org.nspasteboard.ConcealedType")) {
                 deps.log?.("capture: refused — copied item is marked concealed (likely a password manager)");
@@ -15743,6 +15802,12 @@ async function insertSnippet(content, deps, opts = {}) {
 async function finishGesture(deps, state, opts) {
     if (state.snapshot.status !== "stashed" || state.restored)
         return;
+    if (state.pasted && state.ours !== null) {
+        // Reached only when the normal post-paste path was cut short by a
+        // throw. The keystroke is still out there, so the delay applies just
+        // the same.
+        await waitBeforeRestore(deps, opts);
+    }
     if (state.ours === null) {
         // Nothing of ours is on the clipboard, so there is nothing to undo.
         await releaseStash(deps);
@@ -15778,7 +15843,11 @@ async function insertAfterSnapshot(content, deps, opts, state) {
         await releaseStash(deps);
         state.snapshot = { status: "none", reason: "stale" };
     }
-    const writeResult = await deps.runJxaWithStdin(WRITE_SNIPPET_SCRIPT, content);
+    // The script re-checks this immediately before it clears the clipboard. -1
+    // when we could not read a baseline at all: the check is a protection, not
+    // a precondition, and refusing to paste because we could not read a number
+    // would be a worse failure than the one it guards against.
+    const writeResult = await deps.runJxaWithArgsAndStdin(WRITE_SNIPPET_SCRIPT, [String(beforeChangeCount ?? -1)], content);
     if (!writeResult.ok) {
         if (writeResult.code === "permission-denied") {
             deps.log?.("insert: permission-denied writing the clipboard");
@@ -15789,6 +15858,14 @@ async function insertAfterSnapshot(content, deps, opts, state) {
     }
     const written = parseWriteResult(writeResult.stdout);
     if (!written.ok) {
+        if (written.reason === "fail-after-clear") {
+            // The clipboard was cleared and could not be rewritten. We still
+            // hold the operator's clipboard in the stash, and nothing but us
+            // has touched the pasteboard, so claim the current state and let
+            // the cleanup put their content back.
+            deps.log?.("insert: the clipboard was cleared but the snippet could not be written; restoring what was there");
+            state.ours = await readChangeCount(deps);
+        }
         deps.log?.(`insert: refused — write reported ${written.reason}`);
         return { status: "write-failed", detail: written.reason };
     }
@@ -15797,11 +15874,16 @@ async function insertAfterSnapshot(content, deps, opts, state) {
         deps.log?.("insert: refused — clipboard changeCount did not advance past our pre-write baseline; not sending ⌘V");
         return { status: "not-confirmed" };
     }
+    // Read the frontmost app FIRST, but do not act on it yet. It is an awaited
+    // subprocess, and putting it between the ownership check and ⌘V would
+    // reopen the very window that check exists to close — the token would be
+    // "verified" a whole osascript launch before the keystroke it guards.
+    const afterBundle = await readFrontmostBundleId(deps);
     // Confirm OUR OWN write is still what the pasteboard holds, at the last
-    // moment we can check. Everything above proves the write happened; only this proves it
-    // has not since been replaced — by a clipboard manager, another app, or the
-    // operator — in the window between the write and the keystroke. Without it
-    // ⌘V can paste a stranger's content into wherever the cursor is.
+    // moment we can check. Everything above proves the write happened; only
+    // this proves it has not since been replaced — by a clipboard manager,
+    // another app, or the operator. Without it ⌘V can paste a stranger's
+    // content into wherever the cursor is.
     const nowChangeCount = await readChangeCount(deps);
     if (nowChangeCount === null || nowChangeCount !== written.changeCount) {
         deps.log?.("insert: refused — the pasteboard changed after our write; not sending ⌘V");
@@ -15823,10 +15905,8 @@ async function insertAfterSnapshot(content, deps, opts, state) {
     // possibly the operator's own — turning a refusal into the exact data loss
     // this whole feature exists to prevent.
     state.ours = written.changeCount;
-    // Best-effort only (see module header): only abort when BOTH reads
-    // succeeded and disagree. An unreadable frontmost app on either side
-    // can't tell us anything, so it doesn't block the paste.
-    const afterBundle = await readFrontmostBundleId(deps);
+    // Now act on the frontmost reading taken above. Best-effort only (see the
+    // module header): abort only when BOTH reads succeeded and disagree.
     if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
         deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
         return { status: "frontmost-changed" };
@@ -15841,18 +15921,50 @@ async function insertAfterSnapshot(content, deps, opts, state) {
         return { status: "error", detail: pasteResult.code };
     }
     deps.log?.(`insert: ok (${Buffer.byteLength(content, "utf8")} bytes)`);
-    // The keystroke is away, so the operator gets their feedback NOW rather
-    // than a second later when the clipboard has been put back.
-    opts.onPasted?.();
+    // Recorded BEFORE anything that can throw. The cleanup reads it to know the
+    // restore must not happen without the delay: a callback that throws or an
+    // injected timer that rejects would otherwise drop straight into the
+    // cleanup and restore instantly, which is the silent wrong paste the delay
+    // exists to prevent.
+    state.pasted = true;
+    // The operator gets their feedback NOW rather than a second later when the
+    // clipboard has been put back. Isolated: a UI callback must not be able to
+    // change how the clipboard is handled.
+    try {
+        opts.onPasted?.();
+    }
+    catch (error) {
+        deps.log?.("insert: the paste callback threw; continuing with the clipboard restore");
+    }
     if (state.snapshot.status === "stashed") {
         // The ONLY path that waits: the target app has to be given time to read
         // the snippet before we take it back. Every other path never pasted, so
         // there is nothing to wait for.
-        await (opts.wait ?? defaultWait)(opts.restoreDelayMs ?? RESTORE_AFTER_PASTE_MS);
+        await waitBeforeRestore(deps, opts);
         state.restored = true;
         await finishRestore(deps, state.snapshot, written.changeCount, opts);
     }
     return { status: "ok" };
+}
+/**
+ * Wait out the post-paste delay, and actually wait it.
+ *
+ * `opts.wait` exists so tests need no clock. If an injected timer rejects, the
+ * real one runs instead rather than the delay being silently skipped — the
+ * delay is what stands between the operator and a wrong paste, so it is not
+ * something a failing dependency gets to opt out of.
+ */
+async function waitBeforeRestore(deps, opts) {
+    const delay = opts.restoreDelayMs ?? RESTORE_AFTER_PASTE_MS;
+    if (!opts.wait)
+        return defaultWait(delay);
+    try {
+        await opts.wait(delay);
+    }
+    catch (error) {
+        deps.log?.("insert: the injected wait failed; falling back to the real timer before restoring");
+        await defaultWait(delay);
+    }
 }
 /**
  * Is the stash still a faithful copy of what the operator had?
@@ -16032,6 +16144,7 @@ let PasteSnippet = (() => {
                 runJxa: (script) => runJxa(script),
                 runJxaWithArgs: (script, args) => runJxaWithArgs(script, args),
                 runJxaWithStdin: (script, input) => runJxaWithStdin(script, input),
+                runJxaWithArgsAndStdin: (script, args, input) => runJxaWithArgsAndStdin(script, args, input),
                 // Content-free, structural logging only — byte counts and outcome
                 // codes, never clipboard/snippet text.
                 log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),

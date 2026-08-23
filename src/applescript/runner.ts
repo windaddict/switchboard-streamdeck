@@ -122,6 +122,23 @@ export function runJxaWithArgs(
 }
 
 /**
+ * Run a JXA script with BOTH argv arguments and STDIN.
+ *
+ * Exists for the one script that needs both: the snippet text is far too large
+ * and too sensitive for argv, while the pasteboard state the script must check
+ * against is a bare integer that has no business travelling through stdin
+ * alongside the payload.
+ */
+export function runJxaWithArgsAndStdin(
+	script: string,
+	args: readonly string[],
+	input: string,
+	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+): Promise<RunResult> {
+	return runOsascript(["-l", "JavaScript", "-e", script, "--", ...args], exec, input);
+}
+
+/**
  * Run a JXA script, piping `input` to its STDIN. The script reads it itself
  * (typically via `NSFileHandle.fileHandleWithStandardInput`) — this is the
  * preferred way to hand a script large or sensitive user text: it has no

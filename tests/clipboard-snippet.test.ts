@@ -227,6 +227,7 @@ function makeDeps(): {
 	runJxa: ReturnType<typeof vi.fn>;
 	runJxaWithArgs: ReturnType<typeof vi.fn>;
 	runJxaWithStdin: ReturnType<typeof vi.fn>;
+	runJxaWithArgsAndStdin: ReturnType<typeof vi.fn>;
 } {
 	const logs: string[] = [];
 	const runAppleScript = vi.fn<ClipboardDeps["runAppleScript"]>();
@@ -242,14 +243,16 @@ function makeDeps(): {
 		throw new Error(`unexpected runJxaWithArgs script: ${script.slice(0, 40)}`);
 	});
 	const runJxaWithStdin = vi.fn<ClipboardDeps["runJxaWithStdin"]>();
+	const runJxaWithArgsAndStdin = vi.fn<ClipboardDeps["runJxaWithArgsAndStdin"]>();
 	const deps: ClipboardDeps = {
 		runAppleScript,
 		runJxa,
 		runJxaWithArgs,
 		runJxaWithStdin,
+		runJxaWithArgsAndStdin,
 		log: (message) => logs.push(message),
 	};
-	return { deps, logs, runAppleScript, runJxa, runJxaWithArgs, runJxaWithStdin };
+	return { deps, logs, runAppleScript, runJxa, runJxaWithArgs, runJxaWithStdin, runJxaWithArgsAndStdin };
 }
 
 /** Wire up a "happy path" capture: secure-input probe says not-secure,
@@ -421,7 +424,7 @@ function happyInsertDeps() {
 		}
 		throw new Error(`unexpected runJxa script: ${script.slice(0, 40)}`);
 	});
-	d.runJxaWithStdin.mockImplementation(async (script: string) => {
+	d.runJxaWithArgsAndStdin.mockImplementation(async (script: string) => {
 		// The real script reports the changeCount its own write produced, which
 		// insertSnippet re-checks immediately before ⌘V.
 		if (script === WRITE_SNIPPET_SCRIPT) return ok(`ok 101 ${TOKEN}`);
@@ -628,6 +631,75 @@ describe("insertSnippet: the operator's clipboard is put back", () => {
 		expect(waited).toEqual([RESTORE_AFTER_PASTE_MS]);
 	});
 
+	/** The write script CLEARS the clipboard. If it cleared first and then hit
+	 * a failure building the item, the operator would be left with nothing —
+	 * destroyed in order to report that we could not replace it. The item is
+	 * built and every call checked BEFORE the clear. */
+	it("builds the whole pasteboard item before clearing the clipboard", () => {
+		const clearAt = WRITE_SNIPPET_SCRIPT.indexOf("pb.clearContents");
+		for (const code of ["fail-write-text", "fail-write-concealed", "fail-write-transient", "fail-write-token"]) {
+			expect(WRITE_SNIPPET_SCRIPT.indexOf(code)).toBeLessThan(clearAt);
+		}
+		expect(WRITE_SNIPPET_SCRIPT.indexOf("fail-after-clear")).toBeGreaterThan(clearAt);
+	});
+
+	/** The caller checked the clipboard a whole osascript launch ago. Anything
+	 * copied in that gap would be destroyed by the clear without ever being
+	 * noticed, so the script re-checks in-process, immediately before it. */
+	it("passes the baseline to the write script, which abandons on a stale one", async () => {
+		const d = happyInsertDeps();
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok("stale 137"));
+		expect(await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).toEqual({
+			status: "write-failed",
+			detail: "stale-baseline",
+		});
+		// Abandoned BEFORE the clear, so the newer copy is untouched and there
+		// is nothing of ours to undo.
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).not.toContain(RESTORE_SCRIPT);
+		expect(d.runAppleScript).not.toHaveBeenCalled();
+	});
+
+	/** The one case where the write itself loses the clipboard. We still hold
+	 * the stash and nothing but us has touched the pasteboard, so the operator's
+	 * content goes back rather than being written off. */
+	it("restores when the clipboard was cleared but the snippet could not be written", async () => {
+		const d = happyInsertDeps();
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok("fail-after-clear"));
+		expect((await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).status).toBe("write-failed");
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).toContain(RESTORE_SCRIPT);
+	});
+
+	/** The delay is what stands between the operator and a wrong paste, so a
+	 * throwing UI callback must not be able to skip it. */
+	it("still waits when the paste callback throws", async () => {
+		const d = happyInsertDeps();
+		const waited: number[] = [];
+		const outcome = await insertSnippet("x", d.deps, {
+			onPasted: () => {
+				throw new Error("the key blew up");
+			},
+			wait: async (ms) => void waited.push(ms),
+		});
+		expect(outcome).toEqual({ status: "ok" });
+		expect(waited).toEqual([RESTORE_AFTER_PASTE_MS]);
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).toContain(RESTORE_SCRIPT);
+	});
+
+	/** ...and neither must a failing timer. Falling through to an instant
+	 * restore would be the exact failure the delay guards against. */
+	it("falls back to the real timer when the injected wait rejects", async () => {
+		const d = happyInsertDeps();
+		const started = Date.now();
+		await insertSnippet("x", d.deps, {
+			restoreDelayMs: 40,
+			wait: async () => {
+				throw new Error("no clock");
+			},
+		});
+		expect(Date.now() - started).toBeGreaterThanOrEqual(35);
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).toContain(RESTORE_SCRIPT);
+	});
+
 	/** The save and the gesture's first read are two separate operations. A copy
 	 * landing between them makes the stash a picture of the PAST, and restoring
 	 * it later would destroy the copy the operator just made — which is the
@@ -642,7 +714,7 @@ describe("insertSnippet: the operator's clipboard is put back", () => {
 			if (script === READ_CHANGE_COUNT_SCRIPT) return ok("105");
 			throw new Error("unexpected");
 		});
-		d.runJxaWithStdin.mockImplementation(async () => ok(`ok 105 ${TOKEN}`));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok(`ok 105 ${TOKEN}`));
 		await insertSnippet("x", d.deps, { restoreDelayMs: 0 });
 		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
 		expect(scripts).not.toContain(RESTORE_SCRIPT);
@@ -799,7 +871,7 @@ describe("insertSnippet", () => {
 
 	it("refuses a write receipt that carries no ownership token", async () => {
 		const d = happyInsertDeps();
-		d.runJxaWithStdin.mockImplementation(async () => ok("ok 101"));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok("ok 101"));
 		expect(await insertSnippet("paste me", d.deps)).toEqual({
 			status: "write-failed",
 			detail: "incomplete-write-receipt",
@@ -813,7 +885,7 @@ describe("insertSnippet", () => {
 		expect(outcome).toEqual({ status: "too-big" });
 		expect(d.runAppleScript).not.toHaveBeenCalled();
 		expect(d.runJxa).not.toHaveBeenCalled();
-		expect(d.runJxaWithStdin).not.toHaveBeenCalled();
+		expect(d.runJxaWithArgsAndStdin).not.toHaveBeenCalled();
 	});
 
 	it("accepts content exactly at the size cap", async () => {
@@ -824,7 +896,7 @@ describe("insertSnippet", () => {
 
 	it("maps a permission-denied write to permission-denied, without sending ⌘V", async () => {
 		const d = happyInsertDeps();
-		d.runJxaWithStdin.mockImplementation(async () => fail("permission-denied"));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => fail("permission-denied"));
 		const outcome = await insertSnippet("x", d.deps);
 		expect(outcome).toEqual({ status: "permission-denied" });
 		expect(d.runAppleScript).not.toHaveBeenCalled();
@@ -832,7 +904,7 @@ describe("insertSnippet", () => {
 
 	it("maps a generic write failure to error, without sending ⌘V", async () => {
 		const d = happyInsertDeps();
-		d.runJxaWithStdin.mockImplementation(async () => fail("error"));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => fail("error"));
 		const outcome = await insertSnippet("x", d.deps);
 		expect(outcome).toEqual({ status: "error", detail: "error" });
 		expect(d.runAppleScript).not.toHaveBeenCalled();
@@ -840,7 +912,7 @@ describe("insertSnippet", () => {
 
 	it("surfaces a fail-* write result as write-failed with its reason, without sending ⌘V", async () => {
 		const d = happyInsertDeps();
-		d.runJxaWithStdin.mockImplementation(async () => ok("fail-write-concealed"));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok("fail-write-concealed"));
 		const outcome = await insertSnippet("x", d.deps);
 		expect(outcome).toEqual({ status: "write-failed", detail: "fail-write-concealed" });
 		expect(d.runAppleScript).not.toHaveBeenCalled();
@@ -933,17 +1005,26 @@ describe("injection guard", () => {
 		const d = happyInsertDeps();
 		let seenScript = "";
 		let seenInput = "";
-		d.runJxaWithStdin.mockImplementation(async (script: string, input: string) => {
-			seenScript = script;
-			seenInput = input;
-			return ok("ok");
-		});
+		let seenArgs: readonly string[] = [];
+		d.runJxaWithArgsAndStdin.mockImplementation(
+			async (script: string, args: readonly string[], input: string) => {
+				seenScript = script;
+				seenArgs = args;
+				seenInput = input;
+				return ok("ok");
+			},
+		);
 		const hostile = `" & (do shell script "echo PWNED") & "\nline2\t|pipe`;
 		await insertSnippet(hostile, d.deps);
 		// The script SOURCE sent is exactly the exported constant — the hostile
 		// text never appears inside it.
 		expect(seenScript).toBe(WRITE_SNIPPET_SCRIPT);
 		expect(seenScript).not.toContain(hostile);
+		// argv carries ONLY the pasteboard baseline. The payload is far too
+		// large and too sensitive for argv, and mixing them would put attacker-
+		// shaped text one quoting mistake away from the command line.
+		expect(seenArgs).toEqual(["100"]);
+		expect(seenArgs.join(" ")).not.toContain(hostile);
 		// The hostile text arrives, verbatim, only as the stdin payload.
 		expect(seenInput).toBe(hostile);
 	});
@@ -996,7 +1077,7 @@ describe("log redaction", () => {
 
 	it("never logs the snippet on a write-failed insert refusal", async () => {
 		const d = happyInsertDeps();
-		d.runJxaWithStdin.mockImplementation(async () => ok("fail-write-text"));
+		d.runJxaWithArgsAndStdin.mockImplementation(async () => ok("fail-write-text"));
 		const logs = await collectLogs(async (log) => {
 			await insertSnippet(SECRET, d.deps);
 		});

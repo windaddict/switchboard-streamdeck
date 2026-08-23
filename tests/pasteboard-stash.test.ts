@@ -189,7 +189,11 @@ describe("restoreClipboard", () => {
 		expect(d.runJxaWithArgs).not.toHaveBeenCalledWith(RELEASE_SCRIPT, [STASH_PASTEBOARD_NAME]);
 	});
 
-	it("releases the stash even when the restore script itself fails to run", async () => {
+	/** A script that fails to RUN tells us nothing about how far it got. A
+	 * timeout can land after `clearContents`, which would make the stash the
+	 * only surviving copy — so it is kept, on the same rule as an unrecognised
+	 * result. Release only on positive evidence the clipboard is intact. */
+	it("keeps the stash when the restore script itself fails to run", async () => {
 		const d = makeDeps();
 		d.runJxaWithArgs.mockImplementation(async (script) =>
 			script === RESTORE_SCRIPT ? fail("script-error") : ok("ok"),
@@ -197,7 +201,31 @@ describe("restoreClipboard", () => {
 		expect(await restoreClipboard(d.deps, { status: "stashed", items: 1, bytes: 1, changeCount: 1 }, 1)).toEqual({
 			status: "failed",
 		});
-		expect(d.runJxaWithArgs).toHaveBeenCalledWith(RELEASE_SCRIPT, [STASH_PASTEBOARD_NAME]);
+		expect(d.runJxaWithArgs).not.toHaveBeenCalledWith(RELEASE_SCRIPT, [STASH_PASTEBOARD_NAME]);
+	});
+
+	it("keeps the stash when the restore call throws", async () => {
+		const d = makeDeps();
+		d.runJxaWithArgs.mockImplementation(async (script) => {
+			if (script === RESTORE_SCRIPT) throw new Error("boom");
+			return ok("ok");
+		});
+		await expect(
+			restoreClipboard(d.deps, { status: "stashed", items: 1, bytes: 1, changeCount: 1 }, 1),
+		).rejects.toThrow("boom");
+		expect(d.runJxaWithArgs).not.toHaveBeenCalledWith(RELEASE_SCRIPT, [STASH_PASTEBOARD_NAME]);
+	});
+
+	/** The "failed" bucket IS released, and that is only sound because every
+	 * failure code other than fail-after-clear is raised before the clear. */
+	it("only ever releases on a failure code raised BEFORE the clear", () => {
+		const preClear = ["fail-stash-items", "empty-stash", "fail-stash-types", "fail-stash-unreadable", "fail-build"];
+		for (const code of preClear) expect(RESTORE_SCRIPT).toContain(code);
+		// Every `return "fail-...` in the script, other than the post-clear one,
+		// must appear before gen.clearContents.
+		const clearAt = RESTORE_SCRIPT.indexOf("gen.clearContents");
+		for (const code of preClear) expect(RESTORE_SCRIPT.indexOf(code)).toBeLessThan(clearAt);
+		expect(RESTORE_SCRIPT.indexOf("fail-after-clear")).toBeGreaterThan(clearAt);
 	});
 
 	/** Nothing was stashed, so there is nothing to put back — and crucially no

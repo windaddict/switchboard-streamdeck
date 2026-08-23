@@ -427,8 +427,12 @@ export async function restoreClipboard(
 			String(expectedChangeCount),
 		]);
 		if (!result.ok) {
-			deps.log?.(`clipboard-stash: restore script failed (code=${result.code})`);
-			await releaseStash(deps);
+			// The script may have been killed AFTER clearing the clipboard — a
+			// timeout can land anywhere — so we cannot tell whether the stash
+			// is now the only copy. Keep it, on the same rule as an
+			// unrecognised result below: release only on positive evidence
+			// that the clipboard is intact.
+			deps.log?.(`clipboard-stash: restore script failed (code=${result.code}); keeping the saved copy`);
 			return { status: "failed" };
 		}
 		const parsed = parseRestore(result.stdout);
@@ -444,16 +448,26 @@ export async function restoreClipboard(
 		else if (parsed.status === "lost")
 			deps.log?.("clipboard-stash: RESTORE FAILED AFTER CLEARING — keeping the saved copy in the stash");
 		else deps.log?.("clipboard-stash: restore failed; the clipboard keeps this gesture's text");
-		// DELIBERATELY NOT RELEASED after a post-clear failure: at that moment
-		// the stash holds the ONLY surviving copy of the operator's clipboard,
-		// and releasing it would turn a recoverable failure into permanent
-		// loss. The retention policy is explicit: it stays until the next
-		// plugin start releases it (see STASH_PASTEBOARD_NAME), and the
-		// operator is alerted rather than only logged at.
+		// THE RELEASE RULE, one sentence: give the stash back only on positive
+		// evidence that the operator's clipboard is intact.
+		//
+		// "restored" and "abandoned" are that evidence. So is "failed", but
+		// only because every failure code the script can return other than
+		// `fail-after-clear` is raised BEFORE `gen.clearContents` — check that
+		// still holds before adding one. "lost" is the opposite: the clipboard
+		// was cleared and could not be rewritten, so the stash is the ONLY
+		// surviving copy and releasing it would turn a recoverable failure
+		// into permanent loss. It stays until the next plugin start releases
+		// it (see STASH_PASTEBOARD_NAME), and the operator is alerted rather
+		// than only logged at.
 		if (parsed.status !== "lost") await releaseStash(deps);
 		return parsed;
 	} catch (error) {
-		await releaseStash(deps);
+		// Same rule: an exception tells us nothing about whether the clipboard
+		// was cleared, so the stash stays. A stash that lingers until the next
+		// plugin start is a cost; destroying the operator's only copy is not
+		// recoverable at all.
+		deps.log?.("clipboard-stash: restore threw; keeping the saved copy");
 		throw error;
 	}
 }

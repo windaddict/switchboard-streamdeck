@@ -98,7 +98,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 805 tests today
+npm test              # vitest (pure modules) — 812 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -301,6 +301,15 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   preserved as a promise — it is materialised or the snapshot is abandoned.
 - **Bridged ObjC numbers concatenate as strings in JXA.** `bytes += d.length`
   produced `02617516011`. Wrap every arithmetic use in `Number()`.
+- **Clear the pasteboard LAST, never first.** Both `WRITE_SNIPPET_SCRIPT` and
+  `RESTORE_SCRIPT` build and validate every item before `clearContents`, then
+  clear+write in a 3-attempt retry. Clearing first means any later failure
+  hands the operator an EMPTY clipboard — destroyed in order to report that we
+  could not replace it. The rule for giving the stash back is the mirror of it:
+  release only on positive evidence the clipboard is intact (a parsed result
+  proving restored / abandoned / failed-before-the-clear). A non-zero exit, a
+  thrown runner error and an unrecognised result all KEEP the stash, because a
+  timeout can land after the clear.
 - **Nothing reports when an app has READ the pasteboard,** so restoring the
   clipboard after ⌘V is a timed guess. Measured with a scratch TextEdit
   document and a controlled swap: at 0ms delay the app pasted the swapped-in

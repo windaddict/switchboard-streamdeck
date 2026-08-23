@@ -11,7 +11,14 @@ import streamDeck, {
 	type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
-import { runAppleScript, runAppleScriptWithArgs, runJxa, runJxaWithArgs, runJxaWithStdin } from "../applescript/runner.js";
+import {
+	runAppleScript,
+	runAppleScriptWithArgs,
+	runJxa,
+	runJxaWithArgs,
+	runJxaWithArgsAndStdin,
+	runJxaWithStdin,
+} from "../applescript/runner.js";
 import { captureViaAx, decideCaptureRoute, type AxDeps } from "../mac/ax-text.js";
 import { captureSnippet, insertSnippet, READ_FRONTMOST_BUNDLE_SCRIPT, SECURE_INPUT_PROBE_SCRIPT, parseSecureInputProbe, safeLogToken, type ClipboardDeps } from "../mac/clipboard-snippet.js";
 import { CLIPBOARD_LANE } from "../mac/pasteboard-stash.js";
@@ -197,6 +204,7 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 			runJxa: (script) => runJxa(script),
 			runJxaWithArgs: (script, args) => runJxaWithArgs(script, args),
 			runJxaWithStdin: (script, input) => runJxaWithStdin(script, input),
+			runJxaWithArgsAndStdin: (script, args, input) => runJxaWithArgsAndStdin(script, args, input),
 			// Content-free, structural logging only — byte counts and outcome
 			// codes, never clipboard/snippet text.
 			log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),
