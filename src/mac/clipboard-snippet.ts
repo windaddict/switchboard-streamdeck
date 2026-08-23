@@ -14,13 +14,23 @@
  * `ax-text.ts`) lives outside this module; this module is just what runs
  * once that decision says "fall back."
  *
- * So this module goes through ⌘C / ⌘V — but explicitly WITHOUT saving and
- * restoring whatever was on the clipboard before. The operator said plainly
- * that this key changing the clipboard is fine. That one decision is what
- * makes the rest of this simple: no snapshot-and-restore, no race against a
- * clipboard manager over who gets to write last, no "restore clobbered an
- * image I had copied." Capture leaves the just-copied text on the clipboard;
- * insert leaves the snippet on the clipboard. Neither ever restores anything.
+ * So this module goes through ⌘C / ⌘V — and therefore takes the operator's
+ * clipboard away from them for the duration. It gives it back: both gestures
+ * save what was on the clipboard first and restore it afterwards, via
+ * `pasteboard-stash.ts`. That module's header carries the exact guarantee and
+ * every limit; the short version is that it is an eager byte-for-byte
+ * reconstruction, it declines to touch a clipboard a password manager marked
+ * secret, and it abandons the restore rather than clobbering something the
+ * operator copied mid-gesture.
+ *
+ * The insert side is the delicate one, and the reason is worth stating here
+ * rather than only where the constant lives: nothing in macOS reports that
+ * the app you pasted into has finished READING the pasteboard, so the restore
+ * waits a fixed interval after ⌘V and hopes. Measured on this machine, a real
+ * app read within 25ms even under load, and the wait is ~48x that — but an
+ * app that reads later than the wait gets the RESTORED clipboard instead of
+ * the snippet, silently. That is why restoration is a per-key setting that
+ * can be turned off, and why the wait is generous.
  *
  * Both directions go through small, single-purpose AppleScript/JXA scripts,
  * run via the shared osascript runner (`../applescript/runner.js`). Every one
@@ -72,7 +82,44 @@
  */
 
 import type { RunResult } from "../applescript/runner.js";
+import {
+	releaseStash,
+	restoreClipboard,
+	snapshotClipboard,
+	type SnapshotResult,
+} from "./pasteboard-stash.js";
 import { withinSizeCap } from "./snippet.js";
+
+/**
+ * Whether this gesture should put the operator's clipboard back afterwards.
+ *
+ * Default ON — the key's job is to move a snippet, not to cost the operator
+ * whatever they were carrying. Off restores the behaviour this module shipped
+ * with: the gesture's text simply stays on the clipboard. The escape hatch
+ * exists because the INSERT side's restore is timed rather than confirmed
+ * (see `insertSnippet`), so an app that reads the pasteboard unusually late
+ * needs a way to opt out per key.
+ */
+export type ClipboardRestoreOptions = {
+	restoreClipboard?: boolean;
+	/** Called when the clipboard was CLEARED and could not be written back —
+	 * the operator has actually lost something and needs telling, not a log
+	 * line they will never read. Every other restore outcome (abandoned,
+	 * failed before the clear) leaves their clipboard intact and stays a log. */
+	onClipboardLost?(): void;
+};
+
+/** Insert's extra knobs, all of them injected so the timing is testable
+ * without a real clock. */
+export type InsertOptions = ClipboardRestoreOptions & {
+	/** Called once the ⌘V keystroke has been posted, before the restore wait —
+	 * so the key can flash OK immediately instead of a second later. */
+	onPasted?(): void;
+	/** Overrides {@link RESTORE_AFTER_PASTE_MS}. */
+	restoreDelayMs?: number;
+	/** Overrides the real timer. */
+	wait?(ms: number): Promise<void>;
+};
 
 /** How long the capture poll waits for the ⌘C we just sent to land, in ms. */
 const CAPTURE_POLL_DEADLINE_MS = 1200;
@@ -179,7 +226,12 @@ export const CAPTURE_POLL_SCRIPT = `function run(argv) {
 	}
 	var after = pb.changeCount;
 	if (after !== cur) return "churn|" + after;
-	return "ok|" + types.join(",") + "\\n" + (text === null ? "" : text);
+	// The changeCount rides along on the ok line so the caller knows which
+	// pasteboard state its own ⌘C produced — that is the value the clipboard
+	// restore checks against before putting the operator's clipboard back.
+	// A UTI cannot contain "|", so the extra field cannot collide with the
+	// type list, and the payload is still everything after the first newline.
+	return "ok|" + types.join(",") + "|" + Number(after) + "\\n" + (text === null ? "" : text);
 }`;
 
 /**
@@ -325,7 +377,7 @@ export type CapturePollResult =
 	| { status: "unchanged"; changeCount: number }
 	| { status: "churn"; changeCount: number }
 	| { status: "readfail"; changeCount: number }
-	| { status: "ok"; types: string[]; text: string };
+	| { status: "ok"; types: string[]; text: string; changeCount: number };
 
 /** Parse {@link CAPTURE_POLL_SCRIPT}'s output. Null on anything that isn't
  * exactly one of the four framed shapes — a garbled or partial osascript
@@ -342,13 +394,15 @@ export function parseCapturePoll(output: string): CapturePollResult | null {
 	const readfail = /^readfail\|(-?\d+)$/.exec(head);
 	if (readfail) return { status: "readfail", changeCount: Number(readfail[1]) };
 
-	const ok = /^ok\|(.*)$/.exec(head);
+	const ok = /^ok\|(.*)\|(-?\d+)$/.exec(head);
 	if (ok) {
 		// "ok|..." with no LF at all is malformed — the framing guarantees a
 		// payload line, even if that payload is empty.
 		if (split === -1) return null;
+		const changeCount = Number(ok[2]);
+		if (!Number.isSafeInteger(changeCount)) return null;
 		const types = ok[1] === "" ? [] : ok[1].split(",");
-		return { status: "ok", types, text: body.slice(split + 1) };
+		return { status: "ok", types, text: body.slice(split + 1), changeCount };
 	}
 	return null;
 }
@@ -451,7 +505,21 @@ async function readFrontmostBundleId(deps: ClipboardDeps): Promise<string | null
  * and refuses rather than stores on anything short of a confirmed, in-cap,
  * plain-text, non-concealed capture.
  */
-export async function captureSnippet(deps: ClipboardDeps): Promise<CaptureOutcome> {
+/**
+ * Capture, wrapped in the clipboard save/restore.
+ *
+ * The secure-input probe deliberately runs BEFORE the snapshot: if we are
+ * going to refuse the gesture outright, we should not have touched the
+ * operator's clipboard at all.
+ *
+ * The restore runs in a `finally`, so it covers every refusal — concealed,
+ * not-text, churn, too-big — and not just the happy path. A gesture that
+ * refuses to store anything should still leave the clipboard as it found it.
+ */
+export async function captureSnippet(
+	deps: ClipboardDeps,
+	opts: ClipboardRestoreOptions = {},
+): Promise<CaptureOutcome> {
 	const secureResult = await deps.runJxa(SECURE_INPUT_PROBE_SCRIPT);
 	if (secureResult.ok) {
 		const probe = parseSecureInputProbe(secureResult.stdout);
@@ -466,7 +534,27 @@ export async function captureSnippet(deps: ClipboardDeps): Promise<CaptureOutcom
 		deps.log?.(`capture: secure-input probe failed (code=${secureResult.code}); proceeding`);
 	}
 
+	const snapshot =
+		opts.restoreClipboard === false
+			? ({ status: "none", reason: "disabled" } as const)
+			: await snapshotClipboard(deps);
+	const state: GestureState = { snapshot, ours: null, restored: false };
+	try {
+		return await captureAfterSnapshot(deps, state);
+	} finally {
+		await finishGesture(deps, state, opts);
+	}
+}
+
+async function captureAfterSnapshot(deps: ClipboardDeps, state: GestureState): Promise<CaptureOutcome> {
 	const baseline = await readChangeCount(deps);
+	// Same staleness rule as insert: a copy landing between the save and this
+	// read makes the stash a picture of the past, and restoring it would
+	// destroy that newer copy.
+	if (!snapshotStillValid(state.snapshot, baseline, deps)) {
+		await releaseStash(deps);
+		state.snapshot = { status: "none", reason: "stale" };
+	}
 	if (baseline === null) {
 		deps.log?.("capture: refused — could not read the clipboard's baseline changeCount");
 		return { status: "error", detail: "baseline-unreadable" };
@@ -501,6 +589,13 @@ export async function captureSnippet(deps: ClipboardDeps): Promise<CaptureOutcom
 		case "unchanged":
 			deps.log?.(`capture: nothing was copied (changeCount stayed at ${parsed.changeCount})`);
 			return { status: "no-selection" };
+		// NEITHER churn NOR readfail establishes whose content is on the
+		// clipboard. `churn` means a SECOND write landed after the one our ⌘C
+		// produced — quite possibly the operator copying something themselves —
+		// and `readfail` means we could not see what is there at all. Restoring
+		// over either would overwrite a state we do not own, so both leave
+		// `state.ours` null: the stash is released and the clipboard left as it
+		// is. That is the pre-restore behaviour, which is safe, not lossy.
 		case "churn":
 			deps.log?.(`capture: refused — clipboard changed again mid-read (changeCount ${parsed.changeCount})`);
 			return { status: "churn" };
@@ -508,6 +603,9 @@ export async function captureSnippet(deps: ClipboardDeps): Promise<CaptureOutcom
 			deps.log?.("capture: refused — could not read the clipboard after the copy");
 			return { status: "read-fail" };
 		case "ok": {
+			// The one branch that DOES establish ownership: our ⌘C produced
+			// this exact pasteboard state and nothing has moved since.
+			state.ours = parsed.changeCount;
 			if (parsed.types.includes("org.nspasteboard.ConcealedType")) {
 				deps.log?.("capture: refused — copied item is marked concealed (likely a password manager)");
 				return { status: "concealed" };
@@ -544,14 +642,115 @@ export async function captureSnippet(deps: ClipboardDeps): Promise<CaptureOutcom
  * hasn't changed out from under it. Leaves the snippet on the clipboard
  * afterward — never restores anything (see the module header).
  */
-export async function insertSnippet(content: string, deps: ClipboardDeps): Promise<InsertOutcome> {
+export async function insertSnippet(
+	content: string,
+	deps: ClipboardDeps,
+	opts: InsertOptions = {},
+): Promise<InsertOutcome> {
 	if (!withinSizeCap(content)) {
 		deps.log?.(`insert: refused — content is ${Buffer.byteLength(content, "utf8")} bytes, over the size cap`);
 		return { status: "too-big" };
 	}
 
+	// Save the operator's clipboard BEFORE we take it over.
+	//
+	// Note the deliberate interaction with our own writes: the snippet we put
+	// on the clipboard is marked ConcealedType, and a concealed clipboard is
+	// never stashed. So if a previous gesture's restore was abandoned and left
+	// our snippet sitting there, this snapshot declines — which is exactly
+	// right, because the only thing it could have saved is our own snippet.
+	const snapshot =
+		opts.restoreClipboard === false
+			? ({ status: "none", reason: "disabled" } as const)
+			: await snapshotClipboard(deps);
+	// Whether the restore already ran (and released the stash with it). A local
+	// holder, not a flag on the caller's options object: mutating an argument
+	// the caller might reuse across gestures is a side channel waiting to go
+	// wrong.
+	// One mutable record of the gesture's clipboard state, shared with the body
+	// so the cleanup below sees what the body learned:
+	//   snapshot — dropped to "none" if it turns out to be stale;
+	//   ours     — the pasteboard state OUR write produced, set only once the
+	//              clipboard is PROVEN to hold it, since several refusals
+	//              happen after the snippet is already there;
+	//   restored — set when the restore already ran and released the stash.
+	const state: GestureState = { snapshot, ours: null, restored: false };
+	try {
+		return await insertAfterSnapshot(content, deps, opts, state);
+	} finally {
+		await finishGesture(deps, state, opts);
+	}
+}
+
+/** What a gesture has learned about the clipboard, shared between the body and
+ * its cleanup. */
+type GestureState = {
+	snapshot: SnapshotResult;
+	/** The changeCount our own write/copy produced, once established. Null
+	 * means we never proved the clipboard holds our content, so restoring
+	 * would be writing over a state we do not own. */
+	ours: number | null;
+	restored: boolean;
+};
+
+/**
+ * The single exit path for a gesture's clipboard handling: restore if we may,
+ * and give the stash back whatever happened.
+ *
+ * A stash that outlives its gesture is a copy of the operator's data sitting
+ * somewhere they don't know about, so the release is unconditional — with ONE
+ * deliberate exception, inside `restoreClipboard`: a restore that failed after
+ * clearing the clipboard keeps the stash, because at that moment it holds the
+ * only surviving copy.
+ */
+async function finishGesture(
+	deps: ClipboardDeps,
+	state: GestureState,
+	opts: ClipboardRestoreOptions,
+): Promise<void> {
+	if (state.snapshot.status !== "stashed" || state.restored) return;
+	if (state.ours === null) {
+		// Nothing of ours is on the clipboard, so there is nothing to undo.
+		await releaseStash(deps);
+		return;
+	}
+	await finishRestore(deps, state.snapshot, state.ours, opts);
+}
+
+/** How long to wait after posting ⌘V before putting the clipboard back.
+ *
+ * MEASURED, not guessed. A scratch TextEdit document was given a real ⌘V while
+ * the clipboard was swapped after a controlled delay, and the resulting text
+ * says which content it actually read: at 0ms it read the swapped-in value
+ * every time (the silent wrong paste this delay exists to prevent), and from
+ * 25ms upward it read the snippet every time — including with the machine
+ * under a load average of ~10.
+ *
+ * 1200ms is ~48x that observed latency. The margin is deliberately generous
+ * because the measurement covers one native app on one Mac, and a remote
+ * session, a VM or a beachballed app can be far slower. The costs of waiting
+ * longer are small and bounded: the clipboard holds the snippet for that much
+ * longer, and a second gesture waits. The cost of waiting too little is the
+ * operator pasting something they never asked for. */
+export const RESTORE_AFTER_PASTE_MS = 1200;
+
+async function insertAfterSnapshot(
+	content: string,
+	deps: ClipboardDeps,
+	opts: InsertOptions,
+	state: GestureState,
+): Promise<InsertOutcome> {
 	const beforeBundle = await readFrontmostBundleId(deps);
 	const beforeChangeCount = await readChangeCount(deps);
+	// The snapshot is only good if the clipboard has not moved since it was
+	// taken. If somebody copied something in that gap, the stash holds the
+	// state BEFORE their copy, and restoring it later would silently destroy
+	// what they just copied — the exact loss this feature exists to prevent.
+	// Their copy wins: we drop the stash and leave the clipboard alone.
+	if (!snapshotStillValid(state.snapshot, beforeChangeCount, deps)) {
+		await releaseStash(deps);
+		state.snapshot = { status: "none", reason: "stale" };
+	}
 
 	const writeResult = await deps.runJxaWithStdin(WRITE_SNIPPET_SCRIPT, content);
 	if (!writeResult.ok) {
@@ -572,15 +771,6 @@ export async function insertSnippet(content: string, deps: ClipboardDeps): Promi
 	if (beforeChangeCount === null || afterChangeCount === null || !(afterChangeCount > beforeChangeCount)) {
 		deps.log?.("insert: refused — clipboard changeCount did not advance past our pre-write baseline; not sending ⌘V");
 		return { status: "not-confirmed" };
-	}
-
-	// Best-effort only (see module header): only abort when BOTH reads
-	// succeeded and disagree. An unreadable frontmost app on either side
-	// can't tell us anything, so it doesn't block the paste.
-	const afterBundle = await readFrontmostBundleId(deps);
-	if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
-		deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
-		return { status: "frontmost-changed" };
 	}
 
 	// Confirm OUR OWN write is still what the pasteboard holds, at the last
@@ -604,6 +794,22 @@ export async function insertSnippet(content: string, deps: ClipboardDeps): Promi
 		return { status: "clobbered" };
 	}
 
+	// PROVEN OURS. Only past this point may we put the operator's clipboard
+	// back: a `clobbered` refusal above means the clipboard holds SOMEBODY
+	// ELSE'S write, and restoring over that would destroy a copy that is very
+	// possibly the operator's own — turning a refusal into the exact data loss
+	// this whole feature exists to prevent.
+	state.ours = written.changeCount;
+
+	// Best-effort only (see module header): only abort when BOTH reads
+	// succeeded and disagree. An unreadable frontmost app on either side
+	// can't tell us anything, so it doesn't block the paste.
+	const afterBundle = await readFrontmostBundleId(deps);
+	if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
+		deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
+		return { status: "frontmost-changed" };
+	}
+
 	const pasteResult = await deps.runAppleScript(PASTE_KEYSTROKE_SCRIPT);
 	if (!pasteResult.ok) {
 		if (pasteResult.code === "permission-denied") {
@@ -614,5 +820,55 @@ export async function insertSnippet(content: string, deps: ClipboardDeps): Promi
 		return { status: "error", detail: pasteResult.code };
 	}
 	deps.log?.(`insert: ok (${Buffer.byteLength(content, "utf8")} bytes)`);
+	// The keystroke is away, so the operator gets their feedback NOW rather
+	// than a second later when the clipboard has been put back.
+	opts.onPasted?.();
+
+	if (state.snapshot.status === "stashed") {
+		// The ONLY path that waits: the target app has to be given time to read
+		// the snippet before we take it back. Every other path never pasted, so
+		// there is nothing to wait for.
+		await (opts.wait ?? defaultWait)(opts.restoreDelayMs ?? RESTORE_AFTER_PASTE_MS);
+		state.restored = true;
+		await finishRestore(deps, state.snapshot, written.changeCount, opts);
+	}
 	return { status: "ok" };
+}
+
+/**
+ * Is the stash still a faithful copy of what the operator had?
+ *
+ * Only if the clipboard has not moved since the snapshot was taken. The
+ * snapshot and the gesture's first read are two separate operations, and a
+ * copy landing between them makes the stash a picture of the past — restoring
+ * it later would overwrite the newer copy with older content.
+ */
+function snapshotStillValid(
+	snapshot: SnapshotResult,
+	currentChangeCount: number | null,
+	deps: ClipboardDeps,
+): boolean {
+	if (snapshot.status !== "stashed") return true; // nothing to invalidate
+	if (currentChangeCount === null || currentChangeCount !== snapshot.changeCount) {
+		deps.log?.("clipboard-stash: dropping the saved clipboard — it changed between saving and this gesture");
+		return false;
+	}
+	return true;
+}
+
+/** Put the clipboard back and report the one failure the operator must hear
+ * about. `restoreClipboard` checks the clipboard still holds the state our own
+ * write produced, so somebody who copied something mid-gesture keeps it. */
+async function finishRestore(
+	deps: ClipboardDeps,
+	snapshot: SnapshotResult,
+	expectedChangeCount: number,
+	opts: ClipboardRestoreOptions,
+): Promise<void> {
+	const restored = await restoreClipboard(deps, snapshot, expectedChangeCount);
+	if (restored.status === "lost") opts.onClipboardLost?.();
+}
+
+function defaultWait(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -14520,6 +14520,440 @@ function decideCaptureRoute(ax) {
 }
 
 /**
+ * WHAT IT'S FOR: putting the operator's clipboard back the way they left it.
+ *
+ * Paste Snippet delivers text through the system clipboard (⌘C to capture,
+ * ⌘V to insert — the Accessibility alternatives were measured unusable; see
+ * `clipboard-snippet.ts`). That used to mean every gesture silently replaced
+ * whatever the operator had copied. This module saves the clipboard before a
+ * gesture and restores it afterwards, so the key stops costing them the thing
+ * they were carrying.
+ *
+ * THE EXACT GUARANTEE, which is narrower than "your clipboard is preserved":
+ * an **eager, byte-for-byte reconstruction of the representations that could
+ * be read at snapshot time, up to {@link MAX_STASH_BYTES} in total**. Not a
+ * semantic snapshot, and not unbounded. A clipboard over the cap is NOT saved
+ * and the gesture replaces it, exactly as it did before restoration existed.
+ * The difference is load-bearing — see LIMITS below.
+ *
+ * MECHANISM — a stash pasteboard. A clipboard is not a string: the general
+ * pasteboard holds an array of items, each carrying several representations
+ * at once (plain text AND rich text AND an image AND a file URL AND private
+ * app types). Reading `public.utf8-plain-text` and writing it back would
+ * silently destroy the rest. So the snapshot copies item by item, type by
+ * type, into a second pasteboard owned by this plugin
+ * (`NSPasteboard.pasteboardWithName`), which lives in the pasteboard server
+ * and can be written by one `osascript` process and read by another. Measured
+ * on a real Mac: a two-item clipboard carrying a PNG, HTML, emoji text and a
+ * marker type round-tripped byte-identically, and a `public.file-url` still
+ * resolved as a file afterwards.
+ *
+ * WHERE THE BYTES GO — stated precisely, because an earlier draft of this got
+ * it wrong. The representations are read with `dataForType`, which
+ * materialises each one **in the osascript child process's memory**. They
+ * never enter the Node plugin process, never cross stdout, never touch disk
+ * and never reach a log line — Node sees only a name and some integers — but
+ * "never in this plugin's memory" would be false. There is no way around it:
+ * writing the source items straight to another pasteboard throws *"Cannot
+ * write pasteboard item… It is already associated with another pasteboard"*,
+ * so a promise cannot be moved as a promise; it must be materialised.
+ *
+ * CONCEALED CLIPBOARDS ARE NOT SNAPSHOTTED AT ALL. If what's already on the
+ * clipboard carries `org.nspasteboard.ConcealedType` — the marker password
+ * managers set — this module declines and the gesture behaves as it did
+ * before restoration existed. Duplicating a password into a second pasteboard
+ * is an exposure the operator did not previously have, and a crash would
+ * leave the copy sitting there. Declining also has a benign side effect: the
+ * snippet overwrites the password on the clipboard, which is where the
+ * manager's own auto-clear was heading anyway.
+ *
+ * ALL OR NOTHING. Any unreadable representation, any exception, any failed
+ * write, or any movement in the source pasteboard mid-snapshot abandons the
+ * whole snapshot and restores nothing. A partial clipboard restored over a
+ * real one is worse than not restoring: the operator would get *some* of what
+ * they had and no way to tell which part is missing.
+ *
+ * LIMITS, all of them:
+ *   - **Promised/lazy data is materialised.** A file promise or an image
+ *     generated on demand is resolved and stored as ordinary bytes; the
+ *     promise semantics are gone. A provider that times out or returns nil
+ *     aborts the snapshot (see ALL OR NOTHING).
+ *   - **A clipboard over {@link MAX_STASH_BYTES} is not saved,** so the
+ *     gesture replaces it. This is logged; it is not surfaced on the key,
+ *     because the gesture itself succeeded and an alert would say otherwise.
+ *   - **An EMPTY clipboard is not restored.** If there was nothing on it, the
+ *     gesture's text is simply left there. Putting "nothing" back would mean
+ *     clearing the operator's clipboard on their behalf, which is a
+ *     destructive act to correct a cosmetic one.
+ *   - **The pasteboard owner changes.** An app relying on owner callbacks for
+ *     lazy provision sees this plugin as the owner after a restore.
+ *   - **The restore is not atomic.** Compare, clear and write are separate
+ *     operations and NSPasteboard has no compare-and-swap. Every destination
+ *     item is built and validated BEFORE the clear, so the window is as small
+ *     as the API allows — but a foreign write landing inside it is lost.
+ *   - **changeCount advances several times,** so a clipboard manager records
+ *     our writes. The restore of the operator's own content is deliberately
+ *     NOT marked transient — it is their real clipboard — so it may appear in
+ *     their history as a fresh copy of something they already had.
+ *   - **One failure can still cost the operator their clipboard.** If the
+ *     rewrite fails after the clear — three attempts, so it should not happen
+ *     — the clipboard is left empty. The stash is then deliberately NOT
+ *     released, so the copy survives for the next plugin start to clean up,
+ *     and the key alerts rather than only logging.
+ *   - Untested on older macOS versions, and against any pasteboard-access
+ *     prompt or denial. Every OTHER failure path leaves the general pasteboard
+ *     untouched.
+ */
+/**
+ * The stash pasteboard's name.
+ *
+ * DELIBERATELY FIXED, not unique per gesture — the opposite of what an
+ * independent review recommended, and the reasoning is worth keeping because
+ * it is not obvious. macOS offers **no way to enumerate named pasteboards**.
+ * A unique name is therefore unrecoverable once its process dies: if the
+ * plugin is killed mid-gesture, that stash keeps a copy of the operator's
+ * clipboard until reboot and nothing can ever find it again. A fixed name is
+ * always recoverable — {@link RELEASE_SCRIPT} at plugin startup clears any
+ * stash a previous run left behind, which closes the leak completely.
+ *
+ * What the fixed name costs: the name is predictable, so another process
+ * could read the stash during the ~1.5s it exists. That is a small exposure
+ * because the same content is simultaneously sitting on the GENERAL
+ * pasteboard, which every process can read anyway and for longer — and
+ * because concealed content is never stashed at all. The other cost is that
+ * two plugin processes running at once would share one stash; Stream Deck
+ * runs a single plugin process, and gestures within it are serialized.
+ */
+const STASH_PASTEBOARD_NAME = "com.movingavg.switchboard.clipboard-stash";
+/**
+ * The serialize() key every clipboard gesture shares — and the startup
+ * cleanup with them.
+ *
+ * The resource being serialized is the system clipboard and the single stash
+ * pasteboard, both global, so this is deliberately NOT per-key. The startup
+ * release runs in the same lane: it clears and releases the very pasteboard a
+ * gesture may be using, so letting it run concurrently would let it destroy
+ * the first gesture's stash mid-flight.
+ */
+const CLIPBOARD_LANE = "paste-snippet:clipboard";
+/** The marker password managers set on a copied secret. A clipboard carrying
+ * it is never stashed. */
+const CONCEALED_TYPE = "org.nspasteboard.ConcealedType";
+/** Ceiling on a snapshot, in bytes, summed across every item and every
+ * representation. Above it the snapshot is skipped and the gesture proceeds
+ * exactly as it did before restoration existed — which means the operator
+ * loses that clipboard, so the number matters.
+ *
+ * 64 MiB, not a smaller round number, because of what macOS actually puts on
+ * the clipboard: a copied image carries an UNCOMPRESSED TIFF representation
+ * alongside any PNG, and a full-screen Retina screenshot is roughly
+ * 3024x1964x4 ≈ 24 MB in that form alone. An 8 MiB cap — the first value here
+ * — would therefore have silently failed to protect the single most valuable
+ * thing a clipboard usually holds.
+ *
+ * Note what this does and does NOT bound: it limits what we DUPLICATE and
+ * HOLD, not what we READ. A representation's size is only knowable by reading
+ * it, so a single enormous item is already materialised by the time the cap
+ * notices. It stops us keeping a second copy of it, nothing more. */
+const MAX_STASH_BYTES = 64 * 1024 * 1024;
+/**
+ * JXA: copy the general pasteboard into the stash, item by item and type by
+ * type. argv: `[stashName, maxBytes]`.
+ *
+ * Returns one of:
+ *   - `ok <items> <bytes> <changeCount>` — stashed; `changeCount` is the
+ *     source pasteboard's, unmoved across the whole read.
+ *   - `empty <changeCount>` — nothing on the clipboard to save.
+ *   - `skip-concealed` — the clipboard holds a secret; see the module header.
+ *   - `skip-too-big <bytes>` — over the cap.
+ *   - `fail-<reason>` — anything else; nothing is stashed and nothing is to
+ *     be restored.
+ *
+ * `Number()` is not decoration: bridged ObjC numbers concatenate as strings
+ * in JXA (`bytes += d.length` produced `02617516011` while this was being
+ * built), so every arithmetic use of one is coerced explicitly.
+ */
+const SNAPSHOT_SCRIPT = `function run(argv) {
+	ObjC.import("AppKit");
+	var name = argv[0];
+	var maxBytes = Number(argv[1]);
+	var gen = $.NSPasteboard.generalPasteboard;
+	var before = Number(gen.changeCount);
+	var items = gen.pasteboardItems;
+	if (items.isNil()) return "fail-items";
+	var count = Number(items.count);
+	if (count === 0) return "empty " + before;
+
+	// Refuse a concealed clipboard before reading ANY of it.
+	for (var c = 0; c < count; c++) {
+		var ctypes = items.objectAtIndex(c).types;
+		if (ctypes.isNil()) return "fail-types";
+		for (var ct = 0; ct < Number(ctypes.count); ct++) {
+			if (ObjC.unwrap(ctypes.objectAtIndex(ct)) === ${JSON.stringify(CONCEALED_TYPE)}) return "skip-concealed";
+		}
+	}
+
+	var copies = [];
+	var bytes = 0;
+	try {
+		for (var i = 0; i < count; i++) {
+			var src = items.objectAtIndex(i);
+			var dst = $.NSPasteboardItem.alloc.init;
+			var types = src.types;
+			if (types.isNil()) return "fail-types";
+			for (var t = 0; t < Number(types.count); t++) {
+				var ty = types.objectAtIndex(t);
+				var d = src.dataForType(ty);
+				// A lazy provider that timed out or declined lands here. All
+				// or nothing: a partial clipboard is worse than none.
+				if (d.isNil()) return "fail-unreadable";
+				bytes += Number(d.length);
+				if (bytes > maxBytes) return "skip-too-big " + bytes;
+				if (!dst.setDataForType(d, ty)) return "fail-setdata";
+			}
+			copies.push(dst);
+		}
+	} catch (e) {
+		return "fail-read";
+	}
+
+	// The pasteboard must not have moved while we were reading it; items go
+	// stale when ownership changes and would yield a torn snapshot.
+	var after = Number(gen.changeCount);
+	if (after !== before) return "fail-moved";
+
+	try {
+		var stash = $.NSPasteboard.pasteboardWithName($(name));
+		stash.clearContents;
+		if (!stash.writeObjects($(copies))) return "fail-stash-write";
+	} catch (e) {
+		return "fail-stash";
+	}
+	return "ok " + count + " " + bytes + " " + after;
+}`;
+/**
+ * JXA: put the stash back on the general pasteboard. argv:
+ * `[stashName, expectedChangeCount]`.
+ *
+ * `expectedChangeCount` is the count OUR OWN gesture last produced. If the
+ * general pasteboard has moved past it, somebody else has copied something
+ * since and we abandon: their fresh copy is worth more than our restore, and
+ * we cannot know whose write should survive.
+ *
+ * Every destination item is constructed and validated BEFORE `clearContents`
+ * is called, so the interval in which the clipboard is empty is as short as
+ * the API permits and a failure while building cannot leave it empty.
+ *
+ * Returns `ok <changeCount>`, `abandoned <changeCount>`, `empty-stash`, or
+ * `fail-<reason>`. `fail-after-clear` is the one that matters: it means the
+ * clipboard was emptied and the rewrite failed, so the operator has lost it
+ * and must be told rather than quietly logged at.
+ */
+const RESTORE_SCRIPT = `function run(argv) {
+	ObjC.import("AppKit");
+	var name = argv[0];
+	var expected = Number(argv[1]);
+	var gen = $.NSPasteboard.generalPasteboard;
+	var stash = $.NSPasteboard.pasteboardWithName($(name));
+
+	var items = stash.pasteboardItems;
+	if (items.isNil()) return "fail-stash-items";
+	var count = Number(items.count);
+	if (count === 0) return "empty-stash";
+
+	// Build everything first. Nothing below this point may fail before the
+	// general pasteboard is whole again.
+	var copies = [];
+	try {
+		for (var i = 0; i < count; i++) {
+			var src = items.objectAtIndex(i);
+			var dst = $.NSPasteboardItem.alloc.init;
+			var types = src.types;
+			if (types.isNil()) return "fail-stash-types";
+			for (var t = 0; t < Number(types.count); t++) {
+				var ty = types.objectAtIndex(t);
+				var d = src.dataForType(ty);
+				if (d.isNil()) return "fail-stash-unreadable";
+				if (!dst.setDataForType(d, ty)) return "fail-build";
+			}
+			copies.push(dst);
+		}
+	} catch (e) {
+		return "fail-build";
+	}
+
+	// As close to the clear as it can be. Not atomic — see the module header.
+	var now = Number(gen.changeCount);
+	if (now !== expected) return "abandoned " + now;
+
+	// The clipboard is empty from here until writeObjects lands, so retry
+	// rather than giving up on the first failure: the built items are still in
+	// hand and this is the operator's real clipboard we are holding.
+	for (var attempt = 0; attempt < 3; attempt++) {
+		try {
+			gen.clearContents;
+			if (gen.writeObjects($(copies))) return "ok " + Number(gen.changeCount);
+		} catch (e) {
+			// fall through to the next attempt
+		}
+	}
+	return "fail-after-clear";
+}`;
+/** JXA: clear AND release the stash. argv: `[stashName]`.
+ *
+ * `clearContents` alone empties a named pasteboard but leaks the pasteboard
+ * itself; `releaseGlobally` is what actually gives it back. Run on every
+ * terminal path — success, abandon and failure alike — and once at plugin
+ * startup, which is what makes the fixed stash name recoverable after a
+ * crash (see {@link STASH_PASTEBOARD_NAME}). */
+const RELEASE_SCRIPT = `function run(argv) {
+	ObjC.import("AppKit");
+	try {
+		var pb = $.NSPasteboard.pasteboardWithName($(argv[0]));
+		pb.clearContents;
+		pb.releaseGlobally;
+	} catch (e) {
+		return "fail-release";
+	}
+	return "ok";
+}`;
+/** Parse {@link SNAPSHOT_SCRIPT}'s output. Null on anything unrecognised —
+ * never partially trusted, and the unrecognised text is never returned to a
+ * caller that might log it. */
+function parseSnapshot(output) {
+    const trimmed = output.trim();
+    const ok = /^ok (\d+) (\d+) (-?\d+)$/.exec(trimmed);
+    if (ok) {
+        const [items, bytes, changeCount] = [Number(ok[1]), Number(ok[2]), Number(ok[3])];
+        if (!Number.isSafeInteger(changeCount))
+            return null;
+        return { status: "stashed", items, bytes, changeCount };
+    }
+    if (/^empty(\s|$)/.test(trimmed))
+        return { status: "none", reason: "empty" };
+    if (trimmed === "skip-concealed")
+        return { status: "none", reason: "concealed" };
+    if (/^skip-too-big(\s|$)/.test(trimmed))
+        return { status: "none", reason: "too-big" };
+    if (/^fail-/.test(trimmed))
+        return { status: "none", reason: "failed" };
+    return null;
+}
+/** Parse {@link RESTORE_SCRIPT}'s output. Null on anything unrecognised. */
+function parseRestore(output) {
+    const trimmed = output.trim();
+    const ok = /^ok (-?\d+)$/.exec(trimmed);
+    if (ok) {
+        const changeCount = Number(ok[1]);
+        return Number.isSafeInteger(changeCount) ? { status: "restored", changeCount } : null;
+    }
+    if (/^abandoned(\s|$)/.test(trimmed))
+        return { status: "abandoned" };
+    if (trimmed === "fail-after-clear")
+        return { status: "lost" };
+    if (trimmed === "empty-stash" || /^fail-/.test(trimmed))
+        return { status: "failed" };
+    return null;
+}
+/**
+ * Save the clipboard, if there is anything savable there.
+ *
+ * Never throws and never blocks the gesture: every failure returns
+ * `{status: "none"}`, which means the gesture proceeds exactly as it did
+ * before restoration existed. Failing to SAVE a clipboard must not cost the
+ * operator the paste they actually asked for.
+ */
+async function snapshotClipboard(deps, maxBytes = MAX_STASH_BYTES) {
+    const result = await deps.runJxaWithArgs(SNAPSHOT_SCRIPT, [STASH_PASTEBOARD_NAME, String(maxBytes)]);
+    if (!result.ok) {
+        deps.log?.(`clipboard-stash: snapshot script failed (code=${result.code})`);
+        return { status: "none", reason: "failed" };
+    }
+    const parsed = parseSnapshot(result.stdout);
+    if (!parsed) {
+        deps.log?.("clipboard-stash: snapshot returned an unrecognised result; not restoring anything");
+        return { status: "none", reason: "failed" };
+    }
+    if (parsed.status === "none") {
+        deps.log?.(`clipboard-stash: nothing saved (${parsed.reason}); this gesture will leave its text on the clipboard`);
+    }
+    else {
+        deps.log?.(`clipboard-stash: saved ${parsed.items} item(s), ${parsed.bytes} bytes`);
+    }
+    return parsed;
+}
+/**
+ * Put the clipboard back, then release the stash whatever happened.
+ *
+ * `expectedChangeCount` is the count our own gesture last produced; the
+ * restore is abandoned if the clipboard has moved past it. The release runs
+ * in a `finally`, because a stash that outlives its gesture is a copy of the
+ * operator's data sitting somewhere they don't know about.
+ */
+async function restoreClipboard(deps, snapshot, expectedChangeCount) {
+    if (snapshot.status === "none")
+        return { status: "failed" };
+    try {
+        const result = await deps.runJxaWithArgs(RESTORE_SCRIPT, [
+            STASH_PASTEBOARD_NAME,
+            String(expectedChangeCount),
+        ]);
+        if (!result.ok) {
+            deps.log?.(`clipboard-stash: restore script failed (code=${result.code})`);
+            await releaseStash(deps);
+            return { status: "failed" };
+        }
+        const parsed = parseRestore(result.stdout);
+        if (!parsed) {
+            // Unrecognised means we cannot tell whether the clipboard was
+            // cleared, so keep the stash: it may be the only copy left.
+            deps.log?.("clipboard-stash: restore returned an unrecognised result; keeping the saved copy");
+            return { status: "failed" };
+        }
+        if (parsed.status === "restored")
+            deps.log?.("clipboard-stash: clipboard restored");
+        else if (parsed.status === "abandoned")
+            deps.log?.("clipboard-stash: not restoring — the clipboard changed during the gesture, so that newer copy wins");
+        else if (parsed.status === "lost")
+            deps.log?.("clipboard-stash: RESTORE FAILED AFTER CLEARING — keeping the saved copy in the stash");
+        else
+            deps.log?.("clipboard-stash: restore failed; the clipboard keeps this gesture's text");
+        // DELIBERATELY NOT RELEASED after a post-clear failure: at that moment
+        // the stash holds the ONLY surviving copy of the operator's clipboard,
+        // and releasing it would turn a recoverable failure into permanent
+        // loss. The retention policy is explicit: it stays until the next
+        // plugin start releases it (see STASH_PASTEBOARD_NAME), and the
+        // operator is alerted rather than only logged at.
+        if (parsed.status !== "lost")
+            await releaseStash(deps);
+        return parsed;
+    }
+    catch (error) {
+        await releaseStash(deps);
+        throw error;
+    }
+}
+/** Clear and release the stash. Safe to call when there is no stash — that is
+ * exactly what plugin startup does, to clean up after a run that was killed
+ * mid-gesture. */
+async function releaseStash(deps) {
+    const result = await deps.runJxaWithArgs(RELEASE_SCRIPT, [STASH_PASTEBOARD_NAME]);
+    if (!result.ok) {
+        deps.log?.(`clipboard-stash: could not release the stash (code=${result.code})`);
+        return false;
+    }
+    // The script CATCHES its own errors and reports them on stdout, so
+    // osascript exits 0 either way. Checking only the exit status would read a
+    // failed release as a successful one and leave a copy of the operator's
+    // clipboard sitting in the pasteboard server unnoticed.
+    if (result.stdout.trim() !== "ok") {
+        deps.log?.("clipboard-stash: the stash could not be released; it will be cleaned up at the next plugin start");
+        return false;
+    }
+    return true;
+}
+
+/**
  * Pure logic for the "Paste Snippet" key: the BUTTON is the storage. Press
  * pastes the stored text at the cursor; holding it (the shared PressGate
  * long-press gesture) copies whatever's currently selected into the key
@@ -14751,13 +15185,23 @@ function buildSnippetKeyImage(face) {
  * `ax-text.ts`) lives outside this module; this module is just what runs
  * once that decision says "fall back."
  *
- * So this module goes through ⌘C / ⌘V — but explicitly WITHOUT saving and
- * restoring whatever was on the clipboard before. The operator said plainly
- * that this key changing the clipboard is fine. That one decision is what
- * makes the rest of this simple: no snapshot-and-restore, no race against a
- * clipboard manager over who gets to write last, no "restore clobbered an
- * image I had copied." Capture leaves the just-copied text on the clipboard;
- * insert leaves the snippet on the clipboard. Neither ever restores anything.
+ * So this module goes through ⌘C / ⌘V — and therefore takes the operator's
+ * clipboard away from them for the duration. It gives it back: both gestures
+ * save what was on the clipboard first and restore it afterwards, via
+ * `pasteboard-stash.ts`. That module's header carries the exact guarantee and
+ * every limit; the short version is that it is an eager byte-for-byte
+ * reconstruction, it declines to touch a clipboard a password manager marked
+ * secret, and it abandons the restore rather than clobbering something the
+ * operator copied mid-gesture.
+ *
+ * The insert side is the delicate one, and the reason is worth stating here
+ * rather than only where the constant lives: nothing in macOS reports that
+ * the app you pasted into has finished READING the pasteboard, so the restore
+ * waits a fixed interval after ⌘V and hopes. Measured on this machine, a real
+ * app read within 25ms even under load, and the wait is ~48x that — but an
+ * app that reads later than the wait gets the RESTORED clipboard instead of
+ * the snippet, silently. That is why restoration is a per-key setting that
+ * can be turned off, and why the wait is generous.
  *
  * Both directions go through small, single-purpose AppleScript/JXA scripts,
  * run via the shared osascript runner (`../applescript/runner.js`). Every one
@@ -14906,7 +15350,12 @@ const CAPTURE_POLL_SCRIPT = `function run(argv) {
 	}
 	var after = pb.changeCount;
 	if (after !== cur) return "churn|" + after;
-	return "ok|" + types.join(",") + "\\n" + (text === null ? "" : text);
+	// The changeCount rides along on the ok line so the caller knows which
+	// pasteboard state its own ⌘C produced — that is the value the clipboard
+	// restore checks against before putting the operator's clipboard back.
+	// A UTI cannot contain "|", so the extra field cannot collide with the
+	// type list, and the payload is still everything after the first newline.
+	return "ok|" + types.join(",") + "|" + Number(after) + "\\n" + (text === null ? "" : text);
 }`;
 /**
  * JXA, reading the snippet text from STDIN (never argv, never script
@@ -15052,14 +15501,17 @@ function parseCapturePoll(output) {
     const readfail = /^readfail\|(-?\d+)$/.exec(head);
     if (readfail)
         return { status: "readfail", changeCount: Number(readfail[1]) };
-    const ok = /^ok\|(.*)$/.exec(head);
+    const ok = /^ok\|(.*)\|(-?\d+)$/.exec(head);
     if (ok) {
         // "ok|..." with no LF at all is malformed — the framing guarantees a
         // payload line, even if that payload is empty.
         if (split === -1)
             return null;
+        const changeCount = Number(ok[2]);
+        if (!Number.isSafeInteger(changeCount))
+            return null;
         const types = ok[1] === "" ? [] : ok[1].split(",");
-        return { status: "ok", types, text: body.slice(split + 1) };
+        return { status: "ok", types, text: body.slice(split + 1), changeCount };
     }
     return null;
 }
@@ -15115,7 +15567,18 @@ async function readFrontmostBundleId(deps) {
  * and refuses rather than stores on anything short of a confirmed, in-cap,
  * plain-text, non-concealed capture.
  */
-async function captureSnippet(deps) {
+/**
+ * Capture, wrapped in the clipboard save/restore.
+ *
+ * The secure-input probe deliberately runs BEFORE the snapshot: if we are
+ * going to refuse the gesture outright, we should not have touched the
+ * operator's clipboard at all.
+ *
+ * The restore runs in a `finally`, so it covers every refusal — concealed,
+ * not-text, churn, too-big — and not just the happy path. A gesture that
+ * refuses to store anything should still leave the clipboard as it found it.
+ */
+async function captureSnippet(deps, opts = {}) {
     const secureResult = await deps.runJxa(SECURE_INPUT_PROBE_SCRIPT);
     if (secureResult.ok) {
         const probe = parseSecureInputProbe(secureResult.stdout);
@@ -15130,7 +15593,26 @@ async function captureSnippet(deps) {
     else {
         deps.log?.(`capture: secure-input probe failed (code=${secureResult.code}); proceeding`);
     }
+    const snapshot = opts.restoreClipboard === false
+        ? { status: "none", reason: "disabled" }
+        : await snapshotClipboard(deps);
+    const state = { snapshot, ours: null, restored: false };
+    try {
+        return await captureAfterSnapshot(deps, state);
+    }
+    finally {
+        await finishGesture(deps, state, opts);
+    }
+}
+async function captureAfterSnapshot(deps, state) {
     const baseline = await readChangeCount(deps);
+    // Same staleness rule as insert: a copy landing between the save and this
+    // read makes the stash a picture of the past, and restoring it would
+    // destroy that newer copy.
+    if (!snapshotStillValid(state.snapshot, baseline, deps)) {
+        await releaseStash(deps);
+        state.snapshot = { status: "none", reason: "stale" };
+    }
     if (baseline === null) {
         deps.log?.("capture: refused — could not read the clipboard's baseline changeCount");
         return { status: "error", detail: "baseline-unreadable" };
@@ -15162,6 +15644,13 @@ async function captureSnippet(deps) {
         case "unchanged":
             deps.log?.(`capture: nothing was copied (changeCount stayed at ${parsed.changeCount})`);
             return { status: "no-selection" };
+        // NEITHER churn NOR readfail establishes whose content is on the
+        // clipboard. `churn` means a SECOND write landed after the one our ⌘C
+        // produced — quite possibly the operator copying something themselves —
+        // and `readfail` means we could not see what is there at all. Restoring
+        // over either would overwrite a state we do not own, so both leave
+        // `state.ours` null: the stash is released and the clipboard left as it
+        // is. That is the pre-restore behaviour, which is safe, not lossy.
         case "churn":
             deps.log?.(`capture: refused — clipboard changed again mid-read (changeCount ${parsed.changeCount})`);
             return { status: "churn" };
@@ -15169,6 +15658,9 @@ async function captureSnippet(deps) {
             deps.log?.("capture: refused — could not read the clipboard after the copy");
             return { status: "read-fail" };
         case "ok": {
+            // The one branch that DOES establish ownership: our ⌘C produced
+            // this exact pasteboard state and nothing has moved since.
+            state.ours = parsed.changeCount;
             if (parsed.types.includes("org.nspasteboard.ConcealedType")) {
                 deps.log?.("capture: refused — copied item is marked concealed (likely a password manager)");
                 return { status: "concealed" };
@@ -15204,13 +15696,88 @@ async function captureSnippet(deps) {
  * hasn't changed out from under it. Leaves the snippet on the clipboard
  * afterward — never restores anything (see the module header).
  */
-async function insertSnippet(content, deps) {
+async function insertSnippet(content, deps, opts = {}) {
     if (!withinSizeCap(content)) {
         deps.log?.(`insert: refused — content is ${Buffer.byteLength(content, "utf8")} bytes, over the size cap`);
         return { status: "too-big" };
     }
+    // Save the operator's clipboard BEFORE we take it over.
+    //
+    // Note the deliberate interaction with our own writes: the snippet we put
+    // on the clipboard is marked ConcealedType, and a concealed clipboard is
+    // never stashed. So if a previous gesture's restore was abandoned and left
+    // our snippet sitting there, this snapshot declines — which is exactly
+    // right, because the only thing it could have saved is our own snippet.
+    const snapshot = opts.restoreClipboard === false
+        ? { status: "none", reason: "disabled" }
+        : await snapshotClipboard(deps);
+    // Whether the restore already ran (and released the stash with it). A local
+    // holder, not a flag on the caller's options object: mutating an argument
+    // the caller might reuse across gestures is a side channel waiting to go
+    // wrong.
+    // One mutable record of the gesture's clipboard state, shared with the body
+    // so the cleanup below sees what the body learned:
+    //   snapshot — dropped to "none" if it turns out to be stale;
+    //   ours     — the pasteboard state OUR write produced, set only once the
+    //              clipboard is PROVEN to hold it, since several refusals
+    //              happen after the snippet is already there;
+    //   restored — set when the restore already ran and released the stash.
+    const state = { snapshot, ours: null, restored: false };
+    try {
+        return await insertAfterSnapshot(content, deps, opts, state);
+    }
+    finally {
+        await finishGesture(deps, state, opts);
+    }
+}
+/**
+ * The single exit path for a gesture's clipboard handling: restore if we may,
+ * and give the stash back whatever happened.
+ *
+ * A stash that outlives its gesture is a copy of the operator's data sitting
+ * somewhere they don't know about, so the release is unconditional — with ONE
+ * deliberate exception, inside `restoreClipboard`: a restore that failed after
+ * clearing the clipboard keeps the stash, because at that moment it holds the
+ * only surviving copy.
+ */
+async function finishGesture(deps, state, opts) {
+    if (state.snapshot.status !== "stashed" || state.restored)
+        return;
+    if (state.ours === null) {
+        // Nothing of ours is on the clipboard, so there is nothing to undo.
+        await releaseStash(deps);
+        return;
+    }
+    await finishRestore(deps, state.snapshot, state.ours, opts);
+}
+/** How long to wait after posting ⌘V before putting the clipboard back.
+ *
+ * MEASURED, not guessed. A scratch TextEdit document was given a real ⌘V while
+ * the clipboard was swapped after a controlled delay, and the resulting text
+ * says which content it actually read: at 0ms it read the swapped-in value
+ * every time (the silent wrong paste this delay exists to prevent), and from
+ * 25ms upward it read the snippet every time — including with the machine
+ * under a load average of ~10.
+ *
+ * 1200ms is ~48x that observed latency. The margin is deliberately generous
+ * because the measurement covers one native app on one Mac, and a remote
+ * session, a VM or a beachballed app can be far slower. The costs of waiting
+ * longer are small and bounded: the clipboard holds the snippet for that much
+ * longer, and a second gesture waits. The cost of waiting too little is the
+ * operator pasting something they never asked for. */
+const RESTORE_AFTER_PASTE_MS = 1200;
+async function insertAfterSnapshot(content, deps, opts, state) {
     const beforeBundle = await readFrontmostBundleId(deps);
     const beforeChangeCount = await readChangeCount(deps);
+    // The snapshot is only good if the clipboard has not moved since it was
+    // taken. If somebody copied something in that gap, the stash holds the
+    // state BEFORE their copy, and restoring it later would silently destroy
+    // what they just copied — the exact loss this feature exists to prevent.
+    // Their copy wins: we drop the stash and leave the clipboard alone.
+    if (!snapshotStillValid(state.snapshot, beforeChangeCount, deps)) {
+        await releaseStash(deps);
+        state.snapshot = { status: "none", reason: "stale" };
+    }
     const writeResult = await deps.runJxaWithStdin(WRITE_SNIPPET_SCRIPT, content);
     if (!writeResult.ok) {
         if (writeResult.code === "permission-denied") {
@@ -15229,14 +15796,6 @@ async function insertSnippet(content, deps) {
     if (beforeChangeCount === null || afterChangeCount === null || !(afterChangeCount > beforeChangeCount)) {
         deps.log?.("insert: refused — clipboard changeCount did not advance past our pre-write baseline; not sending ⌘V");
         return { status: "not-confirmed" };
-    }
-    // Best-effort only (see module header): only abort when BOTH reads
-    // succeeded and disagree. An unreadable frontmost app on either side
-    // can't tell us anything, so it doesn't block the paste.
-    const afterBundle = await readFrontmostBundleId(deps);
-    if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
-        deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
-        return { status: "frontmost-changed" };
     }
     // Confirm OUR OWN write is still what the pasteboard holds, at the last
     // moment we can check. Everything above proves the write happened; only this proves it
@@ -15258,6 +15817,20 @@ async function insertSnippet(content, deps) {
         deps.log?.("insert: refused — the pasteboard does not hold our own write; not sending ⌘V");
         return { status: "clobbered" };
     }
+    // PROVEN OURS. Only past this point may we put the operator's clipboard
+    // back: a `clobbered` refusal above means the clipboard holds SOMEBODY
+    // ELSE'S write, and restoring over that would destroy a copy that is very
+    // possibly the operator's own — turning a refusal into the exact data loss
+    // this whole feature exists to prevent.
+    state.ours = written.changeCount;
+    // Best-effort only (see module header): only abort when BOTH reads
+    // succeeded and disagree. An unreadable frontmost app on either side
+    // can't tell us anything, so it doesn't block the paste.
+    const afterBundle = await readFrontmostBundleId(deps);
+    if (beforeBundle !== null && afterBundle !== null && beforeBundle !== afterBundle) {
+        deps.log?.("insert: refused — frontmost app changed since the write (mitigation, not a guarantee)");
+        return { status: "frontmost-changed" };
+    }
     const pasteResult = await deps.runAppleScript(PASTE_KEYSTROKE_SCRIPT);
     if (!pasteResult.ok) {
         if (pasteResult.code === "permission-denied") {
@@ -15268,7 +15841,46 @@ async function insertSnippet(content, deps) {
         return { status: "error", detail: pasteResult.code };
     }
     deps.log?.(`insert: ok (${Buffer.byteLength(content, "utf8")} bytes)`);
+    // The keystroke is away, so the operator gets their feedback NOW rather
+    // than a second later when the clipboard has been put back.
+    opts.onPasted?.();
+    if (state.snapshot.status === "stashed") {
+        // The ONLY path that waits: the target app has to be given time to read
+        // the snippet before we take it back. Every other path never pasted, so
+        // there is nothing to wait for.
+        await (opts.wait ?? defaultWait)(opts.restoreDelayMs ?? RESTORE_AFTER_PASTE_MS);
+        state.restored = true;
+        await finishRestore(deps, state.snapshot, written.changeCount, opts);
+    }
     return { status: "ok" };
+}
+/**
+ * Is the stash still a faithful copy of what the operator had?
+ *
+ * Only if the clipboard has not moved since the snapshot was taken. The
+ * snapshot and the gesture's first read are two separate operations, and a
+ * copy landing between them makes the stash a picture of the past — restoring
+ * it later would overwrite the newer copy with older content.
+ */
+function snapshotStillValid(snapshot, currentChangeCount, deps) {
+    if (snapshot.status !== "stashed")
+        return true; // nothing to invalidate
+    if (currentChangeCount === null || currentChangeCount !== snapshot.changeCount) {
+        deps.log?.("clipboard-stash: dropping the saved clipboard — it changed between saving and this gesture");
+        return false;
+    }
+    return true;
+}
+/** Put the clipboard back and report the one failure the operator must hear
+ * about. `restoreClipboard` checks the clipboard still holds the state our own
+ * write produced, so somebody who copied something mid-gesture keeps it. */
+async function finishRestore(deps, snapshot, expectedChangeCount, opts) {
+    const restored = await restoreClipboard(deps, snapshot, expectedChangeCount);
+    if (restored.status === "lost")
+        opts.onClipboardLost?.();
+}
+function defaultWait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const KNOWN_ERROR_NAMES = new Set([
@@ -15389,13 +16001,26 @@ let PasteSnippet = (() => {
         }
         onKeyDown(ev) {
             this.gate.down(ev.action.id, () => {
-                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Paste Snippet: capture threw (${errorClass(error)}) — details omitted, they can carry selection text.`));
+                void this.gesture(() => this.capture(ev.action)).catch((error) => streamDeck.logger.error(`Paste Snippet: capture threw (${errorClass(error)}) — details omitted, they can carry selection text.`));
             });
         }
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return; // long-press already fired capture()
-            await this.paste(ev.action);
+            await this.gesture(() => this.paste(ev.action));
+        }
+        /**
+         * One clipboard gesture at a time, across EVERY Paste Snippet key.
+         *
+         * The pasteboard is a single global resource and a gesture now spans more
+         * than a moment: save, write, keystroke, wait, restore. Two overlapping
+         * gestures would let one's restore land on the other's snippet, or one
+         * snapshot overwrite the other in the shared stash. `serialize` QUEUES
+         * rather than dropping — a second press should still paste, just after the
+         * first has finished putting the clipboard back.
+         */
+        gesture(task) {
+            return serialize(CLIPBOARD_LANE, task);
         }
         /** Answer the property inspector's live Accessibility-permission check. */
         async onSendToPlugin(ev) {
@@ -15420,6 +16045,13 @@ let PasteSnippet = (() => {
                 // error NUMBERS, never selection/snippet text or an error MESSAGE.
                 log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),
             };
+        }
+        /** The one restore failure the operator has to be told about: their
+         * clipboard was emptied and could not be written back, so something they
+         * were carrying is genuinely gone. Every other failure leaves it intact. */
+        async reportClipboardLost(action) {
+            streamDeck.logger.error("Paste Snippet: the clipboard was cleared and could not be restored — its previous contents are lost.");
+            await action.showAlert();
         }
         /** Save a confirmed-good captured value (from either route) onto the key. */
         async saveCaptured(action, content) {
@@ -15479,7 +16111,10 @@ let PasteSnippet = (() => {
             }
             // fall-back: accessibility couldn't help here (unsupported, or we
             // couldn't tell) — go through the clipboard instead.
-            const outcome = await captureSnippet(this.deps());
+            const outcome = await captureSnippet(this.deps(), {
+                restoreClipboard: (await action.getSettings()).restoreClipboard !== false,
+                onClipboardLost: () => void this.reportClipboardLost(action),
+            });
             switch (outcome.status) {
                 case "ok":
                     streamDeck.logger.info("Paste Snippet: capture route=clipboard");
@@ -15546,11 +16181,17 @@ let PasteSnippet = (() => {
             // accessibility write cannot be verified and was measured lying: iTerm2
             // accepted it, reported ok, and inserted nothing. A confident false
             // success is worse than touching the clipboard.
-            const outcome = await insertSnippet(content, this.deps());
+            const outcome = await insertSnippet(content, this.deps(), {
+                restoreClipboard: settings.restoreClipboard !== false,
+                // Flash OK the moment the keystroke is away, rather than a second
+                // later when the clipboard has been put back.
+                onPasted: () => void action.showOk(),
+                onClipboardLost: () => void this.reportClipboardLost(action),
+            });
             switch (outcome.status) {
                 case "ok":
+                    // No showOk here: onPasted already flashed it, a second earlier.
                     streamDeck.logger.info("Paste Snippet: insert route=clipboard");
-                    await action.showOk();
                     return;
                 case "too-big":
                     streamDeck.logger.warn(`Paste Snippet: refusing to paste — stored content exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);
@@ -16819,5 +17460,15 @@ streamDeck.actions.registerAction(new OpenFile());
 streamDeck.actions.registerAction(new WindowRing());
 streamDeck.actions.registerAction(new PasteSnippet());
 streamDeck.actions.registerAction(new ArrangeWindow());
+// Paste Snippet stashes the operator's clipboard in a named pasteboard while a
+// gesture runs, and releases it afterwards. A run that was killed mid-gesture
+// cannot do that, so the stash would sit in the pasteboard server holding a
+// copy of their clipboard until reboot — macOS offers no way to enumerate
+// named pasteboards, so this fixed-name release at startup is the ONLY thing
+// that can ever clean it up. Safe when there is nothing to release.
+// Runs in the SAME lane as the gestures, so the first press queues behind it
+// instead of racing it — this cleanup clears and releases the very pasteboard a
+// gesture would be using.
+void serialize(CLIPBOARD_LANE, () => releaseStash({ runJxaWithArgs, log: (message) => streamDeck.logger.info(`Paste Snippet: ${message}`) }));
 streamDeck.connect();
 //# sourceMappingURL=plugin.js.map

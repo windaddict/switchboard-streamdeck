@@ -37,6 +37,11 @@ src/
                             #   ✳=waiting; tmux pane-tty map), claude-transcript (~/.claude/
                             #   projects freshness), claude-project (state decision + key face)
   mac/{coalesce,serialize,press-gate}.ts  # shared async plumbing (all unit-tested)
+  mac/pasteboard-stash.ts    # Paste Snippet's clipboard save/restore: copies the
+                            #   WHOLE pasteboard (every item, every type) into a
+                            #   named stash pasteboard and back, so a gesture
+                            #   borrows the clipboard instead of keeping it.
+                            #   NEVER stashes a ConcealedType clipboard.
   mac/snippet.ts             # Paste Snippet pure logic: size cap, preview/mask face
                             #   derivation (provenance-based default — captured
                             #   masks, typed doesn't), key-face SVG
@@ -93,7 +98,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 762 tests today
+npm test              # vitest (pure modules) — 805 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -280,6 +285,29 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   ps/lsof parsers, and `codex-project` still supplies `normalizeProjectPath` and
   `parseLsofEntries`. Deleting a whole file because its NAME matches a retired
   action would break the unified key — check the imports first.
+- **Named pasteboards CANNOT be enumerated**, which decides the clipboard
+  stash's design. A per-gesture unique name is unrecoverable if the plugin dies
+  mid-gesture: that stash then holds a copy of the operator's clipboard until
+  reboot with nothing able to find it. The stash therefore uses a FIXED name
+  (`STASH_PASTEBOARD_NAME`) that `plugin.ts` releases at startup. Also:
+  `clearContents` empties a named pasteboard but LEAKS the pasteboard itself —
+  `releaseGlobally` is what gives it back.
+- **You cannot move a pasteboard item between pasteboards.**
+  `stash.writeObjects(general.pasteboardItems)` throws "Cannot write pasteboard
+  item… already associated with another pasteboard", so every representation
+  must be read with `dataForType` and rebuilt. Consequence for the threat
+  model: the clipboard's bytes DO transit the osascript child's memory (they
+  never reach Node, stdout, disk or a log), and a lazy promise cannot be
+  preserved as a promise — it is materialised or the snapshot is abandoned.
+- **Bridged ObjC numbers concatenate as strings in JXA.** `bytes += d.length`
+  produced `02617516011`. Wrap every arithmetic use in `Number()`.
+- **Nothing reports when an app has READ the pasteboard,** so restoring the
+  clipboard after ⌘V is a timed guess. Measured with a scratch TextEdit
+  document and a controlled swap: at 0ms delay the app pasted the swapped-in
+  value every time; from 25ms up it pasted the snippet every time, even at load
+  average ~10. `RESTORE_AFTER_PASTE_MS` is 1200 — ~48x that — and restoration
+  is a per-key setting because a remote session or a beachballed app can be
+  slower than any fixed wait.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:

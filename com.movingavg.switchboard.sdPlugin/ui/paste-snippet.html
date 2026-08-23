@@ -16,8 +16,8 @@
 			macOS's Accessibility API first — no clipboard involved — and falls
 			back to ⌘C where that doesn't work (which is most places, including
 			iTerm2, Safari and ChatGPT). <b>Press</b> always goes through ⌘V.
-			So in practice both gestures usually DO change your clipboard, and
-			leave the text on it afterward — nothing is saved or restored.
+			So in practice both gestures usually do use your clipboard — but
+			they now <b>save what was on it first and put it back</b>.
 		</div>
 
 		<sdpi-item label="Text">
@@ -36,20 +36,46 @@
 			<sdpi-checkbox id="maskField" setting="mask" label="Show dots + character count instead of the text"></sdpi-checkbox>
 		</sdpi-item>
 
+		<sdpi-item label="Clipboard">
+			<sdpi-checkbox
+				id="restoreField"
+				setting="restoreClipboard"
+				default="true"
+				label="Put my clipboard back afterwards"
+			></sdpi-checkbox>
+		</sdpi-item>
+
 		<div style="margin-top: 4px;">
 			<button type="button" id="clearButton">Clear stored text</button>
 		</div>
 
 		<div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid #333; font-size: 11px; color: #999; line-height: 1.5;">
+			<b>Putting your clipboard back.</b> Before a gesture takes over the
+			clipboard, everything on it is copied aside — every item and every
+			format, not just the plain text, so an image, a file or rich text
+			survives — and copied back when the gesture is done. What that does
+			<i>not</i> cover, honestly: if something else copies while the
+			gesture is running, that newer copy wins and yours is left alone; a
+			clipboard already marked secret by a password manager is not copied
+			aside at all (duplicating a password is worse than leaving it), so
+			that gesture replaces it as it used to; content generated on demand
+			by another app (a file promise, a big image) is turned into ordinary
+			data, and if it can't be read the clipboard isn't saved; a clipboard
+			larger than 64&nbsp;MB in total isn't saved either; and after
+			⌘V there is a short wait before your clipboard comes back, because
+			nothing in macOS says when the app you pasted into has finished
+			reading. If an app reads later than that wait, it pastes your old
+			clipboard instead of the snippet — untick the box above for that key
+			if you ever see it. Your clipboard manager will also record the
+			gesture's writes either way.<br /><br />
 			<b>The button is the storage — but the clipboard is the delivery
 			mechanism.</b> Capture prefers the direct Accessibility read where an
 			app supports it (standard text fields do; iTerm2, Safari and ChatGPT
 			do not); inserting always uses ⌘V, because the direct WRITE was
 			measured reporting success while inserting nothing, and a confident
-			false success is worse than touching the clipboard. Whatever was on
-			your clipboard before is never saved or restored, so after a gesture
-			your clipboard holds the text involved — the snippet you pasted, or
-			the selection you just captured.<br /><br />
+			false success is worse than touching the clipboard. That is why the
+			save-and-restore above exists: the clipboard is unavoidable, so the
+			key borrows it rather than keeping it.<br /><br />
 			<b>What "hold" refuses, and what it can't catch:</b> capture refuses
 			outright while macOS reports Secure Input is on (a password field is
 			very likely focused) — checked before either route, so it applies

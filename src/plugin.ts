@@ -12,6 +12,9 @@ import { OpenFile } from "./actions/open-file.js";
 import { PasteSnippet } from "./actions/paste-snippet.js";
 import { ScrollWindow } from "./actions/scroll-dial.js";
 import { SwitchApp } from "./actions/switch-app.js";
+import { runJxaWithArgs } from "./applescript/runner.js";
+import { CLIPBOARD_LANE, releaseStash } from "./mac/pasteboard-stash.js";
+import { serialize } from "./mac/serialize.js";
 import { ArrangeWindow } from "./actions/tile-dial.js";
 import { CycleTmuxWindow } from "./actions/tmux-window-dial.js";
 import { TmuxPaneDial } from "./actions/tmux-pane-dial.js";
@@ -35,5 +38,18 @@ streamDeck.actions.registerAction(new OpenFile());
 streamDeck.actions.registerAction(new WindowRing());
 streamDeck.actions.registerAction(new PasteSnippet());
 streamDeck.actions.registerAction(new ArrangeWindow());
+
+// Paste Snippet stashes the operator's clipboard in a named pasteboard while a
+// gesture runs, and releases it afterwards. A run that was killed mid-gesture
+// cannot do that, so the stash would sit in the pasteboard server holding a
+// copy of their clipboard until reboot — macOS offers no way to enumerate
+// named pasteboards, so this fixed-name release at startup is the ONLY thing
+// that can ever clean it up. Safe when there is nothing to release.
+// Runs in the SAME lane as the gestures, so the first press queues behind it
+// instead of racing it — this cleanup clears and releases the very pasteboard a
+// gesture would be using.
+void serialize(CLIPBOARD_LANE, () =>
+	releaseStash({ runJxaWithArgs, log: (message) => streamDeck.logger.info(`Paste Snippet: ${message}`) }),
+);
 
 streamDeck.connect();

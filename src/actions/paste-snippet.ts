@@ -14,6 +14,8 @@ import streamDeck, {
 import { runAppleScript, runAppleScriptWithArgs, runJxa, runJxaWithArgs, runJxaWithStdin } from "../applescript/runner.js";
 import { captureViaAx, decideCaptureRoute, type AxDeps } from "../mac/ax-text.js";
 import { captureSnippet, insertSnippet, READ_FRONTMOST_BUNDLE_SCRIPT, SECURE_INPUT_PROBE_SCRIPT, parseSecureInputProbe, safeLogToken, type ClipboardDeps } from "../mac/clipboard-snippet.js";
+import { CLIPBOARD_LANE } from "../mac/pasteboard-stash.js";
+import { serialize } from "../mac/serialize.js";
 import { buildSnippetKeyImage, MAX_SNIPPET_BYTES, resolveSnippetFace, withinSizeCap } from "../mac/snippet.js";
 import { svgToDataUri } from "../mac/svg.js";
 import { PressGate } from "../mac/press-gate.js";
@@ -56,6 +58,12 @@ type PasteSnippetSettings = {
 	/** Show dots + a character count on the key instead of the text. Opt-in:
 	 * the face previews the text unless this is explicitly true. */
 	mask?: boolean;
+	/** Put the clipboard back the way it was after a gesture. Default ON —
+	 * absent means on, so keys configured before this existed get the
+	 * behaviour too. Off is the escape hatch for an app that reads the
+	 * pasteboard unusually late after ⌘V (see RESTORE_AFTER_PASTE_MS): with it
+	 * off, the gesture's text simply stays on the clipboard as it used to. */
+	restoreClipboard?: boolean;
 	/** Provenance, recorded for diagnostics: "captured" is set by the
 	 * long-press gesture, "typed" by the PI's text field. It does NOT affect
 	 * the key face — captured content used to
@@ -151,7 +159,7 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 
 	override onKeyDown(ev: KeyDownEvent<PasteSnippetSettings>): void {
 		this.gate.down(ev.action.id, () => {
-			void this.capture(ev.action).catch((error) =>
+			void this.gesture(() => this.capture(ev.action)).catch((error) =>
 				streamDeck.logger.error(
 					`Paste Snippet: capture threw (${errorClass(error)}) — details omitted, they can carry selection text.`,
 				),
@@ -161,7 +169,21 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<PasteSnippetSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return; // long-press already fired capture()
-		await this.paste(ev.action);
+		await this.gesture(() => this.paste(ev.action));
+	}
+
+	/**
+	 * One clipboard gesture at a time, across EVERY Paste Snippet key.
+	 *
+	 * The pasteboard is a single global resource and a gesture now spans more
+	 * than a moment: save, write, keystroke, wait, restore. Two overlapping
+	 * gestures would let one's restore land on the other's snippet, or one
+	 * snapshot overwrite the other in the shared stash. `serialize` QUEUES
+	 * rather than dropping — a second press should still paste, just after the
+	 * first has finished putting the clipboard back.
+	 */
+	private gesture<T>(task: () => Promise<T>): Promise<T> {
+		return serialize(CLIPBOARD_LANE, task);
 	}
 
 	/** Answer the property inspector's live Accessibility-permission check. */
@@ -189,6 +211,16 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 			// error NUMBERS, never selection/snippet text or an error MESSAGE.
 			log: (message) => streamDeck.logger.warn(`Paste Snippet: ${message}`),
 		};
+	}
+
+	/** The one restore failure the operator has to be told about: their
+	 * clipboard was emptied and could not be written back, so something they
+	 * were carrying is genuinely gone. Every other failure leaves it intact. */
+	private async reportClipboardLost(action: KeyAction<PasteSnippetSettings>): Promise<void> {
+		streamDeck.logger.error(
+			"Paste Snippet: the clipboard was cleared and could not be restored — its previous contents are lost.",
+		);
+		await action.showAlert();
 	}
 
 	/** Save a confirmed-good captured value (from either route) onto the key. */
@@ -252,7 +284,10 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 
 		// fall-back: accessibility couldn't help here (unsupported, or we
 		// couldn't tell) — go through the clipboard instead.
-		const outcome = await captureSnippet(this.deps());
+		const outcome = await captureSnippet(this.deps(), {
+			restoreClipboard: (await action.getSettings()).restoreClipboard !== false,
+			onClipboardLost: () => void this.reportClipboardLost(action),
+		});
 		switch (outcome.status) {
 			case "ok":
 				streamDeck.logger.info("Paste Snippet: capture route=clipboard");
@@ -324,11 +359,17 @@ export class PasteSnippet extends SingletonAction<PasteSnippetSettings> {
 		// accessibility write cannot be verified and was measured lying: iTerm2
 		// accepted it, reported ok, and inserted nothing. A confident false
 		// success is worse than touching the clipboard.
-		const outcome = await insertSnippet(content, this.deps());
+		const outcome = await insertSnippet(content, this.deps(), {
+			restoreClipboard: settings.restoreClipboard !== false,
+			// Flash OK the moment the keystroke is away, rather than a second
+			// later when the clipboard has been put back.
+			onPasted: () => void action.showOk(),
+			onClipboardLost: () => void this.reportClipboardLost(action),
+		});
 		switch (outcome.status) {
 			case "ok":
+				// No showOk here: onPasted already flashed it, a second earlier.
 				streamDeck.logger.info("Paste Snippet: insert route=clipboard");
-				await action.showOk();
 				return;
 			case "too-big":
 				streamDeck.logger.warn(`Paste Snippet: refusing to paste — stored content exceeds the ${MAX_SNIPPET_BYTES}-byte cap.`);

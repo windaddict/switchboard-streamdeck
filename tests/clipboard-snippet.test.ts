@@ -7,6 +7,7 @@ import {
 	COPY_KEYSTROKE_SCRIPT,
 	captureSnippet,
 	insertSnippet,
+	RESTORE_AFTER_PASTE_MS,
 	parseBundleId,
 	parseCapturePoll,
 	parseChangeCount,
@@ -21,6 +22,12 @@ import {
 	WRITE_SNIPPET_SCRIPT,
 } from "../src/mac/clipboard-snippet.js";
 import { MAX_SNIPPET_BYTES } from "../src/mac/snippet.js";
+import {
+	RELEASE_SCRIPT,
+	RESTORE_SCRIPT,
+	SNAPSHOT_SCRIPT,
+	STASH_PASTEBOARD_NAME,
+} from "../src/mac/pasteboard-stash.js";
 
 const SECRET = "correct horse battery staple 🔒 password-ish text";
 /** A realistic ownership token: the write script returns an NSUUID string. */
@@ -89,24 +96,30 @@ describe("parseCapturePoll", () => {
 	});
 
 	it("parses ok with a comma-joined type list and the raw text verbatim", () => {
-		const output = "ok|public.utf8-plain-text,NSStringPboardType\nhello world";
+		const output = "ok|public.utf8-plain-text,NSStringPboardType|254\nhello world";
 		expect(parseCapturePoll(output)).toEqual({
 			status: "ok",
 			types: ["public.utf8-plain-text", "NSStringPboardType"],
 			text: "hello world",
+			changeCount: 254,
 		});
 	});
 
 	it("survives quotes, backslashes, tabs, pipes, embedded newlines, accents and emoji in the payload", () => {
 		const payload = 'quotes:" backslash:\\ tab:\t pipe:| newline:\nmore café 🎉';
-		const output = `ok|public.utf8-plain-text\n${payload}`;
+		const output = `ok|public.utf8-plain-text|254\n${payload}`;
 		const parsed = parseCapturePoll(output);
 		expect(parsed?.status).toBe("ok");
 		if (parsed?.status === "ok") expect(parsed.text).toBe(payload);
 	});
 
 	it("treats an empty type list ('ok|') as zero types, not malformed", () => {
-		expect(parseCapturePoll("ok|\nsome text")).toEqual({ status: "ok", types: [], text: "some text" });
+		expect(parseCapturePoll("ok||254\nsome text")).toEqual({
+			status: "ok",
+			types: [],
+			text: "some text",
+			changeCount: 254,
+		});
 	});
 
 	it("treats an empty payload after the newline as an empty (not missing) string", () => {
@@ -115,10 +128,11 @@ describe("parseCapturePoll", () => {
 		// "ok|foo\n" produces the raw bytes "ok|foo\n\n". So the wire form of
 		// an empty-payload "ok" is TWO newlines: ours (the separator) plus
 		// osascript's.
-		expect(parseCapturePoll("ok|public.utf8-plain-text\n\n")).toEqual({
+		expect(parseCapturePoll("ok|public.utf8-plain-text|254\n\n")).toEqual({
 			status: "ok",
 			types: ["public.utf8-plain-text"],
 			text: "",
+			changeCount: 254,
 		});
 	});
 
@@ -129,7 +143,11 @@ describe("parseCapturePoll", () => {
 		expect(parseCapturePoll("churn|")).toBeNull();
 		// "ok|..." with NO newline at all is malformed — the framing guarantees
 		// a payload line, even an empty one.
-		expect(parseCapturePoll("ok|public.utf8-plain-text")).toBeNull();
+		expect(parseCapturePoll("ok|public.utf8-plain-text|254")).toBeNull();
+		// The changeCount field is REQUIRED: the clipboard restore checks
+		// against it, so an ok line without one is malformed, not a legacy
+		// shape to be tolerated.
+		expect(parseCapturePoll("ok|public.utf8-plain-text\nhello")).toBeNull();
 	});
 });
 
@@ -214,6 +232,15 @@ function makeDeps(): {
 	const runAppleScript = vi.fn<ClipboardDeps["runAppleScript"]>();
 	const runJxa = vi.fn<ClipboardDeps["runJxa"]>();
 	const runJxaWithArgs = vi.fn<ClipboardDeps["runJxaWithArgs"]>();
+	// The clipboard save/restore scripts answer by default in EVERY fixture, so
+	// a test that cares about the capture or insert logic doesn't have to know
+	// they exist. A test that cares about the restore overrides them.
+	runJxaWithArgs.mockImplementation(async (script: string) => {
+		if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+		if (script === RESTORE_SCRIPT) return ok("ok 999");
+		if (script === RELEASE_SCRIPT) return ok("ok");
+		throw new Error(`unexpected runJxaWithArgs script: ${script.slice(0, 40)}`);
+	});
 	const runJxaWithStdin = vi.fn<ClipboardDeps["runJxaWithStdin"]>();
 	const deps: ClipboardDeps = {
 		runAppleScript,
@@ -243,8 +270,11 @@ function happyCaptureDeps(text: string, types: string[] = ["public.utf8-plain-te
 	d.runJxaWithArgs.mockImplementation(async (script: string, args: readonly string[]) => {
 		if (script === CAPTURE_POLL_SCRIPT) {
 			expect(args).toEqual(["100"]);
-			return ok(`ok|${types.join(",")}\n${text}`);
+			return ok(`ok|${types.join(",")}|101\n${text}`);
 		}
+		if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+		if (script === RESTORE_SCRIPT) return ok("ok 102");
+		if (script === RELEASE_SCRIPT) return ok("ok");
 		throw new Error(`unexpected runJxaWithArgs script: ${script.slice(0, 40)}`);
 	});
 	return d;
@@ -404,6 +434,128 @@ function happyInsertDeps() {
 	return d;
 }
 
+describe("captureSnippet: the operator's clipboard is put back", () => {
+	/** The whole point of the feature: a long-press must not cost the operator
+	 * whatever they were carrying on the clipboard. */
+	it("saves before ⌘C and restores against the changeCount its own copy produced", async () => {
+		const d = happyCaptureDeps("captured text");
+		expect(await captureSnippet(d.deps)).toEqual({ status: "ok", content: "captured text" });
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).toEqual([SNAPSHOT_SCRIPT, CAPTURE_POLL_SCRIPT, RESTORE_SCRIPT, RELEASE_SCRIPT]);
+		// 101 is the changeCount the poll reported — OUR ⌘C's result, not a
+		// value read afresh at restore time, which would defeat the check.
+		const restore = d.runJxaWithArgs.mock.calls.find((c: unknown[]) => c[0] === RESTORE_SCRIPT);
+		expect(restore?.[1]).toEqual([STASH_PASTEBOARD_NAME, "101"]);
+	});
+
+	/** A gesture that refuses to store anything should still leave the
+	 * clipboard as it found it — the refusals are exactly when the operator is
+	 * least expecting to have lost something. */
+	it("restores on every refusal, not just on success", async () => {
+		const cases: Array<[string, string[]]> = [
+			["concealed", ["public.utf8-plain-text", "org.nspasteboard.ConcealedType"]],
+			["not-text", ["public.tiff"]],
+		];
+		for (const [expected, types] of cases) {
+			const d = happyCaptureDeps("whatever", types);
+			expect((await captureSnippet(d.deps)).status).toBe(expected);
+			const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+			expect(scripts).toContain(RESTORE_SCRIPT);
+		}
+
+		const big = happyCaptureDeps("x".repeat(MAX_SNIPPET_BYTES + 1));
+		expect((await captureSnippet(big.deps)).status).toBe("too-big");
+		expect(big.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).toContain(RESTORE_SCRIPT);
+	});
+
+	/** Nothing was copied, so the clipboard never moved and there is nothing to
+	 * put back. Writing the stash over an unchanged clipboard would be a pure
+	 * cost: a redundant write that a clipboard manager records as a new entry. */
+	/** `churn` means a SECOND write landed after the one our ⌘C produced —
+	 * quite possibly the operator copying something themselves. We do not own
+	 * that state, so restoring over it would overwrite their copy. */
+	it("does not restore after churn, because the clipboard is no longer ours", async () => {
+		const d = happyCaptureDeps("unused");
+		d.runJxaWithArgs.mockImplementation(async (script: string) => {
+			if (script === CAPTURE_POLL_SCRIPT) return ok("churn|108");
+			if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+			if (script === RELEASE_SCRIPT) return ok("ok");
+			throw new Error("unexpected");
+		});
+		expect((await captureSnippet(d.deps)).status).toBe("churn");
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).not.toContain(RESTORE_SCRIPT);
+		expect(scripts).toContain(RELEASE_SCRIPT);
+	});
+
+	/** Same reasoning: if we could not read the clipboard at all, we certainly
+	 * cannot claim to own what is on it. */
+	it("does not restore after a failed read", async () => {
+		const d = happyCaptureDeps("unused");
+		d.runJxaWithArgs.mockImplementation(async (script: string) => {
+			if (script === CAPTURE_POLL_SCRIPT) return ok("readfail|108");
+			if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+			if (script === RELEASE_SCRIPT) return ok("ok");
+			throw new Error("unexpected");
+		});
+		expect((await captureSnippet(d.deps)).status).toBe("read-fail");
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).not.toContain(RESTORE_SCRIPT);
+	});
+
+	it("does not restore when the clipboard demonstrably never moved", async () => {
+		const d = happyCaptureDeps("unused");
+		d.runJxaWithArgs.mockImplementation(async (script: string) => {
+			if (script === CAPTURE_POLL_SCRIPT) return ok("unchanged|100");
+			if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+			if (script === RELEASE_SCRIPT) return ok("ok");
+			throw new Error("unexpected");
+		});
+		expect((await captureSnippet(d.deps)).status).toBe("no-selection");
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).not.toContain(RESTORE_SCRIPT);
+		// ...but the stash is still released, or it outlives the gesture.
+		expect(scripts).toContain(RELEASE_SCRIPT);
+	});
+
+	/** A clipboard we could not save is not a reason to refuse the gesture the
+	 * operator actually asked for. */
+	it("still captures when the snapshot could not be taken", async () => {
+		for (const snapshotOutput of ["skip-concealed", "skip-too-big 99999999", "fail-unreadable", "empty 100"]) {
+			const d = happyCaptureDeps("captured text");
+			d.runJxaWithArgs.mockImplementation(async (script: string) => {
+				if (script === CAPTURE_POLL_SCRIPT) return ok("ok|public.utf8-plain-text|101\ncaptured text");
+				if (script === SNAPSHOT_SCRIPT) return ok(snapshotOutput);
+				throw new Error(`unexpected ${script.slice(0, 20)}`);
+			});
+			expect(await captureSnippet(d.deps)).toEqual({ status: "ok", content: "captured text" });
+			// Nothing was stashed, so no restore may run: it would write a STALE
+			// stash from an earlier gesture over the current clipboard.
+			expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).not.toContain(RESTORE_SCRIPT);
+		}
+	});
+
+	it("touches neither script when restoration is switched off for the key", async () => {
+		const d = happyCaptureDeps("captured text");
+		expect(await captureSnippet(d.deps, { restoreClipboard: false })).toEqual({
+			status: "ok",
+			content: "captured text",
+		});
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).toEqual([CAPTURE_POLL_SCRIPT]);
+	});
+
+	/** Refusing before we have touched anything must not leave a stash behind
+	 * — and must not have taken one in the first place. */
+	it("never snapshots when Secure Input refuses the gesture outright", async () => {
+		const d = happyCaptureDeps("unused");
+		d.runJxa.mockImplementation(async (script: string) =>
+			script === SECURE_INPUT_PROBE_SCRIPT ? ok("true") : ok("100"),
+		);
+		expect(await captureSnippet(d.deps)).toEqual({ status: "secure-input" });
+		expect(d.runJxaWithArgs).not.toHaveBeenCalled();
+	});
+});
+
 describe("captureSnippet: an empty copy must not erase the stored snippet", () => {
 	/** A capture that yields "" used to be stored, replacing whatever the key
 	 * held with nothing — a destructive outcome from a gesture that simply
@@ -421,10 +573,160 @@ describe("captureSnippet: an empty copy must not erase the stored snippet", () =
 			throw new Error("unexpected");
 		});
 		empty.runAppleScript.mockImplementation(async () => ok(""));
-		empty.runJxaWithArgs.mockImplementation(async () => ok("ok|public.utf8-plain-text\n\n"));
-		expect(await captureSnippet(empty.deps)).toEqual({ status: "no-selection" });
+		empty.runJxaWithArgs.mockImplementation(async (script: string) =>
+			script === CAPTURE_POLL_SCRIPT ? ok("ok|public.utf8-plain-text|101\n\n") : ok("ok"),
+		);
+		expect(await captureSnippet(empty.deps, { restoreClipboard: false })).toEqual({ status: "no-selection" });
 
 		expect(await captureSnippet(happyCaptureDeps("   ").deps)).toEqual({ status: "ok", content: "   " });
+	});
+});
+
+describe("insertSnippet: the operator's clipboard is put back", () => {
+	/** Every insert goes through the clipboard, so every insert would otherwise
+	 * cost the operator whatever they were carrying. */
+	it("saves before the write and restores against the changeCount its own write produced", async () => {
+		const d = happyInsertDeps();
+		expect(await insertSnippet("paste me", d.deps, { restoreDelayMs: 0 })).toEqual({ status: "ok" });
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).toEqual([SNAPSHOT_SCRIPT, RESTORE_SCRIPT, RELEASE_SCRIPT]);
+		const restore = d.runJxaWithArgs.mock.calls.find((c: unknown[]) => c[0] === RESTORE_SCRIPT);
+		// 101 is OUR write's changeCount, from the write receipt.
+		expect(restore?.[1]).toEqual([STASH_PASTEBOARD_NAME, "101"]);
+	});
+
+	/** The restore must not run until the target app has had time to read the
+	 * snippet — measured at 25ms on this Mac, hence the generous default. If
+	 * the wait were skipped the app could read the RESTORED clipboard and paste
+	 * something the operator never asked for. */
+	it("waits before restoring, and posts ⌘V before it waits", async () => {
+		const d = happyInsertDeps();
+		const order: string[] = [];
+		d.runAppleScript.mockImplementation(async (script: string) => {
+			if (script === PASTE_KEYSTROKE_SCRIPT) order.push("paste");
+			return ok("");
+		});
+		d.runJxaWithArgs.mockImplementation(async (script: string) => {
+			if (script === RESTORE_SCRIPT) order.push("restore");
+			if (script === SNAPSHOT_SCRIPT) return ok("ok 1 12 100");
+			return ok(script === RESTORE_SCRIPT ? "ok 102" : "ok");
+		});
+		await insertSnippet("paste me", d.deps, {
+			restoreDelayMs: 5000,
+			wait: async (ms) => void order.push(`waited:${ms}`),
+			onPasted: () => order.push("showed-ok"),
+		});
+		expect(order).toEqual(["paste", "showed-ok", "waited:5000", "restore"]);
+	});
+
+	/** The default is not a round number chosen by taste: it is ~48x the
+	 * longest read latency measured on this machine, including under load. */
+	it("defaults the wait to the measured constant", async () => {
+		const d = happyInsertDeps();
+		const waited: number[] = [];
+		await insertSnippet("x", d.deps, { wait: async (ms) => void waited.push(ms) });
+		expect(waited).toEqual([RESTORE_AFTER_PASTE_MS]);
+	});
+
+	/** The save and the gesture's first read are two separate operations. A copy
+	 * landing between them makes the stash a picture of the PAST, and restoring
+	 * it later would destroy the copy the operator just made — which is the
+	 * exact loss this feature exists to prevent, caused by the feature itself. */
+	it("drops the saved clipboard when something was copied between saving and the gesture", async () => {
+		const d = happyInsertDeps();
+		d.runJxa.mockImplementation(async (script: string) => {
+			if (script === READ_FRONTMOST_BUNDLE_SCRIPT) return ok("com.googlecode.iterm2");
+			if (script === READ_SNIPPET_TOKEN_SCRIPT) return ok(TOKEN);
+			// The snapshot reported changeCount 100; the baseline read now says
+			// 105, so somebody copied in between.
+			if (script === READ_CHANGE_COUNT_SCRIPT) return ok("105");
+			throw new Error("unexpected");
+		});
+		d.runJxaWithStdin.mockImplementation(async () => ok(`ok 105 ${TOKEN}`));
+		await insertSnippet("x", d.deps, { restoreDelayMs: 0 });
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).not.toContain(RESTORE_SCRIPT);
+		expect(scripts).toContain(RELEASE_SCRIPT);
+	});
+
+	/** Several refusals happen AFTER the snippet is already on the clipboard.
+	 * Walking away from those would cost the operator their clipboard for a
+	 * paste that never even occurred — the worst possible trade. */
+	it("restores when the snippet reached the clipboard but the paste was refused", async () => {
+		// The frontmost app changed between our write and the keystroke.
+		const d = happyInsertDeps();
+		let bundleCalls = 0;
+		let countCalls = 0;
+		d.runJxa.mockImplementation(async (script: string) => {
+			if (script === READ_FRONTMOST_BUNDLE_SCRIPT) {
+				bundleCalls += 1;
+				return ok(bundleCalls === 1 ? "com.googlecode.iterm2" : "com.apple.Terminal");
+			}
+			if (script === READ_SNIPPET_TOKEN_SCRIPT) return ok(TOKEN);
+			if (script === READ_CHANGE_COUNT_SCRIPT) {
+				countCalls += 1;
+				return ok(countCalls === 1 ? "100" : "101");
+			}
+			throw new Error("unexpected");
+		});
+		expect((await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).status).toBe("frontmost-changed");
+		const restore = d.runJxaWithArgs.mock.calls.find((c: unknown[]) => c[0] === RESTORE_SCRIPT);
+		expect(restore?.[1]).toEqual([STASH_PASTEBOARD_NAME, "101"]);
+	});
+
+	it("restores when the ⌘V keystroke itself fails", async () => {
+		const d = happyInsertDeps();
+		d.runAppleScript.mockImplementation(async () => fail("permission-denied"));
+		expect((await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).status).toBe("permission-denied");
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).toContain(RESTORE_SCRIPT);
+	});
+
+	/** No wait on the refusal paths: nothing was pasted, so there is no reader
+	 * to give time to. */
+	it("does not wait before restoring when nothing was pasted", async () => {
+		const d = happyInsertDeps();
+		d.runAppleScript.mockImplementation(async () => fail("permission-denied"));
+		const waited: number[] = [];
+		await insertSnippet("x", d.deps, { wait: async (ms) => void waited.push(ms) });
+		expect(waited).toEqual([]);
+	});
+
+	it("releases the stash WITHOUT restoring when the clipboard turned out not to be ours", async () => {
+		// Refused at the ownership check. Restoring here would be actively
+		// harmful: the clipboard holds somebody else's write — very possibly a
+		// copy the operator just made — and putting the old contents back over
+		// it would destroy exactly what this feature protects.
+		const d = happyInsertDeps();
+		d.runJxa.mockImplementation(async (script: string) => {
+			if (script === READ_FRONTMOST_BUNDLE_SCRIPT) return ok("com.googlecode.iterm2");
+			if (script === READ_SNIPPET_TOKEN_SCRIPT) return ok("none");
+			if (script === READ_CHANGE_COUNT_SCRIPT) return ok("100");
+			throw new Error("unexpected");
+		});
+		expect((await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).status).toBe("not-confirmed");
+		const scripts = d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0]);
+		expect(scripts).not.toContain(RESTORE_SCRIPT);
+		expect(scripts).toContain(RELEASE_SCRIPT);
+	});
+
+	it("touches neither script when restoration is switched off for the key", async () => {
+		const d = happyInsertDeps();
+		expect(await insertSnippet("x", d.deps, { restoreClipboard: false, restoreDelayMs: 0 })).toEqual({
+			status: "ok",
+		});
+		expect(d.runJxaWithArgs).not.toHaveBeenCalled();
+	});
+
+	/** A clipboard we could not save must not stop the paste the operator
+	 * actually asked for. */
+	it("still pastes when the snapshot could not be taken", async () => {
+		const d = happyInsertDeps();
+		d.runJxaWithArgs.mockImplementation(async (script: string) =>
+			script === SNAPSHOT_SCRIPT ? ok("skip-concealed") : ok("ok"),
+		);
+		expect(await insertSnippet("x", d.deps, { restoreDelayMs: 0 })).toEqual({ status: "ok" });
+		expect(d.runAppleScript).toHaveBeenCalledTimes(1);
+		expect(d.runJxaWithArgs.mock.calls.map((c: unknown[]) => c[0])).not.toContain(RESTORE_SCRIPT);
 	});
 });
 
