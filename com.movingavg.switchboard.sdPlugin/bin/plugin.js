@@ -11204,9 +11204,10 @@ let CodexProject = (() => {
  *     a blocked Codex session is knowable from a file, on any host, with no
  *     terminal scraping at all. Its `state` already carries `blocked`.
  *   - Claude Code and Cursor write nothing that distinguishes "blocked on the
- *     operator" from "busy working". The ONLY direct evidence is the approval
- *     prompt drawn on the terminal, and the only terminal this plugin can read
- *     is a tmux pane. Outside tmux, "blocked" is simply not observable for
+ *     operator" from "busy working". The ONLY direct evidence is the prompt
+ *     drawn on the terminal — for Claude that is EITHER a tool approval OR a
+ *     choice prompt (a question, or a plan awaiting approval), which share no
+ *     wording — and the only terminal this plugin can read is a tmux pane. Outside tmux, "blocked" is simply not observable for
  *     those two — see {@link blockedEvidenceFor}.
  *   - Measured, and the reason {@link decideAgentFace} exists in this form:
  *     Claude Code keeps its IDLE title marker (a "✳") on screen while its
@@ -11278,8 +11279,50 @@ function blockedProbeForMissingPane(kind, panesOk, clientsOk) {
  * this necessarily matches WITHIN one line of pane text. */
 const CLAUDE_ASK = /Do you want to .*\?/;
 /**
- * Does this terminal pane show the agent's approval prompt — i.e. is it
- * blocked on the operator right now?
+ * Claude Code's OTHER way of blocking on you: the choice prompt it draws for
+ * `AskUserQuestion` — and, on inference from the CLI binary's strings rather
+ * than any live capture, for plan approval.
+ *
+ * This is a second, disjoint shape, not a variation on the approval wording.
+ * Measured (claude 2.1.236, tmux, 2026-08-29, two independent captures): the
+ * question can read "Do you PREFER red or blue?" and the first option can be
+ * "1. Red", so {@link CLAUDE_ASK} and the "1. Yes" choice line both miss it
+ * entirely. It matters more than it sounds: under `--permission-mode auto` the
+ * tool approvals auto-accept, so a question is often the ONLY thing that still
+ * stops the operator — and it was painting the key blue (working).
+ *
+ * Both patterns are LINE-ANCHORED, and that is the point. Three bare substrings
+ * anywhere in the pane would match a README, a test log or a docs page that
+ * merely discusses the prompt; requiring the footer's two halves on ONE line and
+ * the discriminator as a NUMBERED OPTION line ties the match to the prompt's
+ * actual layout. It narrows a real false-amber path rather than only documenting
+ * it. A test pins the prose case.
+ *
+ * "Chat about this" is the discriminator: it is what separates a prompt AWAITING
+ * A DECISION from Claude's other selectable lists, where the operator is already
+ * interacting. All three of those were captured on the same day and none carries
+ * it, nor the "Enter to select" footer:
+ *
+ *   - folder-trust prompt — footer "Enter to confirm · Esc to cancel". The verb
+ *     is CONFIRM, not select. This is the sharp one: it also draws a numbered
+ *     "1. Yes" list, so it is the closest thing to a false positive on the deck.
+ *   - `--resume` session picker — footer "… Type to search · Esc to cancel".
+ *   - slash-command menu — no footer of this shape at all.
+ *
+ * FAILURE DIRECTION, deliberately chosen and unchanged from the approval matcher:
+ * if a future release rewraps the footer onto two lines or renumbers the option,
+ * these stop matching and amber stops APPEARING. They do not start lying.
+ */
+const CLAUDE_CHOICE_FOOTER = /^\s*Enter to select\b.*\bEsc to cancel\s*$/m;
+const CLAUDE_CHOICE_OPTION = /^\s*\d+\.\s+Chat about this\s*$/m;
+/**
+ * Does this terminal pane show the agent holding for the operator right now?
+ *
+ * "Holding" is broader than an approval. For Claude Code it is EITHER a tool
+ * approval OR a choice prompt — a question, or a plan awaiting approval — and
+ * the two share no wording, so each is matched separately. Under
+ * `--permission-mode auto` the approvals auto-accept and the choice prompt is
+ * the one that actually stops the operator.
  *
  * Matching is deliberately narrow, and the guarantee is narrow to match:
  * unrecognised wording yields false, so a prompt phrased in a way we have not
@@ -11300,17 +11343,26 @@ function paneShowsAgentPrompt(kind, paneText) {
             // Codex's own log already says `blocked` (see blockedEvidenceFor), so
             // there is nothing to gain by scraping and a false positive to lose.
             return false;
-        case "claude":
-            // The question alone is too ordinary a sentence to trust; Claude renders
-            // a numbered choice list directly beneath it, and both measured wordings
-            // carry "1. Yes".
+        case "claude": {
+            // TWO disjoint shapes, because Claude blocks on you in two different
+            // ways and they share no wording. Either one is enough.
+            //
+            // (a) The TOOL APPROVAL. The question alone is too ordinary a sentence
+            // to trust; Claude renders a numbered choice list directly beneath it,
+            // and both measured wordings carry "1. Yes".
             //
             // NEGATIVE CASE (measured): the folder-trust prompt — "Quick safety
             // check: Is this a project you created or one you trust?" with "1. Yes,
             // I trust this folder" — carries the same choice line but is NOT an
             // approval to act on, and must not turn the key amber. It is excluded by
             // the question stem: it never says "Do you want to". A test pins this.
-            return CLAUDE_ASK.test(paneText) && paneText.includes("1. Yes");
+            if (CLAUDE_ASK.test(paneText) && paneText.includes("1. Yes"))
+                return true;
+            // (b) The CHOICE PROMPT — a question, or (inferred) a plan awaiting
+            // approval. See {@link CLAUDE_CHOICE_FOOTER} for why both are anchored to
+            // their lines and which non-blocking pickers were measured against them.
+            return CLAUDE_CHOICE_FOOTER.test(paneText) && CLAUDE_CHOICE_OPTION.test(paneText);
+        }
         case "cursor":
             // The inline status marker is specific enough to stand on its own.
             // "Run this command?" is a phrase that could plausibly appear in

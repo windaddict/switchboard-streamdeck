@@ -54,7 +54,14 @@
 			terminal. Claude Code and Cursor write nothing that distinguishes it from
 			ordinary work &mdash; the only evidence is the prompt on screen, which this
 			key can read for <b>tmux-hosted sessions only</b>. In a bare iTerm2 or
-			Terminal window those two show an approval prompt as blue (running).
+			Terminal window those two show a waiting prompt as blue (running).
+			For Claude that means two different prompts: a tool approval, and a
+			question awaiting your decision &mdash; the question being the one you
+			meet most, since approvals auto-accept under
+			<code>--permission-mode auto</code>. Claude's <i>plan</i>-approval prompt
+			appears to use the same component and so should behave the same way, but
+			that was inferred from the CLI binary, never measured against a live plan
+			prompt.
 			Detection is deliberately narrow, so a future release of either tool that
 			rewords its prompt makes amber stop appearing rather than start lying
 			&mdash; though recognised prompt wording appearing in ordinary output can
