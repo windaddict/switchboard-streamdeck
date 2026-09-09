@@ -35,7 +35,10 @@
 			a turn while you are looking somewhere else, and it clears when you press
 			the key (on a raise that actually succeeds &mdash; if raising the window
 			fails, the key shows its alert and the mark stays) or on the first check
-			that finds you already at that session. What it claims is narrow, on purpose: the
+			that finds you already at that session. The key also alerts without
+			raising anything when a press is <i>ignored</i>: all the focus keys share
+			one raise at a time, so pressing while another is still going flashes and
+			does nothing, leaving the mark alone. What it claims is narrow, on purpose: the
 			<i>most recent</i> finished turn has not been seen. Starting a new turn
 			clears it &mdash; the key goes back to blue and marks again when that turn
 			ends. It needs the plugin watching to see the transition at all, so a plugin

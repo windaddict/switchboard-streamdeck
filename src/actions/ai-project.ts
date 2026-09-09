@@ -53,7 +53,6 @@ import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parse
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
 import { chooseClientTty, parseClientTtys } from "../mac/tmux.js";
-import { runExclusive } from "../mac/serialize.js";
 import { findTmuxPath, LIST_CLIENTS_ARGS, runTmux } from "../mac/tmux-runner.js";
 import {
 	buildTerminalRaiseScript,
@@ -63,6 +62,7 @@ import {
 } from "../mac/terminal.js";
 import { processRunning } from "../mac/claude-scan.js";
 import { expandHome } from "../mac/files.js";
+import { runFocusPress } from "./focus-lock.js";
 
 type AiProjectSettings = {
 	/** Which coding agent this key was taught to follow. Absent until the
@@ -167,7 +167,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<AiProjectSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return;
-		await runExclusive("iterm-focus", () => this.focus(ev.action));
+		await runFocusPress("AI Project", ev.action, () => this.focus(ev.action));
 	}
 
 	/**

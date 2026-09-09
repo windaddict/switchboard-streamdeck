@@ -30,8 +30,8 @@ import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parse
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
 import { chooseClientTty, parseClientTtys, switchClientToWindowArgs } from "../mac/tmux.js";
-import { runExclusive } from "../mac/serialize.js";
 import { findTmuxPath, LIST_CLIENTS_ARGS, runTmux } from "../mac/tmux-runner.js";
+import { runFocusPress } from "./focus-lock.js";
 import {
 	buildTerminalRaiseScript,
 	TERMINAL_BUNDLE_ID,
@@ -111,7 +111,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<ClaudeProjectSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return; // long press already captured
-		await runExclusive("iterm-focus", () => this.focus(ev.action));
+		await runFocusPress("Claude Project", ev.action, () => this.focus(ev.action));
 	}
 
 	/** One query set per tick: process scan, tmux pane/client maps, frontmost

@@ -10182,6 +10182,61 @@ function tmuxWindowValue(w) {
 }
 
 /**
+ * WHAT IT'S FOR: decides what the deck and the log should say when a focus
+ * press does something other than raise a window. It is pure so those decisions
+ * can be tested — the module that performs them talks to the Stream Deck SDK
+ * and this repo has no harness for action shells, so any logic left there is
+ * verified by reading it.
+ *
+ * The three events it describes are the three ways a press departs from the
+ * golden path, and every one of them used to be invisible: a dropped press
+ * returned `undefined` that no caller could tell from success, a taken-over key
+ * was reported only if the replacement finished, and a raise that threw was
+ * swallowed by the absent error branch.
+ */
+/**
+ * A press that never ran because another raise holds the shared key.
+ *
+ * `warn`, not `error`: two presses inside one raise is ordinary contention, not
+ * a fault. It alerts because the alternative — a key that silently ignores you —
+ * is the symptom that made the original wedge impossible to notice.
+ */
+function describeDroppedPress(label, key, heldForMs) {
+    return {
+        level: "warn",
+        message: `${label}: press ignored — another raise has held "${key}" for ${Math.round(heldForMs)}ms.`,
+        alert: true,
+    };
+}
+/**
+ * A press that took the shared key from a holder stuck past the threshold.
+ *
+ * `error`, and deliberately loud: reaching this means every focus key on the
+ * deck had been dead since that holder stalled. No alert — this press is going
+ * on to do its work, so flashing would tell the operator it failed.
+ */
+function describeTakeover(label, key, heldForMs) {
+    return {
+        level: "error",
+        message: `${label}: took "${key}" from a raise stuck for ${Math.round(heldForMs)}ms — an earlier press never completed, ` +
+            `so every focus key was dead until this one.`,
+        alert: false,
+    };
+}
+/**
+ * A press whose raise threw. Named separately because the shell rethrows after
+ * reporting: the operator gets the alert, and the error still propagates rather
+ * than being swallowed here.
+ */
+function describeFailedPress(label, error) {
+    return {
+        level: "error",
+        message: `${label}: raise failed — ${error instanceof Error ? error.message : String(error)}`,
+        alert: true,
+    };
+}
+
+/**
  * Per-key async mutex: chains tasks for the same key so read-modify-write
  * handlers (dial rotations that persist a cursor, run a subprocess, then
  * render) can't interleave. Stream Deck delivers events serially, but async
@@ -10195,23 +10250,100 @@ function tmuxWindowValue(w) {
  * with an in-flight task, recreating the exact race this exists to prevent.
  */
 const chains = new Map();
-const exclusive = new Set();
+/**
+ * The age at which a holder's claim on an exclusive key may be TAKEN by a new
+ * request.
+ *
+ * Read what this is and is not. It is NOT a proof that a legitimate hold
+ * finishes sooner: the locked focus path awaits Stream Deck SDK round-trips
+ * (`getSettings`, `showOk`) that have no timeout at all, so no finite upper
+ * bound on a healthy hold can be derived from that code. It is a chosen
+ * recovery policy, and the tradeoff it makes is explicit in both directions:
+ * a healthy press slower than this can be taken from (see the overlap note on
+ * {@link runExclusive}), and a genuinely wedged key stays dead until this much
+ * time has passed AND another press arrives.
+ *
+ * The number is anchored to what IS bounded: the path's subprocesses cap at
+ * roughly 39s (three osascript at 8s, three tmux at 5s) if every one times
+ * out, so a value below that would take from a press whose slowness is fully
+ * explained by bounded work. 45s clears it with a small margin. A press that
+ * exceeds 45s is, by construction, one whose extra time came from something
+ * unbounded — which is the condition this exists to recover from.
+ */
+const MAX_HOLD_MS = 45_000;
+/**
+ * The live holder of each exclusive key. `token` is the identity, not `at`:
+ * two acquisitions can land in the same millisecond, and a displaced holder must
+ * never delete the entry belonging to the request that took the key from it.
+ * Same rule the `chains` map above follows — only clean up if still yours.
+ */
+const holders = new Map();
+let holderSeq = 0;
 /**
  * Run at most one task for a key. A second request while the first is live is
- * dropped instead of queued: focus presses describe "go there now", so a
- * stale press must not fire seconds later after a slow cross-Space raise.
+ * dropped rather than queued: focus presses describe "go there now", so a stale
+ * press must not fire seconds later after a slow cross-Space raise.
+ *
+ * REQUEST-TRIGGERED LEASE TAKEOVER, which is a weaker thing than a timeout and
+ * must not be described as one. There is no timer and no autonomous expiry: a
+ * holder that never settles stays recorded indefinitely, and the key only
+ * changes hands when a LATER REQUEST arrives finding the claim older than
+ * {@link MAX_HOLD_MS}. So the deck does not heal on its own — it heals on the
+ * next press after the threshold, and a press before it is still dropped.
+ *
+ * Why it exists: every subprocess in the focus path is bounded (osascript 8s,
+ * tmux 5s), but the SDK round-trips around them are not — `getSettings()` waits
+ * for a `didReceiveSettings` reply that a dropped websocket message never
+ * delivers. A holder stuck on one of those held the key for the life of the
+ * process, and because the key is the literal string "iterm-focus" shared by all
+ * five focus actions, one lost reply silently killed every one of them until the
+ * plugin was restarted.
+ *
+ * THE COST, stated at full strength because an earlier draft of this comment
+ * called it a brief overlap and that was wrong: taking the key does NOT cancel
+ * the displaced task, and nothing bounds how long it may still run. If it later
+ * resumes it will carry out its own side effects — raising ITS iTerm window,
+ * switching the tmux client to ITS target — after the newer press has already
+ * done so. The user-visible result is being pulled to the older destination
+ * some time after arriving at the newer one. Nothing here prevents that; the
+ * only real defence would be an ownership check immediately before each
+ * focus-changing side effect, which this does not implement. The tradeoff taken
+ * is that a rare wrong-window raise during recovery beats five permanently dead
+ * keys, not that the race was eliminated.
+ *
+ * The caller is told which happened. This module is pure and cannot log, and a
+ * dropped press and a taken key are both departures from the golden path that
+ * must leave a trace at the call site.
  */
-async function runExclusive(key, task) {
-    if (exclusive.has(key))
-        return undefined;
-    exclusive.add(key);
+async function runExclusive(key, task, opts = {}) {
+    const now = opts.now ?? monotonicNow;
+    const held = holders.get(key);
+    const at = now();
+    let stoleAfterMs;
+    if (held !== undefined) {
+        const heldForMs = at - held.at;
+        // A young claim is a real press in flight: honour it and drop this one.
+        if (heldForMs < MAX_HOLD_MS)
+            return { ran: false, heldForMs };
+        stoleAfterMs = heldForMs;
+        opts.onSteal?.(heldForMs);
+    }
+    const token = ++holderSeq;
+    holders.set(key, { token, at });
     try {
-        return await task();
+        const value = await task();
+        return stoleAfterMs === undefined ? { ran: true, value } : { ran: true, value, stoleAfterMs };
     }
     finally {
-        exclusive.delete(key);
+        // Only clean up if the key is still ours: a request that took the key
+        // from us owns it now, and releasing it here would let two presses run.
+        if (holders.get(key)?.token === token)
+            holders.delete(key);
     }
 }
+/** Monotonic elapsed-time source — immune to wall-clock adjustment in BOTH
+ * directions, which `Date.now()` is not. */
+const monotonicNow = () => performance.now();
 function serialize(key, task) {
     const prev = chains.get(key) ?? Promise.resolve();
     const next = prev.then(task, task);
@@ -10225,6 +10357,68 @@ function serialize(key, task) {
     });
     chains.set(key, entry);
     return next;
+}
+
+/**
+ * WHAT IT'S FOR: the single place the five focus actions (AI Project, the three
+ * superseded per-agent keys, and Focus tmux Window) take the shared raise key,
+ * so a press that does not raise a window says so — on the deck and in the log —
+ * instead of vanishing.
+ *
+ * Why it exists: the key is one literal string shared by all five actions, and
+ * `runExclusive` used to return `T | undefined`. Every focus handler returns
+ * void, so a dropped press was indistinguishable from a successful one; no
+ * caller alerted and no caller logged. When a holder wedged, all five keys went
+ * dead in silence and the only cure was restarting the plugin.
+ *
+ * A thin shell by design: what to say is decided by the pure, tested
+ * {@link FocusReport} builders in `mac/focus-outcome.ts`; this only performs it.
+ */
+/** The one key every raise serialises on — raising two iTerm windows at once
+ * would fight over which ends up frontmost. */
+const FOCUS_KEY = "iterm-focus";
+async function perform(report, key) {
+    if (report.level === "warn")
+        streamDeck.logger.warn(report.message);
+    else
+        streamDeck.logger.error(report.message);
+    if (!report.alert)
+        return;
+    // Deck feedback is cosmetic; failing to flash must not replace the real
+    // error with a second one, so it is reported and swallowed here.
+    try {
+        await key.showAlert();
+    }
+    catch (err) {
+        streamDeck.logger.warn(`Focus press: showAlert failed: ${String(err)}`);
+    }
+}
+/**
+ * Run one action's raise under {@link FOCUS_KEY}, reporting every way it can
+ * fail to happen. `label` names the action in the log — there are five, and
+ * knowing which one wedged is the point of logging it.
+ *
+ * A raise that THROWS is reported and then rethrown, not swallowed: the caller's
+ * error handling is unchanged by this wrapper, it merely stops being silent.
+ */
+async function runFocusPress(label, key, task) {
+    let outcome;
+    try {
+        outcome = await runExclusive(FOCUS_KEY, task, {
+            // Reported at the moment of takeover, not after: a replacement that
+            // also wedges would otherwise never report it at all.
+            onSteal: (heldForMs) => {
+                const report = describeTakeover(label, FOCUS_KEY, heldForMs);
+                streamDeck.logger.error(report.message);
+            },
+        });
+    }
+    catch (err) {
+        await perform(describeFailedPress(label, err), key);
+        throw err;
+    }
+    if (!outcome.ran)
+        await perform(describeDroppedPress(label, FOCUS_KEY, outcome.heldForMs), key);
 }
 
 /**
@@ -10335,7 +10529,7 @@ let ClaudeProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return; // long press already captured
-            await runExclusive("iterm-focus", () => this.focus(ev.action));
+            await runFocusPress("Claude Project", ev.action, () => this.focus(ev.action));
         }
         /** One query set per tick: process scan, tmux pane/client maps, frontmost
          * app + its focused tty. Transcript freshness is checked per project. */
@@ -11009,7 +11203,7 @@ let CodexProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return;
-            await runExclusive("iterm-focus", () => this.focus(ev.action));
+            await runFocusPress("Codex Project", ev.action, () => this.focus(ev.action));
         }
         async snapshot() {
             const tmux = findTmuxPath();
@@ -12750,7 +12944,7 @@ let AiProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return;
-            await runExclusive("iterm-focus", () => this.focus(ev.action));
+            await runFocusPress("AI Project", ev.action, () => this.focus(ev.action));
         }
         /**
          * Every visible key with its settings and the press generation it was read
@@ -13247,7 +13441,7 @@ let CursorProject = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return;
-            await runExclusive("iterm-focus", () => this.focus(ev.action));
+            await runFocusPress("Cursor Project", ev.action, () => this.focus(ev.action));
         }
         async snapshot() {
             const tmux = findTmuxPath();
@@ -13959,7 +14153,7 @@ let FocusTmuxWindow = (() => {
         async onKeyUp(ev) {
             if (!this.gate.up(ev.action.id))
                 return; // long press already captured
-            await runExclusive("iterm-focus", () => this.focus(ev.action));
+            await runFocusPress("Focus tmux Window", ev.action, () => this.focus(ev.action));
         }
         onWillDisappear(ev) {
             this.gate.cancel(ev.action.id);

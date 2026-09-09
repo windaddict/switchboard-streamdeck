@@ -36,7 +36,6 @@ import {
 	tmuxWindowValue,
 	switchClientToWindowArgs,
 } from "../mac/tmux.js";
-import { runExclusive } from "../mac/serialize.js";
 import { buildTmuxKeyImage, evaluateKeyStatus } from "../mac/tmux-key.js";
 import {
 	findTmuxPath,
@@ -46,6 +45,7 @@ import {
 } from "../mac/tmux-runner.js";
 import { invalidateFrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
 import { captureTmuxTarget, currentWindowArgs, parseCurrentWindow } from "../mac/tmux-window.js";
+import { runFocusPress } from "./focus-lock.js";
 
 type FocusTmuxSettings = {
 	/** Target window as "session:name" (from the dropdown) or a bare name. */
@@ -102,7 +102,7 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 	override async onKeyUp(ev: KeyUpEvent<FocusTmuxSettings>): Promise<void> {
 		if (!this.gate.up(ev.action.id)) return; // long press already captured
-		await runExclusive("iterm-focus", () => this.focus(ev.action));
+		await runFocusPress("Focus tmux Window", ev.action, () => this.focus(ev.action));
 	}
 
 	override onWillDisappear(ev: WillDisappearEvent<FocusTmuxSettings>): void {
