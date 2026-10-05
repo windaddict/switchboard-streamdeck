@@ -37,6 +37,17 @@ plugin is shippable as-is.
 - [ ] Skip the poll timer for `isInMultiAction` instances of Focus tmux, Open File
       and Paste Snippet (their face is never drawn there).
 
+- [ ] **List icons look smaller than other plugins' icons** in the Stream Deck
+      action list (operator, 2026-10-05, after the white-icon change passed its
+      live check). Measured: on the 40 px `icon@2x.png` the glyph's opaque
+      bounding box is 24-32 px wide (60-80% of the canvas), because
+      `icon_svg()` in `scripts/make-icons.py` reuses the key-face 72-unit
+      viewBox with its key-face padding. Likely fix, not yet tried: give list
+      icons a tighter viewBox (crop to the glyph plus a small margin), then
+      rerun `make-icons.py`, check `tests/icons.test.ts` (its REGIONS
+      rectangles are in 20 px coordinates and will move), and compare against
+      another plugin's icons in the action list.
+
 ## Tests
 
 - [ ] Cover `resolveTarget` bare-URL → `derivePattern` path (targets.ts) and
