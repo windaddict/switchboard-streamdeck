@@ -109,7 +109,7 @@ The dial touchscreens speak the same color language — green drives tmux, blue 
 
 ## Install
 
-Requires macOS 12+ and the Stream Deck app 7.1+ (the plugin runs on Node 24, which Stream Deck downloads on first launch; versions 6.5 to 7.0 are no longer supported; the live check on 7.6 has not been run yet, and 7.1 to 7.5 support rests on Elgato's manifest schema). Pick whichever fits you — in
+Requires macOS 12+ and the Stream Deck app 7.1+ (the plugin runs on Node 24, which Stream Deck downloads on first launch; versions 6.5 to 7.0 are no longer supported; it has been checked live on 7.6 only, and 7.1 to 7.5 support rests on Elgato's manifest schema). Pick whichever fits you — in
 all cases, **quit and relaunch Stream Deck afterwards**, then add Switchboard's
 actions to your keys/dials.
 

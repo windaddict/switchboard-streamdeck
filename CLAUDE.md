@@ -399,8 +399,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   Node 20 below it (measured: `Nodejs.Version failed validation for keyword:
   const`). Stream Deck downloads the runtime on first launch. `Debug` must not
   ship (it launches the plugin with `--inspect`). The live check
-  (`node-24-live`, an operator acceptance step, not yet run as of 2026-10-05)
-  is planned on SD 7.6 only; 7.1-7.5 rest on Elgato's schema.
+  (`node-24-live`) passed on 2026-10-05 on SD 7.6.0: Stream Deck fetched
+  Node 24.13.1 into `NodeJS/` on relaunch, and the plugin ran on it with no
+  `--inspect`. It ran on 7.6 only; 7.1-7.5 rest on Elgato's schema.
 - **Multi-actions.** Encoders are never steps. A key step gets keyDown and keyUp
   as one gesture, so `PressGate` never fires and hold-to-capture does not exist.
   The step's face is never drawn. `SupportedInMultiActions` is `true` for Safari
