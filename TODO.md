@@ -48,6 +48,20 @@ plugin is shippable as-is.
       rectangles are in 20 px coordinates and will move), and compare against
       another plugin's icons in the action list.
 
+- [ ] **Rate-limit dial failure logging.** A dial logs one line per detent:
+      on 2026-10-05, one spin of Scroll with Accessibility revoked wrote 12
+      identical "Scroll Window blocked" ERROR lines in 3 s (and BBEdit wrote 5
+      in 3 s). CLAUDE.md says to rate-limit anything that can fire in a loop.
+      Likely fix: in `reportDial`, log a repeated identical message at most
+      once per few seconds per dial, still alerting every time.
+- [ ] **BBEdit "no BBEdit?" path may be unreachable by quitting BBEdit.**
+      `BBEDIT_LIST_SCRIPT` opens with `tell application "BBEdit"`, which
+      launches BBEdit if it is not running, so quitting it probably relaunches
+      it instead of failing. Not tested. If confirmed, either guard with
+      `if application "BBEdit" is running` (and decide what the dial should do)
+      or drop the hint. The 2026-10-05 live check used a revoked Automation
+      grant instead, which does fail ("grant access").
+
 ## Tests
 
 - [ ] Cover `resolveTarget` bare-URL → `derivePattern` path (targets.ts) and
