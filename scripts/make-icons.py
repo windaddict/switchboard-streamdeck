@@ -7,8 +7,17 @@ drives (phosphor = tmux, azure = macOS windows/apps/web, amber = BBEdit,
 teal = files), and a thin family-colored strip near the bottom of every key —
 the patch-cable mark, quiet sibling of the live tmux face's status bar.
 
-Key faces  (key.png 72 / key@2x.png 144): ink ground + glyph + jack-line.
-List icons (icon.png 20 / icon@2x.png 40): bare glyph, transparent ground.
+Key faces  (key.png 72 / key@2x.png 144): ink ground + glyph + jack-line, in
+           family colours.
+List icons (icon.png 20 / icon@2x.png 40): bare glyph, transparent ground, WHITE
+           ONLY (#FFFFFF) — Elgato's guideline for the action list. `mono()`
+           rewrites a glyph's strokes and fills to white and refuses a glyph
+           that uses INK (an INK fill is a knock-out or an occluder, which
+           white or `none` would destroy). Those glyphs (tmux, Switch App,
+           App Windows, Window Ring) have an explicit variant in MONO_VARIANTS.
+Category icon (imgs/plugin/category-icon.png 28 / @2x 56): the plugin's patch-
+           cable mark in white strokes on a transparent ground, no tile.
+           Generated here too; marketplace.png (the plugin icon) is not.
 
 Rendering requires inkscape. Rerun after changing any glyph:
     python3 scripts/make-icons.py
@@ -17,10 +26,13 @@ Rendering requires inkscape. Rerun after changing any glyph:
 import pathlib
 import subprocess
 import sys
+import re
 import tempfile
+from typing import Callable
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 IMGS = ROOT / "com.movingavg.switchboard.sdPlugin" / "imgs" / "actions"
+IMGS_PLUGIN = ROOT / "com.movingavg.switchboard.sdPlugin" / "imgs" / "plugin"
 
 INK = "#0F1211"
 PHOSPHOR = "#3ECF6E"  # tmux family
@@ -31,6 +43,7 @@ CORAL = "#D97757"  # Claude family
 VIOLET = "#A78BFA"  # Codex family
 STEEL = "#B9C6D4"  # Cursor family
 SIGNAL_AI = "#7FD4C1"  # AI Project family (agent-neutral)
+WHITE = "#FFFFFF"  # list + category icons (Elgato guideline)
 SIGNAL = "#F2FFF6"  # arrows / cursors
 MUTED = "#8B9490"  # secondary strokes
 
@@ -214,6 +227,101 @@ ACTIONS = {
 }
 
 
+def mono(glyph: str) -> str:
+    """Rewrite every hex stroke/fill in a glyph to WHITE (opacity is kept).
+
+    Raises if the glyph uses INK: an INK fill is a knock-out or an occluder, and
+    turning it white or `none` destroys the shape. Such glyphs need an explicit
+    variant in MONO_VARIANTS.
+    """
+    if INK in glyph:
+        raise ValueError("glyph uses INK; give it an explicit monochrome variant")
+    return re.sub(r'(stroke|fill)="#[0-9A-Fa-f]{6}"', rf'\1="{WHITE}"', glyph)
+
+
+def glyph_tmux_mono() -> str:
+    """Window outline, a status-bar divider, and a solid cursor block inside the bar."""
+    return (
+        f'<rect x="14" y="13" width="44" height="36" rx="3" stroke="{WHITE}" stroke-width="3" fill="none"/>'
+        f'<path d="M15.5 37h41" stroke="{WHITE}" stroke-width="1.5" fill="none"/>'
+        f'<rect x="46" y="40" width="7" height="5.5" fill="{WHITE}"/>'
+    )
+
+
+def glyph_switchapp_mono() -> str:
+    """Back window outline (clipped where the front window covers it), front
+    window as an OUTLINE, and the jump arrow drawn on transparency inside it."""
+    return (
+        '<defs><mask id="front"><rect width="72" height="72" fill="white"/>'
+        '<rect x="31" y="26" width="30" height="24" rx="3" fill="black"/></mask></defs>'
+        f'<rect x="11" y="12" width="30" height="24" rx="3" stroke="{WHITE}" stroke-width="3" fill="none" mask="url(#front)"/>'
+        f'<rect x="31" y="26" width="30" height="24" rx="3" stroke="{WHITE}" stroke-width="3" fill="none"/>'
+        f'<path d="M39 38h13m-5-5 5 5-5 5" stroke="{WHITE}" stroke-width="3" {S}/>'
+    )
+
+
+def glyph_appwindows_mono() -> str:
+    """Cascade of three outlines; each back window is clipped by a mask where a
+    nearer window covers it (an INK fill used to do this)."""
+    return (
+        '<defs>'
+        '<mask id="nearFront"><rect width="72" height="72" fill="white"/>'
+        '<rect x="26" y="28" width="32" height="24" rx="3" fill="black"/></mask>'
+        '<mask id="nearMiddle"><rect width="72" height="72" fill="white"/>'
+        '<rect x="19" y="19" width="32" height="24" rx="3" fill="black"/>'
+        '<rect x="26" y="28" width="32" height="24" rx="3" fill="black"/></mask>'
+        '</defs>'
+        f'<rect x="12" y="10" width="32" height="24" rx="3" stroke="{WHITE}" stroke-width="3" fill="none" opacity="0.75" mask="url(#nearMiddle)"/>'
+        f'<rect x="19" y="19" width="32" height="24" rx="3" stroke="{WHITE}" stroke-width="3" fill="none" mask="url(#nearFront)"/>'
+        f'<rect x="26" y="28" width="32" height="24" rx="3" stroke="{WHITE}" stroke-width="3" fill="none"/>'
+    )
+
+
+def glyph_windowring_mono() -> str:
+    """Boxes sitting ON the ring, all as outlines; the ring is clipped out of
+    each box's interior by a mask (an INK fill used to hide it)."""
+    boxes = ((29, 8), (11, 38), (47, 38))
+    holes = "".join(f'<rect x="{x}" y="{y}" width="14" height="10" rx="2" fill="black"/>' for x, y in boxes)
+    outlines = "".join(
+        f'<rect x="{x}" y="{y}" width="14" height="10" rx="2" stroke="{WHITE}" stroke-width="2.5" fill="none"/>'
+        for x, y in boxes
+    )
+    return (
+        f'<defs><mask id="ringGaps"><rect width="72" height="72" fill="white"/>{holes}</mask></defs>'
+        f'<circle cx="36" cy="33" r="20" stroke="{WHITE}" stroke-width="2.5" stroke-dasharray="1 6" {S} mask="url(#ringGaps)"/>'
+        f"{outlines}"
+    )
+
+
+def glyph_category() -> str:
+    """The plugin's patch-cable mark: two crossing cables, four plugs. Strokes
+    only, no tile, no background."""
+    return (
+        f'<path d="M14 22 C 30 22, 42 50, 58 50" stroke="{WHITE}" stroke-width="4.5" stroke-linecap="round" fill="none"/>'
+        f'<path d="M14 50 C 30 50, 42 22, 58 22" stroke="{WHITE}" stroke-width="4.5" stroke-linecap="round" fill="none"/>'
+        f'<circle cx="14" cy="22" r="4.5" fill="{WHITE}"/>'
+        f'<circle cx="14" cy="50" r="4.5" fill="{WHITE}"/>'
+        f'<circle cx="58" cy="22" r="4.5" fill="{WHITE}"/>'
+        f'<circle cx="58" cy="50" r="4.5" fill="{WHITE}"/>'
+    )
+
+
+# Glyphs that cannot be converted by a plain colour swap (INK knock-outs, or a
+# light mark drawn on a filled shape), keyed by ACTIONS slug.
+MONO_VARIANTS: dict[str, Callable[[], str]] = {
+    "tmux": glyph_tmux_mono,
+    "switchapp": glyph_switchapp_mono,
+    "appwindows": glyph_appwindows_mono,
+    "windowring": glyph_windowring_mono,
+}
+
+
+def list_glyph(slug: str, glyph: str) -> str:
+    """The white-only glyph for an action's list icon."""
+    variant = MONO_VARIANTS.get(slug)
+    return variant() if variant is not None else mono(glyph)
+
+
 def key_svg(glyph: str, family: str) -> str:
     jack_line = f'<rect x="8" y="62.5" width="56" height="3.5" rx="1.75" fill="{family}" opacity="0.95"/>'
     return (
@@ -248,9 +356,15 @@ def main() -> None:
         glyph = glyph_fn()
         render(key_svg(glyph, family), d / "key.png", 72)
         render(key_svg(glyph, family), d / "key@2x.png", 144)
-        render(icon_svg(glyph), d / "icon.png", 20)
-        render(icon_svg(glyph), d / "icon@2x.png", 40)
-        print(f"{name}: key 72/144, icon 20/40")
+        white = list_glyph(name, glyph)
+        render(icon_svg(white), d / "icon.png", 20)
+        render(icon_svg(white), d / "icon@2x.png", 40)
+        print(f"{name}: key 72/144, icon 20/40 (white)")
+    IMGS_PLUGIN.mkdir(parents=True, exist_ok=True)
+    category = icon_svg(glyph_category())
+    render(category, IMGS_PLUGIN / "category-icon.png", 28)
+    render(category, IMGS_PLUGIN / "category-icon@2x.png", 56)
+    print("category icon 28/56 (white)")
 
 
 if __name__ == "__main__":
