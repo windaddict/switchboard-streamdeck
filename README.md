@@ -71,6 +71,8 @@ These still work and are unchanged, but **AI Project replaces all three** and th
 **Text**
 - **Paste Snippet** *(key)* — the button is the storage. Press writes the stored text into whatever app is frontmost; hold the key (~half a second) to read the current selection into the key instead of typing it into the settings screen. Holding reads the selection directly through macOS's Accessibility API where an app supports that (standard text fields do; iTerm2, Safari and ChatGPT do not) and falls back to ⌘C where it doesn't; pressing always uses ⌘V, because the direct write was measured reporting success while inserting nothing. So pressing always borrows your clipboard and holding usually does — and it **puts it back**: everything on it, every item and every format, is copied aside first and restored afterwards. Exceptions, stated rather than glossed: a clipboard a password manager marked secret is left alone rather than duplicated (so that gesture replaces it, as before); content another app generates on demand, and anything over 64 MiB, isn't saved either; if you copy something mid-gesture your newer copy almost always wins, though macOS offers no atomic swap so a copy landing inside the swap itself can be lost; holding can't prove the copy it sees came from its own ⌘C, so text another app copies in that instant can be stored and then overwritten; after ⌘V there is a short wait before the restore, because nothing reports when the target app has finished reading — an app slower than that wait pastes your old clipboard instead, which is why restoration is a per-key setting you can switch off; and rarely the clipboard can be emptied and the rewrite fail, which alerts on the key. Holding also refuses while macOS reports Secure Input is on, and refuses a copy marked concealed. The key face previews the stored text (tick a box for dots and a character count instead). The stored text is plain, unencrypted, and lives in the Stream Deck profile on this Mac.
 
+**Multi-actions.** Five actions can be steps in a Stream Deck multi-action: Safari Tab Jump, Open / Switch App, Focus tmux Window, Open File and Paste Snippet. The other eleven cannot. The six dials are encoders, and a multi-action takes keys only. A key step gets its press and release as one instant gesture, so hold-to-capture does not exist there, which rules out Window Ring (its members are added only by holding the key) and AI Project and the three superseded agent keys (bound by holding). A step's key face is never drawn, so a live face would be wasted.
+
 ---
 
 ## Live on the deck
@@ -100,13 +102,14 @@ The dial touchscreens speak the same color language — green drives tmux, blue 
 - **Open File** shows a live ✓/✗ status badge right on the key — you can see at a glance whether a matching file exists.
 - **Safari Tab Jump** ships multi-account Gmail and Calendar presets — pick the account number, and the URL and match pattern are built for you.
 - **Window Ring** flashes a green check on add and a red "−" on remove, with an optional sound, so long-press registration is unmistakable.
+- Every dial flashes the alert on its touchscreen slot when the work a gesture sends to the Mac fails (a native helper, an AppleScript, the terminal probe or a tmux command), usually because of a missing Accessibility or Automation grant, and logs one line saying why. A failure to save the dial's own mode or setting is not reported this way. A tmux dial turned with no tmux in the frontmost iTerm2 window stays silent on purpose: rotating either tmux dial and pushing the window dial send tmux commands and do nothing there, while the pane dial's press or tap and the window dial's tap still flip their own mode.
 - A consistent interaction grammar: **rotate** browses, **press** escapes to a known place (or toggles the mode where there's no place to escape to), **tap** flips the dial's mode or scope, and **holding** a go-to key teaches it whatever you're looking at.
 
 ---
 
 ## Install
 
-Requires macOS 12+ and the Stream Deck app 6.5+. Pick whichever fits you — in
+Requires macOS 12+ and the Stream Deck app 7.1+ (the plugin runs on Node 24, which Stream Deck downloads on first launch; versions 6.5 to 7.0 are no longer supported; the live check on 7.6 has not been run yet, and 7.1 to 7.5 support rests on Elgato's manifest schema). Pick whichever fits you — in
 all cases, **quit and relaunch Stream Deck afterwards**, then add Switchboard's
 actions to your keys/dials.
 
@@ -182,7 +185,7 @@ Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 ## Built with
 
-Elgato Stream Deck SDK v2 · TypeScript / Node · 873 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
+Elgato Stream Deck SDK v2 · TypeScript / Node · 1022 passing tests · `streamdeck validate` runs in the build · native helpers are universal (Apple Silicon + Intel), Developer ID signed & notarized.
 
 ```bash
 npm install

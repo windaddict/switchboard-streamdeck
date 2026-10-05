@@ -8605,6 +8605,109 @@ function parseFrontWindow(output) {
     return { app: out.slice(0, i), title: out.slice(i + 1) };
 }
 
+/**
+ * WHAT IT'S FOR: decides what the deck and the log say when a dial gesture
+ * fails, so the six dial actions stay thin shells. Elgato's plugin guidelines
+ * require `showAlert` whenever an action was unsuccessful; this module turns a
+ * runner's result (native helper, osascript, tmux, front-terminal probe) into a
+ * `DialReport` — the log level, one log line, and whether to flash the alert —
+ * and `applyReport` applies it to injected sinks. It is the dial counterpart of
+ * `focus-outcome.ts` for keys.
+ *
+ * Deliberate no-ops are SILENT: iTerm2 not being frontmost, or a front terminal
+ * with no tmux client, is a normal state, not a failure. Repaint-only paths
+ * never alert either; the shells simply do not call in here for them.
+ *
+ * Pure: no SDK, no I/O.
+ */
+/** Nothing failed (or nothing worth reporting): no alert, no log line. */
+const SILENT = { alert: false, level: null, message: null };
+const ACCESSIBILITY_PATH = "System Settings > Privacy & Security > Accessibility > enable Stream Deck";
+/**
+ * Native helpers (scroll/tile). Untrusted wins over ok:false because the
+ * missing grant is the actionable cause: error + alert naming the Accessibility
+ * pane. A trusted helper that still did nothing (no focused window/screen, or
+ * it failed to run) is a warn + alert. A working helper is silent.
+ */
+function describeHelperResult(label, r, what) {
+    if (!r.trusted) {
+        return {
+            alert: true,
+            level: "error",
+            message: `${label} blocked. Grant Accessibility: ${ACCESSIBILITY_PATH} (${what} needs this).`,
+        };
+    }
+    if (!r.ok) {
+        return {
+            alert: true,
+            level: "warn",
+            message: `${label}: ${what} did not happen — the helper reported no focused window/screen or failed to run.`,
+        };
+    }
+    return SILENT;
+}
+/**
+ * osascript results. A permission denial names the pane for the grant that was
+ * needed (Accessibility, or Automation for `app`); any other failure carries
+ * the error code and stderr. Success is silent.
+ */
+function describeScriptResult(label, r, grant, app) {
+    if (r.ok)
+        return SILENT;
+    if (r.code === "permission-denied") {
+        const path = grant === "accessibility"
+            ? ACCESSIBILITY_PATH
+            : `System Settings > Privacy & Security > Automation > Stream Deck > enable ${app ?? "the target app"}`;
+        return { alert: true, level: "error", message: `${label} blocked. Grant: ${path}.` };
+    }
+    return {
+        alert: true,
+        level: "error",
+        message: `${label}: failed (${r.code}): ${r.stderr || "no stderr"}`,
+    };
+}
+/** A failed tmux command: error + alert naming the command and its stderr. */
+function describeTmuxResult(label, command, r) {
+    if (r.ok)
+        return SILENT;
+    return {
+        alert: true,
+        level: "error",
+        message: `${label}: tmux ${command} failed: ${r.stderr || "no server?"}`,
+    };
+}
+/** A gesture with nothing to act on (BBEdit with no documents): warn + alert. */
+function describeNothingToDo(label, reason) {
+    return { alert: true, level: "warn", message: `${label}: ${reason}` };
+}
+/**
+ * The front-terminal probe. `front`, `not-frontmost` and `no-client` are
+ * SILENT (a background terminal or a plain shell is a normal state); only a
+ * failed probe step is an error + alert.
+ */
+function describeFrontTmux(label, r) {
+    if (r.kind !== "probe-failed")
+        return SILENT;
+    return {
+        alert: true,
+        level: "error",
+        message: `${label}: could not read the frontmost terminal (${r.step}): ${r.stderr || "no stderr"}`,
+    };
+}
+/**
+ * Applies a report to injected sinks: logs at `level` when `message` is set,
+ * and calls `alert()` exactly once when `alert` is true. Injected so the one
+ * branch the shells keep is tested without the SDK.
+ */
+async function applyReport(report, sinks) {
+    if (report.message !== null && report.level !== null) {
+        sinks[report.level](report.message);
+    }
+    if (report.alert) {
+        await sinks.alert();
+    }
+}
+
 /** Shared dial-rotation direction mapping. */
 /** Map a dial rotation to a step: positive = next, negative = prev, 0 = none. */
 function rotationDirection(ticks) {
@@ -8621,6 +8724,20 @@ function rotationDirection(ticks) {
 function rotationSteps(ticks) {
     const t = Math.trunc(ticks);
     return { direction: rotationDirection(t), steps: Math.min(Math.abs(t), 5) };
+}
+
+/**
+ * Thin SDK glue for a failed dial gesture: logs the report and flashes the
+ * dial's alert, as decided by the pure `dial-outcome.ts`. Every dial shell
+ * calls this instead of logging on its own, so a failure is both visible on
+ * the deck and recorded once in the log.
+ */
+function reportDial(action, report) {
+    return applyReport(report, {
+        warn: (m) => streamDeck.logger.warn(m),
+        error: (m) => streamDeck.logger.error(m),
+        alert: () => action.showAlert(),
+    });
 }
 
 /**
@@ -8672,6 +8789,9 @@ async function respondToAccessibilityCheck(payload, baseUrl) {
  * applications themselves. The touchscreen shows the current mode and the
  * front app/window, refreshed after each step. The mode is transient (held in
  * memory per dial), so every appearance starts in the familiar windows mode.
+ * A failed cycle (no Accessibility grant, or any script error) flashes the
+ * dial's alert and logs once, via `reportDial`; the strip readback is
+ * repaint-only and never alerts.
  */
 /** Quiet time after the last tick before the strip readback runs. */
 const REFRESH_DEBOUNCE_MS = 250;
@@ -8714,10 +8834,7 @@ let CycleAppWindows = (() => {
             const result = mode === "apps"
                 ? await runJxa(appCycleJxa(direction))
                 : await runAppleScript(appWindowCycleScript(direction));
-            if (!result.ok && result.code === "permission-denied") {
-                streamDeck.logger.error("Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
-                    "Security > Accessibility > enable Stream Deck.");
-            }
+            await reportDial(ev.action, describeScriptResult("Cycle App Windows", result, "accessibility"));
             // The cycle script already returns the activated app's name — paint from
             // it directly instead of spending a second osascript round-trip per tick.
             if (mode === "apps" && result.ok && result.stdout.trim() !== "") {
@@ -13786,7 +13903,10 @@ end tell`;
  * Dial action: move between the text documents open in BBEdit's front window,
  * in the order chosen in the property inspector. Press jumps back to the
  * previously active document (like tmux last-window). The touchscreen shows
- * the active document name.
+ * the active document name. A failed turn or press (BBEdit not reachable, no
+ * Automation grant, a selection that failed, no documents) flashes the dial's
+ * alert and logs once, via `reportDial`; appearing is repaint-only, so a failed
+ * read there only paints the hint on the strip and never alerts.
  */
 let BBEditDocDial = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.bbeditdoc" })];
@@ -13808,8 +13928,8 @@ let BBEditDocDial = (() => {
             if (!ev.action.isDial())
                 return;
             const state = await this.readDocs(ev.action);
-            if (state === null)
-                return;
+            if (!state.ok)
+                return; // hint already painted; appearing never alerts
             this.tracker(ev.action.id).note(state.activeId);
             await this.render(ev.action, this.activeName(state.docs, state.activeId));
         }
@@ -13824,8 +13944,10 @@ let BBEditDocDial = (() => {
             // read the same active doc and collapse two detents into one move.
             await serialize(ev.action.id, async () => {
                 const state = await this.readDocs(ev.action);
-                if (state === null)
+                if (!state.ok) {
+                    await reportDial(ev.action, state.report);
                     return;
+                }
                 const tracker = this.tracker(ev.action.id);
                 tracker.note(state.activeId); // catch changes made in BBEdit itself
                 const ordered = orderedDocs(state.docs, ev.payload.settings.order ?? "window");
@@ -13834,9 +13956,13 @@ let BBEditDocDial = (() => {
                     const targetId = nextDocId(ordered, activeId, direction);
                     if (targetId === null) {
                         await this.render(ev.action, "no docs");
+                        await reportDial(ev.action, describeNothingToDo("BBEdit Documents", "no documents open in the front window"));
                         return;
                     }
-                    await this.select(ev.action, targetId, tracker);
+                    // One failed selection ends the gesture: it was reported once, and the
+                    // remaining detents would act on a document that never became active.
+                    if (!(await this.select(ev.action, targetId, tracker)))
+                        return;
                     activeId = targetId;
                 }
             });
@@ -13844,8 +13970,10 @@ let BBEditDocDial = (() => {
         /** Press: jump back to the previously active document. */
         async onDialDown(ev) {
             const state = await this.readDocs(ev.action);
-            if (state === null)
+            if (!state.ok) {
+                await reportDial(ev.action, state.report);
                 return;
+            }
             const tracker = this.tracker(ev.action.id);
             tracker.note(state.activeId);
             const targetId = lastDocTarget(state.docs, state.activeId, tracker.lastActive);
@@ -13856,26 +13984,32 @@ let BBEditDocDial = (() => {
             }
             await this.select(ev.action, targetId, tracker);
         }
-        /** Run the list script and parse it; null (already rendered) on failure. */
+        /** Run the list script and parse it. On failure the strip hint is painted
+         * here and the report is RETURNED, so each caller decides whether the
+         * failure is a gesture (alert) or an appearance (no alert). */
         async readDocs(dial) {
             const list = await runAppleScript(BBEDIT_LIST_SCRIPT);
             if (!list.ok) {
-                this.logFailure("list", list.code, list.stderr);
                 await this.render(dial, this.hint(list.code));
-                return null;
+                return {
+                    ok: false,
+                    report: describeScriptResult("BBEdit Documents", list, "automation", "BBEdit"),
+                };
             }
-            return parseBBEditDocs(list.stdout);
+            return { ok: true, ...parseBBEditDocs(list.stdout) };
         }
-        /** Select a document by id, record it as active, and render the outcome. */
+        /** Select a document by id, record it as active, and render the outcome.
+         * Reports a failure itself (alert + one log line) and returns false. */
         async select(dial, targetId, tracker) {
             const selected = await runAppleScript(bbeditSelectScript(targetId));
             if (!selected.ok) {
-                this.logFailure("select", selected.code, selected.stderr);
                 await this.render(dial, this.hint(selected.code));
-                return;
+                await reportDial(dial, describeScriptResult("BBEdit Documents", selected, "automation", "BBEdit"));
+                return false;
             }
             tracker.note(targetId);
             await this.render(dial, selected.stdout);
+            return true;
         }
         tracker(id) {
             let t = this.trackers.get(id);
@@ -13895,12 +14029,6 @@ let BBEditDocDial = (() => {
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
-            }
-        }
-        logFailure(stage, code, stderr) {
-            streamDeck.logger.error(`BBEdit ${stage} failed (${code}): ${stderr || "no stderr"}`);
-            if (code === "permission-denied") {
-                streamDeck.logger.error("Grant: System Settings > Privacy & Security > Automation > Stream Deck > enable BBEdit.");
             }
         }
         hint(code) {
@@ -14036,9 +14164,12 @@ spin = 0) {
  * probes the live tmux key faces already use: frontmost app (NSWorkspace JXA)
  * → iTerm's focused-session tty (only queried when iTerm IS frontmost —
  * addressing a non-running app via AppleScript would launch it) → tmux
- * list-clients tty → session. Null when indeterminate (iTerm not frontmost,
- * focused pane isn't a tmux client, …); the tmux dials treat null as
- * "nothing to control" and do nothing rather than drive a background terminal.
+ * list-clients tty → session. `resolveFrontTmux` returns null when
+ * indeterminate (iTerm not frontmost, focused pane isn't a tmux client, a probe
+ * step failed); the tmux dials treat null as "nothing to control" and do
+ * nothing rather than drive a background terminal. `resolveFrontTmuxDetailed`
+ * tells those cases apart: not-frontmost and no-client are normal (silent),
+ * while a failed probe step is a failure the dials alert on.
  *
  * The probe costs ~0.3s, so the result is cached briefly — a rotation burst
  * pays it once, and you don't change macOS windows mid-burst.
@@ -14056,9 +14187,15 @@ function invalidateFrontTmux() {
     cached = null;
     inFlight = null;
 }
-function resolveFrontTmux(tmuxPath) {
+/** The front tmux client, or null for every non-front classification. */
+async function resolveFrontTmux(tmuxPath) {
+    const r = await resolveFrontTmuxDetailed(tmuxPath);
+    return r.kind === "front" ? r.front : null;
+}
+/** Like `resolveFrontTmux`, but says WHY there is no front client. */
+function resolveFrontTmuxDetailed(tmuxPath) {
     if (cached !== null && Date.now() - cached.at < TTL_MS) {
-        return Promise.resolve(cached.front);
+        return Promise.resolve(cached.result);
     }
     // Share one probe among concurrent callers (several dials rotating at
     // once must not each launch their own JXA + AppleScript + tmux trio).
@@ -14076,23 +14213,36 @@ function resolveFrontTmux(tmuxPath) {
     return p;
 }
 async function probe(tmuxPath, startedGeneration) {
-    let front = null;
-    const app = await runJxa(FRONT_APP_BUNDLE_JXA);
-    if (app.ok && app.stdout.trim() === ITERM_BUNDLE_ID) {
-        const [ttyRes, clientsRes] = await Promise.all([
-            runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
-            runTmux(LIST_CLIENTS_ARGS, tmuxPath),
-        ]);
-        const tty = ttyRes.stdout.trim();
-        const session = sessionForTty(parseClients(clientsRes.stdout), tty);
-        if (session !== null) {
-            front = { session, tty };
-        }
-    }
+    const result = await classify(tmuxPath);
     if (startedGeneration === generation) {
-        cached = { front, at: Date.now() };
+        cached = { result, at: Date.now() };
     }
-    return front;
+    return result;
+}
+async function classify(tmuxPath) {
+    const app = await runJxa(FRONT_APP_BUNDLE_JXA);
+    if (!app.ok) {
+        return { kind: "probe-failed", step: "front-app", stderr: app.stderr };
+    }
+    if (app.stdout.trim() !== ITERM_BUNDLE_ID) {
+        return { kind: "not-frontmost" };
+    }
+    const [ttyRes, clientsRes] = await Promise.all([
+        runAppleScript(ITERM_FOCUSED_TTY_SCRIPT),
+        runTmux(LIST_CLIENTS_ARGS, tmuxPath),
+    ]);
+    if (!ttyRes.ok) {
+        return { kind: "probe-failed", step: "iterm-tty", stderr: ttyRes.stderr };
+    }
+    if (!clientsRes.ok) {
+        return { kind: "probe-failed", step: "list-clients", stderr: clientsRes.stderr };
+    }
+    const tty = ttyRes.stdout.trim();
+    const session = sessionForTty(parseClients(clientsRes.stdout), tty);
+    if (session === null) {
+        return { kind: "no-client" };
+    }
+    return { kind: "front", front: { session, tty } };
 }
 
 /** How often the key faces re-check the live focus state. */
@@ -17020,7 +17170,9 @@ function runScroll(lines, baseUrl, exec = execFile) {
  * the top of the document or toggle between fast and slow scrolling; touch-tap
  * always toggles the speed (so both gestures are available at once). Defaults
  * are applied here (speed → slow, press → jump-to-top) so behaviour does not
- * depend on the property inspector persisting its dropdown defaults.
+ * depend on the property inspector persisting its dropdown defaults. A failed
+ * gesture (helper blocked or failed, keystroke denied) flashes the dial's alert
+ * and logs once, via `reportDial`.
  */
 let ScrollWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.scroll" })];
@@ -17051,13 +17203,7 @@ let ScrollWindow = (() => {
             // One proportional scroll-wheel event via the native helper — no keystroke
             // spam, so the line count actually scales and there is no per-press lag.
             const result = await runScroll(lines, import.meta.url);
-            if (!result.ok) {
-                streamDeck.logger.error("Scroll helper failed to run (missing/blocked binary?).");
-            }
-            if (!result.trusted) {
-                streamDeck.logger.error("Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
-                    "Accessibility > enable Stream Deck (synthetic scroll needs this).");
-            }
+            await reportDial(ev.action, describeHelperResult("Scroll Window", result, "scrolling"));
         }
         async onDialDown(ev) {
             const settings = ev.payload.settings;
@@ -17067,8 +17213,7 @@ let ScrollWindow = (() => {
             }
             // Default press behaviour: jump to the top of the document (⌘↑).
             const result = await runAppleScript(buildKeystrokeScript(jumpTopPlan()));
-            if (!result.ok)
-                this.warn(result.code);
+            await reportDial(ev.action, describeScriptResult("Scroll Window", result, "accessibility"));
         }
         /** Touch-tap: always toggle fast/slow, regardless of the press setting. */
         async onTouchTap(ev) {
@@ -17095,15 +17240,6 @@ let ScrollWindow = (() => {
             }
             catch (err) {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
-            }
-        }
-        warn(code) {
-            if (code === "permission-denied") {
-                streamDeck.logger.error("Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
-                    "Accessibility > enable Stream Deck (sending keystrokes needs this).");
-            }
-            else {
-                streamDeck.logger.error(`Scroll failed: ${code}`);
             }
         }
     });
@@ -17436,7 +17572,9 @@ function runTile(cell, baseUrl, exec = execFile) {
  * arrangement — clockwise steps forward, counter-clockwise retraces the same
  * style in reverse. Touch-tap toggles between the button's two configured
  * arrangements (e.g. columns ↔ grid). Press maximizes the window within the
- * screen's visible frame.
+ * screen's visible frame. A gesture that moved nothing (no Accessibility grant,
+ * no focused window or screen) flashes the dial's alert and logs once, via
+ * `reportDial`.
  */
 let ArrangeWindow = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.tile" })];
@@ -17476,12 +17614,11 @@ let ArrangeWindow = (() => {
                 for (let i = 0; i < steps; i++) {
                     const step = nextTile(settings, dir);
                     const result = await runTile(step.cell, import.meta.url);
-                    if (!result.trusted)
-                        this.warnUntrusted();
-                    if (!result.ok) {
-                        // The helper reported no window moved — do not persist or
-                        // render a position the screen doesn't show.
-                        streamDeck.logger.warn("Arrange Window: helper reported no focused window/screen.");
+                    const report = describeHelperResult("Arrange Window", result, "moving the window");
+                    if (report.alert) {
+                        // Nothing moved — do not persist or render a position the
+                        // screen doesn't show.
+                        await reportDial(ev.action, report);
                         return;
                     }
                     settings = { ...settings, activeScheme: step.activeScheme, index: step.index };
@@ -17495,10 +17632,12 @@ let ArrangeWindow = (() => {
             // next rotation starts fresh from the first cell.
             await serialize(ev.action.id, async () => {
                 const result = await runTile(FULL_CELL, import.meta.url);
-                if (!result.trusted)
-                    this.warnUntrusted();
-                if (!result.ok)
-                    return; // nothing moved — keep the real state
+                const report = describeHelperResult("Arrange Window", result, "maximizing the window");
+                if (report.alert) {
+                    // Nothing moved — keep the real state.
+                    await reportDial(ev.action, report);
+                    return;
+                }
                 const updated = { ...(await ev.action.getSettings()), index: -1 };
                 await ev.action.setSettings(updated);
                 await this.render(ev.action, updated, "max");
@@ -17535,10 +17674,6 @@ let ArrangeWindow = (() => {
                 streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
             }
         }
-        warnUntrusted() {
-            streamDeck.logger.error("Arrange Window blocked. Grant Accessibility: System Settings > Privacy & " +
-                "Security > Accessibility > enable Stream Deck (moving windows needs this).");
-        }
     });
     return _classThis;
 })();
@@ -17548,8 +17683,11 @@ let ArrangeWindow = (() => {
  * toggles the scope between the current session and ALL sessions: in "all"
  * scope rotation crosses session boundaries (switch-client) and push jumps to
  * the last session. Every command drives the tmux client/session in the
- * FRONTMOST macOS window; when iTerm isn't frontmost the dial does nothing
- * (never a background terminal) and the strip shows a dash. The touchscreen
+ * FRONTMOST macOS window; when iTerm isn't frontmost (or has no tmux client)
+ * rotation and push do nothing, silently (never a background terminal), and the
+ * strip shows a dash; the tap still toggles the scope, since it changes only
+ * the dial's own state. A failed gesture (the terminal probe or a tmux command
+ * failing) flashes the dial's alert and logs once, via `reportDial`. The touchscreen
  * shows a session-tinted background with position dots (plus an ALL badge in
  * all-sessions scope), refreshed after every change. The scope is transient
  * per-dial memory.
@@ -17584,30 +17722,40 @@ let CycleTmuxWindow = (() => {
                 // Serialized per dial, consuming the full tick count (see pane dial).
                 await serialize(ev.action.id, async () => {
                     const tmux = findTmuxPath();
-                    const front = await resolveFrontTmux(tmux);
-                    if (front === null)
-                        return; // no tmux in the frontmost window
+                    const resolved = await resolveFrontTmuxDetailed(tmux);
+                    if (resolved.kind !== "front") {
+                        // not-frontmost / no-client: nothing to control, silent. A failed probe alerts.
+                        await reportDial(ev.action, describeFrontTmux("Cycle tmux Window", resolved));
+                        return;
+                    }
+                    const front = resolved.front;
                     for (let i = 0; i < steps; i++) {
                         if (this.scope(ev.action.id) === "all") {
                             const [list, current] = await Promise.all([
                                 runTmux(LIST_WINDOWS_ARGS, tmux),
                                 runTmux(currentWindowArgs(front.session), tmux),
                             ]);
-                            const target = list.ok
-                                ? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
-                                : null;
-                            if (target === null)
+                            // Without a good list AND a good current window there is no safe
+                            // target to guess: report each failure and stop.
+                            const listReport = describeTmuxResult("Cycle tmux Window", "list-windows", list);
+                            const currentReport = describeTmuxResult("Cycle tmux Window", "display-message", current);
+                            if (listReport.alert || currentReport.alert) {
+                                await reportDial(ev.action, listReport.alert ? listReport : currentReport);
                                 return;
+                            }
+                            const target = nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction);
+                            if (target === null)
+                                return; // nothing to cycle to is not a failure
                             const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
                             if (!result.ok) {
-                                streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+                                await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", "switch-client", result));
                                 return;
                             }
                         }
                         else {
                             const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
                             if (!result.ok) {
-                                streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+                                await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", `${direction}-window`, result));
                                 return;
                             }
                         }
@@ -17619,10 +17767,16 @@ let CycleTmuxWindow = (() => {
         /** Push: last window in session scope, last session in all scope. */
         async onDialDown(ev) {
             const tmux = findTmuxPath();
-            const front = await resolveFrontTmux(tmux);
-            if (front !== null) {
+            const resolved = await resolveFrontTmuxDetailed(tmux);
+            if (resolved.kind === "front") {
+                const front = resolved.front;
                 const args = this.scope(ev.action.id) === "all" ? lastSessionArgs(front.tty) : lastWindowArgs(front.session);
-                await runTmux(args, tmux);
+                const result = await runTmux(args, tmux);
+                await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", args[0], result));
+            }
+            else {
+                // not-frontmost / no-client: silent. A failed probe alerts.
+                await reportDial(ev.action, describeFrontTmux("Cycle tmux Window", resolved));
             }
             await this.refresh(ev.action);
         }
@@ -17732,8 +17886,11 @@ function paneDialFeedback(mode, status) {
  * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
  * toggles the mode, tmux windows. Every command is scoped to the tmux session
  * shown in the FRONTMOST macOS window; when iTerm isn't frontmost the dial
- * does nothing (never a background terminal) and the strip shows a dash. The
- * mode is stored in the button's settings and survives Stream Deck restarts.
+ * does nothing, silently (never a background terminal), and the strip shows a
+ * dash; the press/tap that toggles the mode still works then, since it changes
+ * only the dial's own state. A failed gesture (the terminal probe or a tmux
+ * command failing) flashes the dial's alert and logs once, via `reportDial`.
+ * The mode is stored in the button's settings and survives Stream Deck restarts.
  * The touchscreen shows the mode and the current pane command (or window
  * name) of the controlled session.
  */
@@ -17769,16 +17926,20 @@ let TmuxPaneDial = (() => {
                 if (direction === "none")
                     return;
                 const tmux = findTmuxPath();
-                const front = await resolveFrontTmux(tmux);
-                if (front === null)
-                    return; // no tmux in the frontmost window
+                const resolved = await resolveFrontTmuxDetailed(tmux);
+                if (resolved.kind !== "front") {
+                    // not-frontmost / no-client: nothing to control, silent. A failed probe alerts.
+                    await reportDial(ev.action, describeFrontTmux("Switch tmux Pane", resolved));
+                    return;
+                }
+                const front = resolved.front;
                 const args = mode === "windows"
                     ? selectWindowDirArgs(direction, front.session)
                     : selectPaneArgs(direction, front.session);
                 for (let i = 0; i < steps; i++) {
                     const result = await runTmux(args, tmux);
                     if (!result.ok) {
-                        streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+                        await reportDial(ev.action, describeTmuxResult("Switch tmux Pane", args[0], result));
                         return;
                     }
                 }

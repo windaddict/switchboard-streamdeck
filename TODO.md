@@ -21,12 +21,21 @@ plugin is shippable as-is.
 - [ ] Extract a `PolledKeyAction` base class for the visible-Map + poll-timer
       scaffold shared by `open-file.ts` and `window-ring.ts` (medium risk — the
       action shells have no direct unit tests).
-- [ ] Extract a parameterized permission-message helper (Accessibility vs
-      Automation) used by several action shells.
+- [x] Extract a parameterized permission-message helper (Accessibility vs
+      Automation). Done for the six dials: `src/mac/dial-outcome.ts`. Key shells
+      still use `focus-outcome.ts`.
 - [ ] Remove dead `FileStatus "plain"` (`src/mac/key-image.ts`); decide whether
       to keep `matchesGlob` (`src/mac/files.ts`, used only by tests).
 - [ ] Extract Open File's status-state computation into a pure `fileStatus(...)`
       helper + test.
+
+- [ ] **Upgrade `@elgato/streamdeck` 1.4.1 to 3.x.** Touch points: `streamDeck.ui.current`
+      (`pi-permissions.ts`, `focus-tmux.ts`), `onDidReceiveSettings` overrides
+      (`open-file.ts`, `paste-snippet.ts`), mandatory settings generics on
+      `DialAction`/`KeyAction`, and the tsconfig move to NodeNext. Best done with
+      the retirement of the three legacy actions.
+- [ ] Skip the poll timer for `isInMultiAction` instances of Focus tmux, Open File
+      and Paste Snippet (their face is never drawn there).
 
 ## Tests
 
