@@ -8,7 +8,8 @@ import streamDeck, {
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
-import { resolveFrontTmux } from "../mac/front-tmux.js";
+import { describeFrontTmux, describeTmuxResult } from "../mac/dial-outcome.js";
+import { resolveFrontTmux, resolveFrontTmuxDetailed } from "../mac/front-tmux.js";
 import { rotationSteps } from "../mac/rotation.js";
 import { serialize } from "../mac/serialize.js";
 import {
@@ -21,6 +22,7 @@ import {
 } from "../mac/tmux-pane.js";
 import { findTmuxPath, runTmux } from "../mac/tmux-runner.js";
 import { selectWindowDirArgs } from "../mac/tmux-window.js";
+import { reportDial } from "./dial-report.js";
 
 type TmuxPaneSettings = {
 	/** What rotation moves through. Persisted so it survives restarts. */
@@ -31,8 +33,11 @@ type TmuxPaneSettings = {
  * Dial action: rotate to switch tmux panes — or, after a press/touch-tap
  * toggles the mode, tmux windows. Every command is scoped to the tmux session
  * shown in the FRONTMOST macOS window; when iTerm isn't frontmost the dial
- * does nothing (never a background terminal) and the strip shows a dash. The
- * mode is stored in the button's settings and survives Stream Deck restarts.
+ * does nothing, silently (never a background terminal), and the strip shows a
+ * dash; the press/tap that toggles the mode still works then, since it changes
+ * only the dial's own state. A failed gesture (the terminal probe or a tmux
+ * command failing) flashes the dial's alert and logs once, via `reportDial`.
+ * The mode is stored in the button's settings and survives Stream Deck restarts.
  * The touchscreen shows the mode and the current pane command (or window
  * name) of the controlled session.
  */
@@ -55,8 +60,13 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 			mode = (await ev.action.getSettings()).mode ?? "panes";
 			if (direction === "none") return;
 			const tmux = findTmuxPath();
-			const front = await resolveFrontTmux(tmux);
-			if (front === null) return; // no tmux in the frontmost window
+			const resolved = await resolveFrontTmuxDetailed(tmux);
+			if (resolved.kind !== "front") {
+				// not-frontmost / no-client: nothing to control, silent. A failed probe alerts.
+				await reportDial(ev.action, describeFrontTmux("Switch tmux Pane", resolved));
+				return;
+			}
+			const front = resolved.front;
 			const args =
 				mode === "windows"
 					? selectWindowDirArgs(direction, front.session)
@@ -64,7 +74,7 @@ export class TmuxPaneDial extends SingletonAction<TmuxPaneSettings> {
 			for (let i = 0; i < steps; i++) {
 				const result = await runTmux(args, tmux);
 				if (!result.ok) {
-					streamDeck.logger.error(`tmux ${args[0]} failed: ${result.stderr || "no server?"}`);
+					await reportDial(ev.action, describeTmuxResult("Switch tmux Pane", args[0], result));
 					return;
 				}
 			}

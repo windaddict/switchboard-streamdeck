@@ -11,6 +11,8 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
+import { describeHelperResult, describeScriptResult } from "../mac/dial-outcome.js";
+import { reportDial } from "./dial-report.js";
 import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
 	buildKeystrokeScript,
@@ -28,7 +30,9 @@ import { runScroll } from "../mac/scroll-runner.js";
  * the top of the document or toggle between fast and slow scrolling; touch-tap
  * always toggles the speed (so both gestures are available at once). Defaults
  * are applied here (speed → slow, press → jump-to-top) so behaviour does not
- * depend on the property inspector persisting its dropdown defaults.
+ * depend on the property inspector persisting its dropdown defaults. A failed
+ * gesture (helper blocked or failed, keystroke denied) flashes the dial's alert
+ * and logs once, via `reportDial`.
  */
 @action({ UUID: "com.movingavg.switchboard.scroll" })
 export class ScrollWindow extends SingletonAction<ScrollSettings> {
@@ -47,15 +51,7 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 		// One proportional scroll-wheel event via the native helper — no keystroke
 		// spam, so the line count actually scales and there is no per-press lag.
 		const result = await runScroll(lines, import.meta.url);
-		if (!result.ok) {
-			streamDeck.logger.error("Scroll helper failed to run (missing/blocked binary?).");
-		}
-		if (!result.trusted) {
-			streamDeck.logger.error(
-				"Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
-					"Accessibility > enable Stream Deck (synthetic scroll needs this).",
-			);
-		}
+		await reportDial(ev.action, describeHelperResult("Scroll Window", result, "scrolling"));
 	}
 
 	override async onDialDown(ev: DialDownEvent<ScrollSettings>): Promise<void> {
@@ -68,7 +64,7 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 
 		// Default press behaviour: jump to the top of the document (⌘↑).
 		const result = await runAppleScript(buildKeystrokeScript(jumpTopPlan()));
-		if (!result.ok) this.warn(result.code);
+		await reportDial(ev.action, describeScriptResult("Scroll Window", result, "accessibility"));
 	}
 
 	/** Touch-tap: always toggle fast/slow, regardless of the press setting. */
@@ -98,17 +94,6 @@ export class ScrollWindow extends SingletonAction<ScrollSettings> {
 			});
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
-		}
-	}
-
-	private warn(code: string): void {
-		if (code === "permission-denied") {
-			streamDeck.logger.error(
-				"Scroll blocked. Grant Accessibility: System Settings > Privacy & Security > " +
-					"Accessibility > enable Stream Deck (sending keystrokes needs this).",
-			);
-		} else {
-			streamDeck.logger.error(`Scroll failed: ${code}`);
 		}
 	}
 }

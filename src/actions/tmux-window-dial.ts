@@ -9,7 +9,8 @@ import streamDeck, {
 	type WillDisappearEvent,
 } from "@elgato/streamdeck";
 
-import { type FrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
+import { describeFrontTmux, describeTmuxResult } from "../mac/dial-outcome.js";
+import { resolveFrontTmux, resolveFrontTmuxDetailed } from "../mac/front-tmux.js";
 import { rotationSteps } from "../mac/rotation.js";
 import { serialize } from "../mac/serialize.js";
 import { parseWindows } from "../mac/tmux.js";
@@ -29,6 +30,7 @@ import {
 	toggleScope,
 	windowFlagsArgs,
 } from "../mac/tmux-window.js";
+import { reportDial } from "./dial-report.js";
 
 type TmuxWindowDialSettings = {
 	/** Reserved for a future per-button session scope. */
@@ -40,8 +42,11 @@ type TmuxWindowDialSettings = {
  * toggles the scope between the current session and ALL sessions: in "all"
  * scope rotation crosses session boundaries (switch-client) and push jumps to
  * the last session. Every command drives the tmux client/session in the
- * FRONTMOST macOS window; when iTerm isn't frontmost the dial does nothing
- * (never a background terminal) and the strip shows a dash. The touchscreen
+ * FRONTMOST macOS window; when iTerm isn't frontmost (or has no tmux client)
+ * rotation and push do nothing, silently (never a background terminal), and the
+ * strip shows a dash; the tap still toggles the scope, since it changes only
+ * the dial's own state. A failed gesture (the terminal probe or a tmux command
+ * failing) flashes the dial's alert and logs once, via `reportDial`. The touchscreen
  * shows a session-tinted background with position dots (plus an ALL badge in
  * all-sessions scope), refreshed after every change. The scope is transient
  * per-dial memory.
@@ -66,27 +71,38 @@ export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 			// Serialized per dial, consuming the full tick count (see pane dial).
 			await serialize(ev.action.id, async () => {
 				const tmux = findTmuxPath();
-				const front = await resolveFrontTmux(tmux);
-				if (front === null) return; // no tmux in the frontmost window
+				const resolved = await resolveFrontTmuxDetailed(tmux);
+				if (resolved.kind !== "front") {
+					// not-frontmost / no-client: nothing to control, silent. A failed probe alerts.
+					await reportDial(ev.action, describeFrontTmux("Cycle tmux Window", resolved));
+					return;
+				}
+				const front = resolved.front;
 				for (let i = 0; i < steps; i++) {
 					if (this.scope(ev.action.id) === "all") {
 						const [list, current] = await Promise.all([
 							runTmux(LIST_WINDOWS_ARGS, tmux),
 							runTmux(currentWindowArgs(front.session), tmux),
 						]);
-						const target = list.ok
-							? nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction)
-							: null;
-						if (target === null) return;
+						// Without a good list AND a good current window there is no safe
+						// target to guess: report each failure and stop.
+						const listReport = describeTmuxResult("Cycle tmux Window", "list-windows", list);
+						const currentReport = describeTmuxResult("Cycle tmux Window", "display-message", current);
+						if (listReport.alert || currentReport.alert) {
+							await reportDial(ev.action, listReport.alert ? listReport : currentReport);
+							return;
+						}
+						const target = nextWindowAcross(parseWindows(list.stdout), parseCurrentWindow(current.stdout), direction);
+						if (target === null) return; // nothing to cycle to is not a failure
 						const result = await runTmux(switchToWindowArgs(target, front.tty), tmux);
 						if (!result.ok) {
-							streamDeck.logger.error(`tmux switch-client failed: ${result.stderr || "no server?"}`);
+							await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", "switch-client", result));
 							return;
 						}
 					} else {
 						const result = await runTmux(selectWindowDirArgs(direction, front.session), tmux);
 						if (!result.ok) {
-							streamDeck.logger.error(`tmux ${direction}-window failed: ${result.stderr || "no server?"}`);
+							await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", `${direction}-window`, result));
 							return;
 						}
 					}
@@ -99,11 +115,16 @@ export class CycleTmuxWindow extends SingletonAction<TmuxWindowDialSettings> {
 	/** Push: last window in session scope, last session in all scope. */
 	override async onDialDown(ev: DialDownEvent<TmuxWindowDialSettings>): Promise<void> {
 		const tmux = findTmuxPath();
-		const front = await resolveFrontTmux(tmux);
-		if (front !== null) {
+		const resolved = await resolveFrontTmuxDetailed(tmux);
+		if (resolved.kind === "front") {
+			const front = resolved.front;
 			const args =
 				this.scope(ev.action.id) === "all" ? lastSessionArgs(front.tty) : lastWindowArgs(front.session);
-			await runTmux(args, tmux);
+			const result = await runTmux(args, tmux);
+			await reportDial(ev.action, describeTmuxResult("Cycle tmux Window", args[0], result));
+		} else {
+			// not-frontmost / no-client: silent. A failed probe alerts.
+			await reportDial(ev.action, describeFrontTmux("Cycle tmux Window", resolved));
 		}
 		await this.refresh(ev.action);
 	}
