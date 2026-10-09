@@ -21,18 +21,22 @@ export interface TmuxWindow {
 	 * `renumber-windows` shifting indexes when a lower window closes — so it is
 	 * what binds a key to one of several same-named windows. A server never
 	 * reuses an id, but a RESTARTED server numbers from @0 again, so an id only
-	 * means anything together with {@link serverPid}.
+	 * means anything together with {@link server}.
 	 */
 	id: string;
-	/** The tmux server's pid (`#{pid}`): tells one server's ids from the next one's. */
-	serverPid: string;
+	/**
+	 * Which run of the tmux server this row came from: `<pid>-<start_time>`.
+	 * The pid alone is not enough, because the OS can hand a new server the old
+	 * pid; the start time (epoch seconds) tells those two apart.
+	 */
+	server: string;
 }
 
 /**
  * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}|#{window_name}"
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}-#{start_time}|#{window_name}"
  *
- * Each non-blank line is split on `|`: `session | index | active | id | pid | name…`.
+ * Each non-blank line is split on `|`: `session | index | active | id | server | name…`.
  * The window NAME is the LAST field and may itself contain `|` — the fixed
  * fields come first and the remainder is joined back into the name. `active`
  * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
@@ -51,14 +55,14 @@ export function parseWindows(output: string): TmuxWindow[] {
 			continue;
 		}
 
-		const [session, index, active, id, serverPid] = fields;
+		const [session, index, active, id, server] = fields;
 		windows.push({
 			session,
 			index: Number(index),
 			name: fields.slice(5).join("|"),
 			active: active === "1",
 			id,
-			serverPid,
+			server,
 		});
 	}
 
@@ -133,6 +137,12 @@ export function sessionForTty(clients: Map<string, string>, tty: string): string
 	return null;
 }
 
+/** Split a `session:@id#pid-start` target (see {@link resolveTarget}); null for any other form. */
+export function parseIdTarget(target: string): { session: string; id: string; server: string } | null {
+	const m = /^([^:]*):(@\d+)#(\d+-\d+)$/.exec(target.trim());
+	return m === null ? null : { session: m[1], id: m[2], server: m[3] };
+}
+
 /**
  * Resolve a user-supplied target string to a single {@link TmuxWindow}.
  *
@@ -140,12 +150,13 @@ export function sessionForTty(clients: Map<string, string>, tty: string): string
  *
  * Three forms are supported:
  *
- * - `"session:@id#pid"` — tmux's window id plus the server pid (see
- *   {@link TmuxWindow.id}). Matches only the window with that id, on that
- *   server, in exactly that session (case-sensitive, as tmux session names
+ * - `"session:@id#pid-start"` — tmux's window id plus the server run (see
+ *   {@link TmuxWindow.id}, {@link TmuxWindow.server}). Matches only the window
+ *   with that id, on that server run, in exactly that session (case-sensitive, as tmux session names
  *   are). When that window is gone — closed, or the server restarted — it
  *   returns `null`; it never falls back to a name or an index. `@digits`
- *   WITHOUT `#pid` is not this form: it is read as a name, as it always was.
+ *   WITHOUT `#pid-start` is not this form: it is read as a name, as it always
+ *   was (v1.5.0's pid-only `@8#123` therefore matches nothing).
  *
  * - `"session:name"` — the part before `:` must match a window's session
  *   exactly (case-insensitive) AND the part after must match the window's name
@@ -170,11 +181,9 @@ export function resolveTarget(
 	const colon = trimmed.indexOf(":");
 	if (colon !== -1) {
 		const namePart = trimmed.slice(colon + 1);
-		const byId = /^(@\d+)#(\d+)$/.exec(namePart);
+		const byId = parseIdTarget(trimmed);
 		if (byId !== null) {
-			const session = trimmed.slice(0, colon);
-			const [, id, pid] = byId;
-			return windows.find((w) => w.session === session && w.id === id && w.serverPid === pid) ?? null;
+			return windows.find((w) => w.session === byId.session && w.id === byId.id && w.server === byId.server) ?? null;
 		}
 		const sessionPart = trimmed.slice(0, colon).toLowerCase();
 		const namePartLower = namePart.toLowerCase();
@@ -229,12 +238,12 @@ export function tmuxWindowLabel(w: TmuxWindow): string {
  * The target string that binds a key to exactly window `w`, for capture and
  * for the settings dropdown. `session:name` when that name is unique in the
  * session (it survives a tmux restart and reads well); otherwise
- * `session:@id#pid`, because {@link resolveTarget} takes the FIRST match and a
+ * `session:@id#pid-start`, because {@link resolveTarget} takes the FIRST match and a
  * shared name would send the key to a different window — and would move again
  * whenever a same-named window closes. Names and sessions are compared
  * case-insensitively here because the resolver compares them that way.
  * Every candidate is checked by resolving it against `windows`; "" when
- * neither resolves to `w` (only possible without an id or a server pid).
+ * neither resolves to `w` (only possible without an id or a server run).
  */
 export function exactTargetFor(windows: TmuxWindow[], w: TmuxWindow): string {
 	const shared = windows.some(
@@ -244,8 +253,23 @@ export function exactTargetFor(windows: TmuxWindow[], w: TmuxWindow): string {
 			o.name.toLowerCase() === w.name.toLowerCase(),
 	);
 	const candidates = shared ? [] : [`${w.session}:${w.name}`];
-	if (w.id !== "" && w.serverPid !== "") candidates.push(`${w.session}:${w.id}#${w.serverPid}`);
+	if (w.id !== "" && w.server !== "") candidates.push(`${w.session}:${w.id}#${w.server}`);
 	return candidates.find((t) => resolveTarget(windows, t) === w) ?? "";
+}
+
+/**
+ * The dropdown's entries from a raw `list-windows` result. A FAILED call
+ * offers nothing, even when it left partial stdout: a list cut short after
+ * the first of two same-named windows would make that name look unique.
+ * `failed` tells the caller to log it.
+ */
+export function windowOptionsFromList(res: { ok: boolean; stdout: string }): {
+	items: { label: string; value: string }[];
+	skipped: number;
+	failed: boolean;
+} {
+	if (!res.ok) return { items: [], skipped: 0, failed: true };
+	return { ...tmuxWindowOptions(parseWindows(res.stdout)), failed: false };
 }
 
 /**

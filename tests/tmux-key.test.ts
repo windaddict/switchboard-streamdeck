@@ -3,9 +3,9 @@ import { buildTmuxKeyImage, evaluateKeyStatus } from "../src/mac/tmux-key.js";
 import type { TmuxWindow } from "../src/mac/tmux.js";
 
 const WINDOWS: TmuxWindow[] = [
-	{ session: "dev", index: 1, name: "movingavg", active: true, id: "@1", serverPid: "100" },
-	{ session: "dev", index: 2, name: "logs", active: false, id: "@2", serverPid: "100" },
-	{ session: "ops", index: 1, name: "deploy", active: true, id: "@3", serverPid: "100" },
+	{ session: "dev", index: 1, name: "movingavg", active: true, id: "@1", server: "100-1" },
+	{ session: "dev", index: 2, name: "logs", active: false, id: "@2", server: "100-1" },
+	{ session: "ops", index: 1, name: "deploy", active: true, id: "@3", server: "100-1" },
 ];
 const CLIENTS = new Map([
 	["dev", "/dev/ttys007"],
@@ -45,6 +45,10 @@ describe("evaluateKeyStatus — the hot chain", () => {
 	it("unknown when the target does not resolve (window gone / no server)", () => {
 		const got = evaluateKeyStatus({ ...HOT, windows: [], target: "dev:gone" });
 		expect(got).toEqual({ state: "unknown", session: "", window: "dev:gone" });
+	});
+	it("an unresolved id target shows the id and 'gone', not a truncated session prefix", () => {
+		const got = evaluateKeyStatus({ ...HOT, target: "development:@8#100-1" });
+		expect(got).toEqual({ state: "unknown", session: "", window: "@8 gone" });
 	});
 	it("unknown for an unconfigured button", () => {
 		expect(evaluateKeyStatus({ ...HOT, target: "" }).state).toBe("unknown");

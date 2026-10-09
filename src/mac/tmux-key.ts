@@ -9,7 +9,7 @@
 
 import type { ClaudeState } from "./claude-state.js";
 import { hslToHex } from "./svg.js";
-import { resolveTarget, type TmuxWindow } from "./tmux.js";
+import { parseIdTarget, resolveTarget, type TmuxWindow } from "./tmux.js";
 import { escapeXml, sessionHue } from "./tmux-window.js";
 
 /** hot = keystrokes land there now; cold = exists but unfocused; unknown = no match/server. */
@@ -38,7 +38,9 @@ export function evaluateKeyStatus(args: {
 }): TmuxKeyStatus {
 	const match = resolveTarget(args.windows, args.target);
 	if (!match) {
-		return { state: "unknown", session: "", window: args.target.trim() };
+		// An id target names no window a person can read; say which id is gone.
+		const lost = parseIdTarget(args.target);
+		return { state: "unknown", session: "", window: lost === null ? args.target.trim() : `${lost.id} gone` };
 	}
 	const tty = args.clients.get(match.session) ?? "";
 	const hot =

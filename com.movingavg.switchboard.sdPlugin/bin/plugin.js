@@ -8388,15 +8388,15 @@ const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/
 function findTmuxPath(exists = existsSync) {
     return TMUX_CANDIDATES.find(exists) ?? "tmux";
 }
-/** tmux args that emit one window per line as `session|index|active|id|pid|name`
- * (`pid` is the tmux SERVER's pid, repeated on every row).
+/** tmux args that emit one window per line as `session|index|active|id|server|name`
+ * (`server` is the tmux server's `<pid>-<start_time>`, repeated on every row).
  * The NAME is last: window names may legally contain `|`, so every fixed-width
  * field comes first and the parser joins the remainder back into the name. */
 const LIST_WINDOWS_ARGS = [
     "list-windows",
     "-a",
     "-F",
-    "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}|#{window_name}",
+    "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}-#{start_time}|#{window_name}",
 ];
 /** tmux args that emit one client per line as `tty|session`. */
 const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
@@ -9024,9 +9024,9 @@ function hslToHex(h, s, l) {
  */
 /**
  * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}|#{window_name}"
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}-#{start_time}|#{window_name}"
  *
- * Each non-blank line is split on `|`: `session | index | active | id | pid | name…`.
+ * Each non-blank line is split on `|`: `session | index | active | id | server | name…`.
  * The window NAME is the LAST field and may itself contain `|` — the fixed
  * fields come first and the remainder is joined back into the name. `active`
  * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
@@ -9042,14 +9042,14 @@ function parseWindows(output) {
         if (fields.length < 6) {
             continue;
         }
-        const [session, index, active, id, serverPid] = fields;
+        const [session, index, active, id, server] = fields;
         windows.push({
             session,
             index: Number(index),
             name: fields.slice(5).join("|"),
             active: active === "1",
             id,
-            serverPid,
+            server,
         });
     }
     return windows;
@@ -9118,6 +9118,11 @@ function sessionForTty(clients, tty) {
     }
     return null;
 }
+/** Split a `session:@id#pid-start` target (see {@link resolveTarget}); null for any other form. */
+function parseIdTarget(target) {
+    const m = /^([^:]*):(@\d+)#(\d+-\d+)$/.exec(target.trim());
+    return m === null ? null : { session: m[1], id: m[2], server: m[3] };
+}
 /**
  * Resolve a user-supplied target string to a single {@link TmuxWindow}.
  *
@@ -9125,12 +9130,13 @@ function sessionForTty(clients, tty) {
  *
  * Three forms are supported:
  *
- * - `"session:@id#pid"` — tmux's window id plus the server pid (see
- *   {@link TmuxWindow.id}). Matches only the window with that id, on that
- *   server, in exactly that session (case-sensitive, as tmux session names
+ * - `"session:@id#pid-start"` — tmux's window id plus the server run (see
+ *   {@link TmuxWindow.id}, {@link TmuxWindow.server}). Matches only the window
+ *   with that id, on that server run, in exactly that session (case-sensitive, as tmux session names
  *   are). When that window is gone — closed, or the server restarted — it
  *   returns `null`; it never falls back to a name or an index. `@digits`
- *   WITHOUT `#pid` is not this form: it is read as a name, as it always was.
+ *   WITHOUT `#pid-start` is not this form: it is read as a name, as it always
+ *   was (v1.5.0's pid-only `@8#123` therefore matches nothing).
  *
  * - `"session:name"` — the part before `:` must match a window's session
  *   exactly (case-insensitive) AND the part after must match the window's name
@@ -9151,11 +9157,9 @@ function resolveTarget$1(windows, target) {
     const colon = trimmed.indexOf(":");
     if (colon !== -1) {
         const namePart = trimmed.slice(colon + 1);
-        const byId = /^(@\d+)#(\d+)$/.exec(namePart);
+        const byId = parseIdTarget(trimmed);
         if (byId !== null) {
-            const session = trimmed.slice(0, colon);
-            const [, id, pid] = byId;
-            return windows.find((w) => w.session === session && w.id === id && w.serverPid === pid) ?? null;
+            return windows.find((w) => w.session === byId.session && w.id === byId.id && w.server === byId.server) ?? null;
         }
         const sessionPart = trimmed.slice(0, colon).toLowerCase();
         const namePartLower = namePart.toLowerCase();
@@ -9197,21 +9201,32 @@ function tmuxWindowLabel(w) {
  * The target string that binds a key to exactly window `w`, for capture and
  * for the settings dropdown. `session:name` when that name is unique in the
  * session (it survives a tmux restart and reads well); otherwise
- * `session:@id#pid`, because {@link resolveTarget} takes the FIRST match and a
+ * `session:@id#pid-start`, because {@link resolveTarget} takes the FIRST match and a
  * shared name would send the key to a different window — and would move again
  * whenever a same-named window closes. Names and sessions are compared
  * case-insensitively here because the resolver compares them that way.
  * Every candidate is checked by resolving it against `windows`; "" when
- * neither resolves to `w` (only possible without an id or a server pid).
+ * neither resolves to `w` (only possible without an id or a server run).
  */
 function exactTargetFor(windows, w) {
     const shared = windows.some((o) => o !== w &&
         o.session.toLowerCase() === w.session.toLowerCase() &&
         o.name.toLowerCase() === w.name.toLowerCase());
     const candidates = shared ? [] : [`${w.session}:${w.name}`];
-    if (w.id !== "" && w.serverPid !== "")
-        candidates.push(`${w.session}:${w.id}#${w.serverPid}`);
+    if (w.id !== "" && w.server !== "")
+        candidates.push(`${w.session}:${w.id}#${w.server}`);
     return candidates.find((t) => resolveTarget$1(windows, t) === w) ?? "";
+}
+/**
+ * The dropdown's entries from a raw `list-windows` result. A FAILED call
+ * offers nothing, even when it left partial stdout: a list cut short after
+ * the first of two same-named windows would make that name look unique.
+ * `failed` tells the caller to log it.
+ */
+function windowOptionsFromList(res) {
+    if (!res.ok)
+        return { items: [], skipped: 0, failed: true };
+    return { ...tmuxWindowOptions(parseWindows(res.stdout)), failed: false };
 }
 /**
  * The settings dropdown's entries: one per window that some target can name,
@@ -14111,7 +14126,9 @@ let BBEditDocDial = (() => {
 function evaluateKeyStatus(args) {
     const match = resolveTarget$1(args.windows, args.target);
     if (!match) {
-        return { state: "unknown", session: "", window: args.target.trim() };
+        // An id target names no window a person can read; say which id is gone.
+        const lost = parseIdTarget(args.target);
+        return { state: "unknown", session: "", window: lost === null ? args.target.trim() : `${lost.id} gone` };
     }
     const tty = args.clients.get(match.session) ?? "";
     const hot = match.active && args.iTermFrontmost && tty !== "" && tty === args.focusedTty;
@@ -14587,9 +14604,9 @@ let FocusTmuxWindow = (() => {
                 return;
             const tmux = findTmuxPath();
             const result = await runTmux(LIST_WINDOWS_ARGS, tmux);
-            if (!result.ok)
-                streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}).`);
-            const { items, skipped } = tmuxWindowOptions(parseWindows(result.stdout));
+            const { items, skipped, failed } = windowOptionsFromList(result);
+            if (failed)
+                streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}); offering no windows.`);
             if (skipped > 0)
                 streamDeck.logger.warn(`Focus tmux: ${skipped} tmux window(s) left out of the dropdown — no target names them uniquely.`);
             await streamDeck.ui.current?.sendToPropertyInspector({ event: "getTmuxWindows", items });

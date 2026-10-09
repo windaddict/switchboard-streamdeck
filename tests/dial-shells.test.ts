@@ -86,7 +86,7 @@ const FRONT: Front = { kind: "front", front: { session: "dev", tty: "/dev/ttys00
 const PROBE_FAILED: Front = { kind: "probe-failed", step: "list-clients", stderr: "no server running" };
 const TMUX_OK = { ok: true, stdout: "", stderr: "" };
 const TMUX_FAIL = { ok: false, stdout: "", stderr: "no current client" };
-const WINDOWS = "dev|0|1|@1|100|one\ndev|1|0|@2|100|two\n";
+const WINDOWS = "dev|0|1|@1|100-1|one\ndev|1|0|@2|100-1|two\n";
 const BB_LIST = (active: number) => `1\tA.txt\t10\n2\tB.txt\t20\nACTIVE\t${active}`;
 
 // ---- a fake dial and the handlers' event shapes ---------------------------

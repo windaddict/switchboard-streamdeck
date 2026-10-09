@@ -32,7 +32,7 @@ import {
 	chooseClientTty,
 	parseWindows,
 	resolveTarget,
-	tmuxWindowOptions,
+	windowOptionsFromList,
 	switchClientToWindowArgs,
 } from "../mac/tmux.js";
 import { buildTmuxKeyImage, evaluateKeyStatus } from "../mac/tmux-key.js";
@@ -335,8 +335,8 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 		const tmux = findTmuxPath();
 		const result = await runTmux(LIST_WINDOWS_ARGS, tmux);
-		if (!result.ok) streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}).`);
-		const { items, skipped } = tmuxWindowOptions(parseWindows(result.stdout));
+		const { items, skipped, failed } = windowOptionsFromList(result);
+		if (failed) streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}); offering no windows.`);
 		if (skipped > 0) streamDeck.logger.warn(`Focus tmux: ${skipped} tmux window(s) left out of the dropdown — no target names them uniquely.`);
 
 		await streamDeck.ui.current?.sendToPropertyInspector({ event: "getTmuxWindows", items });

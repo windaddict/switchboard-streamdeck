@@ -10,12 +10,13 @@ import {
 	switchClientToWindowArgs,
 	tmuxWindowLabel,
 	tmuxWindowOptions,
+	windowOptionsFromList,
 	exactTargetFor,
 	type TmuxWindow,
 } from "../src/mac/tmux.js";
 
 const WINDOWS_FIXTURE =
-	"apps|1|0|@1|100|copybug\napps|2|1|@2|100|metronome\napps|3|0|@3|100|passages\ndev|1|1|@4|100|ea-system\ndev|2|0|@5|100|movingavg\ndev|3|0|@6|100|medtech\n";
+	"apps|1|0|@1|100-1|copybug\napps|2|1|@2|100-1|metronome\napps|3|0|@3|100-1|passages\ndev|1|1|@4|100-1|ea-system\ndev|2|0|@5|100-1|movingavg\ndev|3|0|@6|100-1|medtech\n";
 
 const CLIENTS_FIXTURE = "/dev/ttys000|dev\n/dev/ttys007|apps\n";
 
@@ -32,7 +33,7 @@ describe("parseWindows", () => {
 			name: "metronome",
 			active: true,
 			id: "@2",
-			serverPid: "100",
+			server: "100-1",
 		});
 	});
 
@@ -49,14 +50,14 @@ describe("parseWindows", () => {
 	});
 
 	it("keeps a pipe in the window name (name is the LAST field, joined)", () => {
-		const windows = parseWindows("dev|4|1|@9|100|api|logs\n");
-		expect(windows).toEqual([{ session: "dev", index: 4, name: "api|logs", active: true, id: "@9", serverPid: "100" }]);
+		const windows = parseWindows("dev|4|1|@9|100-1|api|logs\n");
+		expect(windows).toEqual([{ session: "dev", index: 4, name: "api|logs", active: true, id: "@9", server: "100-1" }]);
 	});
 	it("skips blank and short (<6 field) lines", () => {
 		// "dev|5|0|old" is the pre-id four-field format: it must be skipped, not
 		// read with the name in the id slot.
 		const input =
-			"apps|1|0|@1|100|copybug\n\n   \nbad|line\ndev|5|0|old\ndev|5|0|@7|old\ndev|2|0|@5|100|movingavg\n";
+			"apps|1|0|@1|100-1|copybug\n\n   \nbad|line\ndev|5|0|old\ndev|5|0|@7|old\ndev|2|0|@5|100-1|movingavg\n";
 		const windows = parseWindows(input);
 		expect(windows).toHaveLength(2);
 		expect(windows.map((w) => w.name)).toEqual(["copybug", "movingavg"]);
@@ -126,7 +127,7 @@ describe("resolveTarget — bare names", () => {
 			name: "movingavg",
 			active: false,
 			id: "@5",
-			serverPid: "100",
+			server: "100-1",
 		});
 	});
 
@@ -144,8 +145,8 @@ describe("resolveTarget — bare names", () => {
 
 	it("prefers an exact match over a substring match", () => {
 		const subset: TmuxWindow[] = [
-			{ session: "dev", index: 1, name: "ea-system", active: false, id: "@1", serverPid: "100" },
-			{ session: "dev", index: 2, name: "ea", active: false, id: "@2", serverPid: "100" },
+			{ session: "dev", index: 1, name: "ea-system", active: false, id: "@1", server: "100-1" },
+			{ session: "dev", index: 2, name: "ea", active: false, id: "@2", server: "100-1" },
 		];
 		// "ea" is a substring of "ea-system", but the exact "ea" must win
 		// regardless of fixture order.
@@ -163,7 +164,7 @@ describe("resolveTarget — session:name and session:index", () => {
 			name: "movingavg",
 			active: false,
 			id: "@5",
-			serverPid: "100",
+			server: "100-1",
 		});
 	});
 
@@ -203,7 +204,7 @@ describe("selectWindowArgs / labels / values", () => {
 		name: "movingavg",
 		active: false,
 		id: "@5",
-			serverPid: "100",
+			server: "100-1",
 	};
 
 	it("selectWindowArgs builds select-window args", () => {
@@ -221,35 +222,45 @@ describe("selectWindowArgs / labels / values", () => {
 });
 
 describe("resolveTarget — session:@id (tmux window id)", () => {
-	const windows = parseWindows("dev|7|0|@7|100|claude\ndev|8|1|@8|100|claude\nops|1|1|@3|100|claude\n");
+	const windows = parseWindows("dev|7|0|@7|100-1|claude\ndev|8|1|@8|100-1|claude\nops|1|1|@3|100-1|claude\n");
 
 	it("resolves to the window with that id in that session", () => {
-		expect(resolveTarget(windows, "dev:@8#100")).toMatchObject({ session: "dev", index: 8, id: "@8", serverPid: "100" });
+		expect(resolveTarget(windows, "dev:@8#100-1")).toMatchObject({ session: "dev", index: 8, id: "@8", server: "100-1" });
 	});
 	it("still finds the window after renumbering and renaming (the reason ids exist)", () => {
 		// renumber-windows on: window 7 closed, @8 is now index 7 — and renamed.
-		const after = parseWindows("dev|7|1|@8|100|renamed\nops|1|1|@3|100|claude\n");
-		expect(resolveTarget(after, "dev:@8#100")).toMatchObject({ index: 7, name: "renamed", id: "@8", serverPid: "100" });
+		const after = parseWindows("dev|7|1|@8|100-1|renamed\nops|1|1|@3|100-1|claude\n");
+		expect(resolveTarget(after, "dev:@8#100-1")).toMatchObject({ index: 7, name: "renamed", id: "@8", server: "100-1" });
 	});
 	it("returns null when the window is gone, never falling back to a name or index", () => {
-		// A window literally NAMED "@8#100" and one at index 8 must not answer for it.
-		const after = parseWindows("dev|8|1|@20|100|@8#100\n");
-		expect(resolveTarget(after, "dev:@8#100")).toBeNull();
+		// A window literally NAMED "@8#100-1" and one at index 8 must not answer for it.
+		const after = parseWindows("dev|8|1|@20|100-1|@8#100-1\n");
+		expect(resolveTarget(after, "dev:@8#100-1")).toBeNull();
 	});
 	it("returns null after a tmux server restart, when the same id names a different window", () => {
 		// Measured on a scratch server: after kill-server, new windows get @0, @1, …
 		// again, so "@8" alone would bind a stranger. The pid tells the servers apart.
-		const restarted = parseWindows("dev|1|1|@8|200|claude\n");
-		expect(resolveTarget(restarted, "dev:@8#100")).toBeNull();
+		const restarted = parseWindows("dev|1|1|@8|200-1|claude\n");
+		expect(resolveTarget(restarted, "dev:@8#100-1")).toBeNull();
+	});
+	it("returns null when a restarted server REUSED the pid (start time differs)", () => {
+		// The pid alone is not a server identity: the OS can hand the old pid to
+		// the new server. pid-start_time is.
+		const reused = parseWindows("dev|8|1|@8|100-2|claude\n");
+		expect(resolveTarget(reused, "dev:@8#100-1")).toBeNull();
+	});
+	it("does not resolve a v1.5.0 pid-only id target (it reads as a name that matches nothing)", () => {
+		const windows = parseWindows("dev|8|1|@8|100-1|claude\n");
+		expect(resolveTarget(windows, "dev:@8#100")).toBeNull();
 	});
 	it("treats @digits without a server pid as a NAME, as it always was", () => {
-		const windows = parseWindows("dev|3|1|@3|100|@8\ndev|8|0|@8|100|other\n");
+		const windows = parseWindows("dev|3|1|@3|100-1|@8\ndev|8|0|@8|100-1|other\n");
 		expect(resolveTarget(windows, "dev:@8")).toMatchObject({ index: 3, name: "@8" });
 	});
 	it("matches the session exactly (tmux session names are case-sensitive)", () => {
-		const mixed = parseWindows("Dev|8|1|@8|100|claude\ndev|8|1|@9|100|claude\n");
-		expect(resolveTarget(mixed, "dev:@9#100")).toMatchObject({ session: "dev", id: "@9", serverPid: "100" });
-		expect(resolveTarget(mixed, "dev:@8#100")).toBeNull();
+		const mixed = parseWindows("Dev|8|1|@8|100-1|claude\ndev|8|1|@9|100-1|claude\n");
+		expect(resolveTarget(mixed, "dev:@9#100-1")).toMatchObject({ session: "dev", id: "@9", server: "100-1" });
+		expect(resolveTarget(mixed, "dev:@8#100-1")).toBeNull();
 	});
 });
 
@@ -257,7 +268,7 @@ describe("exactTargetFor", () => {
 	// Real tmux ids are "@<n>", unique per server; derive one from the index,
 	// offset by session so two sessions never share it.
 	const w = (session: string, index: number, name: string, active = false): TmuxWindow =>
-		({ session, index, name, active, id: `@${(session === "dev" ? 100 : session === "Dev" ? 200 : 300) + index}`, serverPid: "100" });
+		({ session, index, name, active, id: `@${(session === "dev" ? 100 : session === "Dev" ? 200 : 300) + index}`, server: "100-1" });
 
 	it("uses session:name when the name is unique in its session", () => {
 		const windows = [w("dev", 2, "movingavg"), w("dev", 3, "logs"), w("ops", 1, "movingavg")];
@@ -267,25 +278,25 @@ describe("exactTargetFor", () => {
 		// A name target for the first duplicate would move to the second when the
 		// first closes, so neither duplicate is bound by name.
 		const windows = [w("dev", 7, "claude"), w("dev", 8, "claude")];
-		expect(exactTargetFor(windows, windows[0])).toBe("dev:@107#100");
-		expect(exactTargetFor(windows, windows[1])).toBe("dev:@108#100");
+		expect(exactTargetFor(windows, windows[0])).toBe("dev:@107#100-1");
+		expect(exactTargetFor(windows, windows[1])).toBe("dev:@108#100-1");
 	});
 	it("treats names that differ only in case as shared (the resolver ignores case)", () => {
 		const windows = [w("dev", 1, "Claude"), w("dev", 4, "claude")];
 		// The FIRST one matters most: "dev:Claude" resolves to it today, so only the
 		// shared-name rule stops it binding by a name that is not unique.
-		expect(exactTargetFor(windows, windows[0])).toBe("dev:@101#100");
-		expect(exactTargetFor(windows, windows[1])).toBe("dev:@104#100");
+		expect(exactTargetFor(windows, windows[0])).toBe("dev:@101#100-1");
+		expect(exactTargetFor(windows, windows[1])).toBe("dev:@104#100-1");
 	});
 	it("treats sessions that differ only in case as one for name sharing", () => {
 		const windows = [w("Dev", 8, "claude"), w("dev", 8, "claude")];
 		const target = exactTargetFor(windows, windows[1]);
-		expect(target).toBe("dev:@108#100");
+		expect(target).toBe("dev:@108#100-1");
 		expect(resolveTarget(windows, target)).toBe(windows[1]);
 	});
 	it("uses the id when a numeric name would resolve as another window's index", () => {
 		const windows = [w("dev", 2, "logs"), w("dev", 5, "2")];
-		expect(exactTargetFor(windows, windows[1])).toBe("dev:@105#100");
+		expect(exactTargetFor(windows, windows[1])).toBe("dev:@105#100-1");
 	});
 	it("every target it returns resolves back to exactly that window", () => {
 		const windows = [w("dev", 2, "logs"), w("dev", 5, "2"), w("dev", 7, "claude"), w("dev", 8, "Claude"), w("ops", 1, "claude")];
@@ -293,36 +304,49 @@ describe("exactTargetFor", () => {
 	});
 	it("returns \"\" when the name is shared and the server pid is missing", () => {
 		const windows: TmuxWindow[] = [
-			{ session: "dev", index: 7, name: "claude", active: false, id: "@7", serverPid: "" },
-			{ session: "dev", index: 8, name: "claude", active: false, id: "@8", serverPid: "" },
+			{ session: "dev", index: 7, name: "claude", active: false, id: "@7", server: "" },
+			{ session: "dev", index: 8, name: "claude", active: false, id: "@8", server: "" },
 		];
 		expect(exactTargetFor(windows, windows[1])).toBe("");
 	});
 	it("returns \"\" when the name is shared and there is no id to fall back on", () => {
 		const windows: TmuxWindow[] = [
-			{ session: "dev", index: 7, name: "claude", active: false, id: "", serverPid: "100" },
-			{ session: "dev", index: 8, name: "claude", active: false, id: "", serverPid: "100" },
+			{ session: "dev", index: 7, name: "claude", active: false, id: "", server: "100-1" },
+			{ session: "dev", index: 8, name: "claude", active: false, id: "", server: "100-1" },
 		];
 		expect(exactTargetFor(windows, windows[1])).toBe("");
 	});
 });
 
+describe("windowOptionsFromList (the dropdown's tmux result)", () => {
+	it("offers nothing from a FAILED list-windows, even when it left partial stdout", () => {
+		// A timeout can cut the list after the first of two same-named windows;
+		// building options from that would offer a name target that is not unique.
+		const partial = { ok: false, stdout: "dev|7|0|@7|100-1|claude\n", stderr: "" };
+		expect(windowOptionsFromList(partial)).toEqual({ items: [], skipped: 0, failed: true });
+	});
+	it("builds the options from a successful list", () => {
+		const ok = { ok: true, stdout: "dev|2|0|@2|100-1|movingavg\n", stderr: "" };
+		expect(windowOptionsFromList(ok)).toEqual({ items: [{ label: "dev: movingavg", value: "dev:movingavg" }], skipped: 0, failed: false });
+	});
+});
+
 describe("tmuxWindowOptions (the settings dropdown)", () => {
 	it("gives same-named windows distinct values and labels that tell them apart", () => {
-		const windows = parseWindows("dev|2|0|@2|100|movingavg\ndev|7|0|@7|100|claude\ndev|8|1|@8|100|claude\n");
+		const windows = parseWindows("dev|2|0|@2|100-1|movingavg\ndev|7|0|@7|100-1|claude\ndev|8|1|@8|100-1|claude\n");
 		expect(tmuxWindowOptions(windows)).toEqual({
 			items: [
 				{ label: "dev: movingavg", value: "dev:movingavg" },
-				{ label: "dev: claude (window 7)", value: "dev:@7#100" },
-				{ label: "dev: claude (window 8)", value: "dev:@8#100" },
+				{ label: "dev: claude (window 7)", value: "dev:@7#100-1" },
+				{ label: "dev: claude (window 8)", value: "dev:@8#100-1" },
 			],
 			skipped: 0,
 		});
 	});
 	it("counts, rather than offers, a window no target can name", () => {
 		const windows: TmuxWindow[] = [
-			{ session: "dev", index: 7, name: "claude", active: false, id: "", serverPid: "100" },
-			{ session: "dev", index: 8, name: "claude", active: false, id: "", serverPid: "100" },
+			{ session: "dev", index: 7, name: "claude", active: false, id: "", server: "100-1" },
+			{ session: "dev", index: 8, name: "claude", active: false, id: "", server: "100-1" },
 		];
 		expect(tmuxWindowOptions(windows)).toEqual({ items: [], skipped: 2 });
 	});

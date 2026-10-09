@@ -147,9 +147,9 @@ describe("toggleScope", () => {
 });
 
 const ALL_WINDOWS: TmuxWindow[] = [
-	{ session: "dev", index: 1, name: "vim", active: true, id: "@1", serverPid: "100" },
-	{ session: "dev", index: 2, name: "logs", active: false, id: "@2", serverPid: "100" },
-	{ session: "ops", index: 1, name: "deploy", active: true, id: "@3", serverPid: "100" },
+	{ session: "dev", index: 1, name: "vim", active: true, id: "@1", server: "100-1" },
+	{ session: "dev", index: 2, name: "logs", active: false, id: "@2", server: "100-1" },
+	{ session: "ops", index: 1, name: "deploy", active: true, id: "@3", server: "100-1" },
 ];
 
 describe("nextWindowAcross", () => {
@@ -229,28 +229,28 @@ describe("captureTmuxTarget", () => {
 	// The window list is the ONE snapshot capture reads: the active row of the
 	// front session is the captured window, and the target must resolve to it.
 	it("captures the front session's active window by name when the name is unique", () => {
-		const windows = parseWindows("dev|2|1|@2|100|movingavg\ndev|3|0|@3|100|logs\nops|1|1|@9|100|deploy\n");
+		const windows = parseWindows("dev|2|1|@2|100-1|movingavg\ndev|3|0|@3|100-1|logs\nops|1|1|@9|100-1|deploy\n");
 		expect(captureTmuxTarget(windows, "dev")).toBe("dev:movingavg");
 	});
 	it("captures by window id when another window in the session has the same name", () => {
 		// The live bug: dev:7 and dev:8 were both auto-named "claude"; "dev:claude"
 		// resolved to 7, so a key captured from 8 never lit and raised the wrong window.
-		const windows = parseWindows("dev|7|0|@7|100|claude\ndev|8|1|@8|100|claude\n");
+		const windows = parseWindows("dev|7|0|@7|100-1|claude\ndev|8|1|@8|100-1|claude\n");
 		const target = captureTmuxTarget(windows, "dev");
-		expect(target).toBe("dev:@8#100");
+		expect(target).toBe("dev:@8#100-1");
 		// renumber-windows on: window 7 closes, @8 becomes index 7. Still the same window.
-		expect(resolveTarget(parseWindows("dev|7|1|@8|100|claude\n"), target)?.id).toBe("@8");
+		expect(resolveTarget(parseWindows("dev|7|1|@8|100-1|claude\n"), target)?.id).toBe("@8");
 	});
 	it("reads the active window of the FRONT session, not another session's", () => {
-		const windows = parseWindows("ops|1|1|@1|100|claude\ndev|7|0|@7|100|claude\ndev|8|1|@8|100|claude\n");
+		const windows = parseWindows("ops|1|1|@1|100-1|claude\ndev|7|0|@7|100-1|claude\ndev|8|1|@8|100-1|claude\n");
 		expect(captureTmuxTarget(windows, "ops")).toBe("ops:claude");
-		expect(captureTmuxTarget(windows, "dev")).toBe("dev:@8#100");
+		expect(captureTmuxTarget(windows, "dev")).toBe("dev:@8#100-1");
 	});
 	it("returns \"\" when the session has no active window in the list", () => {
-		expect(captureTmuxTarget(parseWindows("dev|7|0|@7|100|claude\n"), "dev")).toBe("");
+		expect(captureTmuxTarget(parseWindows("dev|7|0|@7|100-1|claude\n"), "dev")).toBe("");
 		expect(captureTmuxTarget([], "dev")).toBe("");
 	});
 	it("returns \"\" when there is no session (no tmux server)", () => {
-		expect(captureTmuxTarget(parseWindows("  |0|1|@0|100|x\n"), "  ")).toBe("");
+		expect(captureTmuxTarget(parseWindows("  |0|1|@0|100-1|x\n"), "  ")).toBe("");
 	});
 });
