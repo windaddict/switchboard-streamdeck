@@ -1,7 +1,7 @@
 {
 	"$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
 	"Name": "Switchboard",
-	"Version": "1.4.1.0",
+	"Version": "1.5.0.0",
 	"Author": "Moving Average Labs",
 	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code, Codex CLI and Cursor CLI sessions are working or need you (tmux, iTerm2, or Terminal.app; press to raise them) — plus Safari tab jump, window tiling and cycling, tmux panes, BBEdit documents, and files.",
 	"Category": "Switchboard",

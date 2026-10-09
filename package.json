@@ -1,6 +1,6 @@
 {
 	"name": "switchboard",
-	"version": "1.4.1",
+	"version": "1.5.0",
 	"description": "Switchboard — macOS Stream Deck plugin: live keys for Claude Code, Codex CLI and Cursor CLI sessions, plus Safari tabs, app windows, window tiling, tmux panes and windows, BBEdit documents, files and snippets.",
 	"type": "module",
 	"private": true,
