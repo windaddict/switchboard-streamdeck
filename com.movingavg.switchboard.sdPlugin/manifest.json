@@ -3,18 +3,17 @@
 	"Name": "Switchboard",
 	"Version": "1.4.1.0",
 	"Author": "Moving Average Labs",
-	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code and Codex CLI sessions are working or need you (tmux, iTerm2, or Terminal.app; press to raise them) — plus Safari tab jump, window tiling and cycling, tmux panes, BBEdit documents, and files.",
+	"Description": "Switchboard — an operator's control surface for macOS. Live key faces show whether Claude Code, Codex CLI and Cursor CLI sessions are working or need you (tmux, iTerm2, or Terminal.app; press to raise them) — plus Safari tab jump, window tiling and cycling, tmux panes, BBEdit documents, and files.",
 	"Category": "Switchboard",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"Icon": "imgs/plugin/marketplace",
 	"SDKVersion": 2,
 	"CodePath": "bin/plugin.js",
 	"Nodejs": {
-		"Version": "20",
-		"Debug": "enabled"
+		"Version": "24"
 	},
 	"Software": {
-		"MinimumVersion": "6.5"
+		"MinimumVersion": "7.1"
 	},
 	"OS": [
 		{
@@ -27,6 +26,7 @@
 		{
 			"Name": "Safari Tab Jump",
 			"UUID": "com.movingavg.switchboard.jump",
+			"SupportedInMultiActions": true,
 			"Icon": "imgs/actions/jump/icon",
 			"Tooltip": "Jump to an open Safari tab, or open it if missing. Hold to capture the current tab.",
 			"PropertyInspectorPath": "ui/jump-to-tab.html",
@@ -43,6 +43,7 @@
 		{
 			"Name": "Scroll Window",
 			"UUID": "com.movingavg.switchboard.scroll",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/scroll/icon",
 			"Tooltip": "Dial: scroll the frontmost window. Press: jump to top (or toggle speed). Tap: toggle fast/slow.",
 			"PropertyInspectorPath": "ui/scroll-window.html",
@@ -68,6 +69,7 @@
 		{
 			"Name": "Open / Switch App",
 			"UUID": "com.movingavg.switchboard.switchapp",
+			"SupportedInMultiActions": true,
 			"Icon": "imgs/actions/switchapp/icon",
 			"Tooltip": "Open or switch to an app, optionally focusing a window by title pattern. Hold to capture the frontmost app.",
 			"PropertyInspectorPath": "ui/switch-app.html",
@@ -84,6 +86,7 @@
 		{
 			"Name": "Focus tmux Window",
 			"UUID": "com.movingavg.switchboard.tmux",
+			"SupportedInMultiActions": true,
 			"Icon": "imgs/actions/tmux/icon",
 			"Tooltip": "Raise the iTerm2 window for a tmux window, and optionally switch to it. Hold to capture the current tmux window.",
 			"PropertyInspectorPath": "ui/focus-tmux.html",
@@ -101,6 +104,7 @@
 		{
 			"Name": "Switch tmux Pane",
 			"UUID": "com.movingavg.switchboard.tmuxpane",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/tmuxpane/icon",
 			"Tooltip": "Dial: rotate to switch tmux panes, or windows after a press/tap toggles the mode.",
 			"PropertyInspectorPath": "ui/tmux-pane.html",
@@ -126,6 +130,7 @@
 		{
 			"Name": "Cycle tmux Window",
 			"UUID": "com.movingavg.switchboard.tmuxwindial",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/tmuxwindial/icon",
 			"Tooltip": "Dial: rotate to cycle tmux windows; push for last window; tap to widen the scope to all sessions.",
 			"PropertyInspectorPath": "ui/tmux-window.html",
@@ -151,6 +156,7 @@
 		{
 			"Name": "Cycle App Windows",
 			"UUID": "com.movingavg.switchboard.appwindows",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/appwindows/icon",
 			"Tooltip": "Dial: cycle the frontmost app's windows. Press or tap: toggle to cycling apps instead.",
 			"PropertyInspectorPath": "ui/app-windows.html",
@@ -176,6 +182,7 @@
 		{
 			"Name": "BBEdit Documents",
 			"UUID": "com.movingavg.switchboard.bbeditdoc",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/bbeditdoc/icon",
 			"Tooltip": "Dial: move between the open documents in BBEdit's front window. Press: back to the previous document.",
 			"PropertyInspectorPath": "ui/bbedit-doc.html",
@@ -200,6 +207,7 @@
 		{
 			"Name": "Open File",
 			"UUID": "com.movingavg.switchboard.openfile",
+			"SupportedInMultiActions": true,
 			"Icon": "imgs/actions/openfile/icon",
 			"Tooltip": "Open the newest / latest / pattern-matched file in a folder, with a live ✓/✗ status badge.",
 			"PropertyInspectorPath": "ui/open-file.html",
@@ -216,6 +224,7 @@
 		{
 			"Name": "Paste Snippet",
 			"UUID": "com.movingavg.switchboard.snippet",
+			"SupportedInMultiActions": true,
 			"Icon": "imgs/actions/snippet/icon",
 			"Tooltip": "Press to insert the stored text; hold to capture the current selection into the key. Uses ⌘C/⌘V in most apps, but saves your clipboard first and puts it back afterwards — including images and files. It won't copy a clipboard your password manager marked secret, and it refuses password fields it can detect, though not all of them.",
 			"PropertyInspectorPath": "ui/paste-snippet.html",
@@ -233,6 +242,7 @@
 		{
 			"Name": "Window Ring",
 			"UUID": "com.movingavg.switchboard.windowring",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/windowring/icon",
 			"Tooltip": "Long-press to add/remove the current window; tap to cycle through your saved windows.",
 			"PropertyInspectorPath": "ui/window-ring.html",
@@ -249,6 +259,7 @@
 		{
 			"Name": "Arrange Window",
 			"UUID": "com.movingavg.switchboard.tile",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/tile/icon",
 			"Tooltip": "Dial: rotate to tile the frontmost window through the active arrangement (reverse retraces it). Tap: toggle arrangement A/B. Press: maximize.",
 			"PropertyInspectorPath": "ui/arrange-window.html",
@@ -274,6 +285,7 @@
 		{
 			"Name": "AI Project",
 			"UUID": "com.movingavg.switchboard.aiproject",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/aiproject/icon",
 			"Tooltip": "Replaces the separate Claude/Codex/Cursor Project keys. Live face for a Claude Code, Codex, or Cursor CLI session (cursor-agent in the terminal, not the Cursor editor) \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane. A red edge stripe marks a turn that finished while you were looking elsewhere; going to that session clears it.",
 			"PropertyInspectorPath": "ui/ai-project.html",
@@ -291,6 +303,7 @@
 		{
 			"Name": "Claude Project (legacy)",
 			"UUID": "com.movingavg.switchboard.claudeproject",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/claudeproject/icon",
 			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for a Claude Code project; press to raise its window, hold to capture the frontmost session. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/claude-project.html",
@@ -308,6 +321,7 @@
 		{
 			"Name": "Codex Project (legacy)",
 			"UUID": "com.movingavg.switchboard.codexproject",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/codexproject/icon",
 			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Codex CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/codex-project.html",
@@ -325,6 +339,7 @@
 		{
 			"Name": "Cursor Project (legacy)",
 			"UUID": "com.movingavg.switchboard.cursorproject",
+			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/cursorproject/icon",
 			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Cursor CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
 			"PropertyInspectorPath": "ui/cursor-project.html",

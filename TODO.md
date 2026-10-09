@@ -21,12 +21,46 @@ plugin is shippable as-is.
 - [ ] Extract a `PolledKeyAction` base class for the visible-Map + poll-timer
       scaffold shared by `open-file.ts` and `window-ring.ts` (medium risk — the
       action shells have no direct unit tests).
-- [ ] Extract a parameterized permission-message helper (Accessibility vs
-      Automation) used by several action shells.
+- [x] Extract a parameterized permission-message helper (Accessibility vs
+      Automation). Done for the six dials: `src/mac/dial-outcome.ts`. Key shells
+      still use `focus-outcome.ts`.
 - [ ] Remove dead `FileStatus "plain"` (`src/mac/key-image.ts`); decide whether
       to keep `matchesGlob` (`src/mac/files.ts`, used only by tests).
 - [ ] Extract Open File's status-state computation into a pure `fileStatus(...)`
       helper + test.
+
+- [ ] **Upgrade `@elgato/streamdeck` 1.4.1 to 3.x.** Touch points: `streamDeck.ui.current`
+      (`pi-permissions.ts`, `focus-tmux.ts`), `onDidReceiveSettings` overrides
+      (`open-file.ts`, `paste-snippet.ts`), mandatory settings generics on
+      `DialAction`/`KeyAction`, and the tsconfig move to NodeNext. Best done with
+      the retirement of the three legacy actions.
+- [ ] Skip the poll timer for `isInMultiAction` instances of Focus tmux, Open File
+      and Paste Snippet (their face is never drawn there).
+
+- [ ] **List icons look smaller than other plugins' icons** in the Stream Deck
+      action list (operator, 2026-10-05, after the white-icon change passed its
+      live check). Measured: on the 40 px `icon@2x.png` the glyph's opaque
+      bounding box is 24-32 px wide (60-80% of the canvas), because
+      `icon_svg()` in `scripts/make-icons.py` reuses the key-face 72-unit
+      viewBox with its key-face padding. Likely fix, not yet tried: give list
+      icons a tighter viewBox (crop to the glyph plus a small margin), then
+      rerun `make-icons.py`, check `tests/icons.test.ts` (its REGIONS
+      rectangles are in 20 px coordinates and will move), and compare against
+      another plugin's icons in the action list.
+
+- [ ] **Rate-limit dial failure logging.** A dial logs one line per detent:
+      on 2026-10-05, one spin of Scroll with Accessibility revoked wrote 12
+      identical "Scroll Window blocked" ERROR lines in 3 s (and BBEdit wrote 5
+      in 3 s). CLAUDE.md says to rate-limit anything that can fire in a loop.
+      Likely fix: in `reportDial`, log a repeated identical message at most
+      once per few seconds per dial, still alerting every time.
+- [ ] **BBEdit "no BBEdit?" path may be unreachable by quitting BBEdit.**
+      `BBEDIT_LIST_SCRIPT` opens with `tell application "BBEdit"`, which
+      launches BBEdit if it is not running, so quitting it probably relaunches
+      it instead of failing. Not tested. If confirmed, either guard with
+      `if application "BBEdit" is running` (and decide what the dial should do)
+      or drop the hint. The 2026-10-05 live check used a revoked Automation
+      grant instead, which does fail ("grant access").
 
 ## Tests
 

@@ -9,6 +9,7 @@ import streamDeck, {
 } from "@elgato/streamdeck";
 
 import { runAppleScript } from "../applescript/runner.js";
+import { describeNothingToDo, describeScriptResult, type DialReport } from "../mac/dial-outcome.js";
 import {
 	ActiveDocTracker,
 	BBEDIT_LIST_SCRIPT,
@@ -22,17 +23,26 @@ import {
 } from "../mac/bbedit.js";
 import { rotationSteps } from "../mac/rotation.js";
 import { serialize } from "../mac/serialize.js";
+import { reportDial } from "./dial-report.js";
 
 type BBEditDocSettings = {
 	/** How the dial traverses documents. Defaults to "window" (natural order). */
 	order?: BBEditOrder;
 };
 
+/** Result of reading BBEdit's document list: the docs, or the report for the failure. */
+type DocsRead =
+	| { ok: true; docs: BBEditDoc[]; activeId: number | null }
+	| { ok: false; report: DialReport };
+
 /**
  * Dial action: move between the text documents open in BBEdit's front window,
  * in the order chosen in the property inspector. Press jumps back to the
  * previously active document (like tmux last-window). The touchscreen shows
- * the active document name.
+ * the active document name. A failed turn or press (BBEdit not reachable, no
+ * Automation grant, a selection that failed, no documents) flashes the dial's
+ * alert and logs once, via `reportDial`; appearing is repaint-only, so a failed
+ * read there only paints the hint on the strip and never alerts.
  */
 @action({ UUID: "com.movingavg.switchboard.bbeditdoc" })
 export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
@@ -41,7 +51,7 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	override async onWillAppear(ev: WillAppearEvent<BBEditDocSettings>): Promise<void> {
 		if (!ev.action.isDial()) return;
 		const state = await this.readDocs(ev.action);
-		if (state === null) return;
+		if (!state.ok) return; // hint already painted; appearing never alerts
 		this.tracker(ev.action.id).note(state.activeId);
 		await this.render(ev.action, this.activeName(state.docs, state.activeId));
 	}
@@ -58,7 +68,10 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		// read the same active doc and collapse two detents into one move.
 		await serialize(ev.action.id, async () => {
 			const state = await this.readDocs(ev.action);
-			if (state === null) return;
+			if (!state.ok) {
+				await reportDial(ev.action, state.report);
+				return;
+			}
 			const tracker = this.tracker(ev.action.id);
 			tracker.note(state.activeId); // catch changes made in BBEdit itself
 
@@ -68,9 +81,15 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 				const targetId = nextDocId(ordered, activeId, direction);
 				if (targetId === null) {
 					await this.render(ev.action, "no docs");
+					await reportDial(
+						ev.action,
+						describeNothingToDo("BBEdit Documents", "no documents open in the front window"),
+					);
 					return;
 				}
-				await this.select(ev.action, targetId, tracker);
+				// One failed selection ends the gesture: it was reported once, and the
+				// remaining detents would act on a document that never became active.
+				if (!(await this.select(ev.action, targetId, tracker))) return;
 				activeId = targetId;
 			}
 		});
@@ -79,7 +98,10 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 	/** Press: jump back to the previously active document. */
 	override async onDialDown(ev: DialDownEvent<BBEditDocSettings>): Promise<void> {
 		const state = await this.readDocs(ev.action);
-		if (state === null) return;
+		if (!state.ok) {
+			await reportDial(ev.action, state.report);
+			return;
+		}
 		const tracker = this.tracker(ev.action.id);
 		tracker.note(state.activeId);
 
@@ -92,33 +114,37 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 		await this.select(ev.action, targetId, tracker);
 	}
 
-	/** Run the list script and parse it; null (already rendered) on failure. */
-	private async readDocs(
-		dial: DialAction<BBEditDocSettings>,
-	): Promise<{ docs: BBEditDoc[]; activeId: number | null } | null> {
+	/** Run the list script and parse it. On failure the strip hint is painted
+	 * here and the report is RETURNED, so each caller decides whether the
+	 * failure is a gesture (alert) or an appearance (no alert). */
+	private async readDocs(dial: DialAction<BBEditDocSettings>): Promise<DocsRead> {
 		const list = await runAppleScript(BBEDIT_LIST_SCRIPT);
 		if (!list.ok) {
-			this.logFailure("list", list.code, list.stderr);
 			await this.render(dial, this.hint(list.code));
-			return null;
+			return {
+				ok: false,
+				report: describeScriptResult("BBEdit Documents", list, "automation", "BBEdit"),
+			};
 		}
-		return parseBBEditDocs(list.stdout);
+		return { ok: true, ...parseBBEditDocs(list.stdout) };
 	}
 
-	/** Select a document by id, record it as active, and render the outcome. */
+	/** Select a document by id, record it as active, and render the outcome.
+	 * Reports a failure itself (alert + one log line) and returns false. */
 	private async select(
 		dial: DialAction<BBEditDocSettings>,
 		targetId: number,
 		tracker: ActiveDocTracker,
-	): Promise<void> {
+	): Promise<boolean> {
 		const selected = await runAppleScript(bbeditSelectScript(targetId));
 		if (!selected.ok) {
-			this.logFailure("select", selected.code, selected.stderr);
 			await this.render(dial, this.hint(selected.code));
-			return;
+			await reportDial(dial, describeScriptResult("BBEdit Documents", selected, "automation", "BBEdit"));
+			return false;
 		}
 		tracker.note(targetId);
 		await this.render(dial, selected.stdout);
+		return true;
 	}
 
 	private tracker(id: string): ActiveDocTracker {
@@ -140,15 +166,6 @@ export class BBEditDocDial extends SingletonAction<BBEditDocSettings> {
 			await dial.setFeedback({ mode: { value: "BBEdit", color: "#F0A63C" }, current: docName.trim() || "—" });
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
-		}
-	}
-
-	private logFailure(stage: string, code: string, stderr: string): void {
-		streamDeck.logger.error(`BBEdit ${stage} failed (${code}): ${stderr || "no stderr"}`);
-		if (code === "permission-denied") {
-			streamDeck.logger.error(
-				"Grant: System Settings > Privacy & Security > Automation > Stream Deck > enable BBEdit.",
-			);
 		}
 	}
 

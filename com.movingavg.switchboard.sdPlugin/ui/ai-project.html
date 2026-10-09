@@ -3,7 +3,7 @@
 	<head lang="en">
 		<title>AI Project</title>
 		<meta charset="utf-8" />
-		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+		<script src="lib/sdpi-components.js"></script>
 	</head>
 	<body>
 		<sdpi-item label="Project folder">
@@ -35,7 +35,10 @@
 			a turn while you are looking somewhere else, and it clears when you press
 			the key (on a raise that actually succeeds &mdash; if raising the window
 			fails, the key shows its alert and the mark stays) or on the first check
-			that finds you already at that session. What it claims is narrow, on purpose: the
+			that finds you already at that session. The key also alerts without
+			raising anything when a press is <i>ignored</i>: all the focus keys share
+			one raise at a time, so pressing while another is still going flashes and
+			does nothing, leaving the mark alone. What it claims is narrow, on purpose: the
 			<i>most recent</i> finished turn has not been seen. Starting a new turn
 			clears it &mdash; the key goes back to blue and marks again when that turn
 			ends. It needs the plugin watching to see the transition at all, so a plugin
@@ -54,7 +57,14 @@
 			terminal. Claude Code and Cursor write nothing that distinguishes it from
 			ordinary work &mdash; the only evidence is the prompt on screen, which this
 			key can read for <b>tmux-hosted sessions only</b>. In a bare iTerm2 or
-			Terminal window those two show an approval prompt as blue (running).
+			Terminal window those two show a waiting prompt as blue (running).
+			For Claude that means two different prompts: a tool approval, and a
+			question awaiting your decision &mdash; the question being the one you
+			meet most, since approvals auto-accept under
+			<code>--permission-mode auto</code>. Claude's <i>plan</i>-approval prompt
+			appears to use the same component and so should behave the same way, but
+			that was inferred from the CLI binary, never measured against a live plan
+			prompt.
 			Detection is deliberately narrow, so a future release of either tool that
 			rewords its prompt makes amber stop appearing rather than start lying
 			&mdash; though recognised prompt wording appearing in ordinary output can

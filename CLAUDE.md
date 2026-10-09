@@ -61,7 +61,7 @@ src/
 tests/*.test.ts             # vitest; one file per pure module
 com.movingavg.switchboard.sdPlugin/
   manifest.json             # actions, layouts, icons, CodePath -> bin/plugin.js
-  ui/*.html                 # property inspectors (sdpi-components from CDN)
+  ui/*.html                 # property inspectors (sdpi-components bundled in ui/lib/)
   ui/lib/permissions.js     # shared PI Accessibility-warning banner (see below)
   layouts/*.json            # custom encoder (touchscreen) layouts
   imgs/actions/<a>/*.png    # icon.png/@2x + key.png/@2x per action
@@ -103,7 +103,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 812 tests today
+npm test              # vitest (pure modules) — 1041 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -346,6 +346,17 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   finding for code that compiles. Include the docs that live outside `src/`
   (`ui/*.html`, the manifest `Tooltip`) — a doc review that omits them misses
   real errors, because the reviewer can only see what you send.
+- **A tmux window NAME is not an identity.** Agents' windows auto-name
+  themselves (`claude` twice in one session is normal), and `resolveTarget`
+  takes the FIRST match, so a `session:name` key captured from the second one
+  lit and raised the first. Index is no fix either: the operator's tmux.conf
+  sets `renumber-windows on`, so every close shifts the indexes above it.
+  Focus tmux binds a shared name by window id via `exactTargetFor` (capture
+  and the dropdown both use it), and the press switches by id too. The id
+  form is `session:@N#<server pid>`: a server never reuses an id, but a
+  RESTARTED one numbers from @0 again (measured on a scratch server), so a
+  bare `@8` would bind a stranger after every reboot. A pid mismatch reads
+  as unresolved. `@digits` without `#pid` is still a NAME.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:
@@ -389,6 +400,40 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   teal=files), and the "jack-line" strip at each key's foot. Add new actions by
   adding a glyph fn there — don't hand-draw one-off icons. Live faces
   (tmux-key.ts, window-ring.ts, key-image.ts) use the same tokens in hex.
+- **List icons and the category icon are white-only on transparent** (Elgato
+  guideline); key faces keep colour. `mono()` in `make-icons.py` rewrites strokes
+  and fills to white and RAISES on INK. Glyphs that use INK as a knock-out
+  (tmux, App Windows, Window Ring) and Switch App (a light arrow on a filled
+  shape) need an explicit variant in `MONO_VARIANTS`. `tests/icons.test.ts`
+  checks every visible pixel is #FFFFFF.
+- **Node 24 needs `Software.MinimumVersion` "7.1".** The manifest schema pins
+  Node 20 below it (measured: `Nodejs.Version failed validation for keyword:
+  const`). Stream Deck downloads the runtime on first launch. `Debug` must not
+  ship (it launches the plugin with `--inspect`). The live check
+  (`node-24-live`) passed on 2026-10-05 on SD 7.6.0: Stream Deck fetched
+  Node 24.13.1 into `NodeJS/` on relaunch, and the plugin ran on it with no
+  `--inspect`. It ran on 7.6 only; 7.1-7.5 rest on Elgato's schema.
+- **Multi-actions.** Encoders are never steps. A key step gets keyDown and keyUp
+  as one gesture, so `PressGate` never fires and hold-to-capture does not exist.
+  The step's face is never drawn. `SupportedInMultiActions` is `true` for Safari
+  Tab Jump, Open / Switch App, Focus tmux Window, Open File and Paste Snippet,
+  and `false` for the other eleven (six dials, Window Ring, AI Project, the three
+  legacy agent keys). Live check (`multi-action-live`) passed on 2026-10-08:
+  the multi-action picker listed exactly those five.
+- **sdpi-components is bundled** in `ui/lib/sdpi-components.js` (v4.0.1, MIT, with
+  Lit under BSD 3-Clause) and the notices ship in `ui/lib/THIRD-PARTY-LICENSES.md`.
+  Update by replacing the file with a new pinned release, never by editing it.
+  Pages load it as `lib/sdpi-components.js`, so settings screens render offline.
+  Live check (`sdpi-bundle-live`) passed on 2026-10-08: settings screens
+  rendered with the network off.
+- **Dial failures go through `src/mac/dial-outcome.ts` + `reportDial`**
+  (`src/actions/dial-report.ts`): one log line and one `showAlert` per gesture whose
+  helper, AppleScript, terminal probe or tmux command fails. A rejected
+  `setSettings` (mode/scope toggles) is NOT routed through it. Deliberate no-ops stay silent: a tmux dial with iTerm2 not frontmost,
+  and every repaint-only path (BBEdit's `onWillAppear` never alerts).
+- **SDK 3.x upgrade is deferred.** `@elgato/streamdeck` stays on 1.4.1. 3.x
+  removes `streamDeck.ui.current`, changes `onDidReceiveSettings` semantics and
+  makes the `DialAction`/`KeyAction` settings generics mandatory. See TODO.md.
 - **`fresh` is not `invalidate`.** The three agent scanners (`claude-scan.ts`,
   `codex-scan.ts`, `cursor-scan.ts`) each take a `{ fresh: true }` option
   instead of the older pattern of calling an `invalidateXScan()` before the

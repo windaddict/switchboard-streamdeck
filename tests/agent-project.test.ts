@@ -24,6 +24,80 @@ import {
 const KINDS: readonly AgentKind[] = ["claude", "codex", "cursor"];
 const HOSTS: readonly AgentHost[] = ["tmux", "iterm", "terminal", ""];
 
+/**
+ * Claude Code's CHOICE PROMPT — the ENTIRE visible pane of a live AskUserQuestion,
+ * from `tmux capture-pane -p` (claude 2.1.236, 2026-08-29). Every line below is
+ * byte-for-byte as captured; the only edit is that trailing blank lines were
+ * dropped. It is the whole screen, banner included, precisely so the matcher is
+ * tested against what it really receives rather than against an idealised excerpt.
+ *
+ * Module scope, not inside a describe: the cross-function test below reads it from
+ * a different describe.
+ *
+ * The point of the fixture: it carries NEITHER "Do you want to …?" NOR "1. Yes".
+ * The question reads "Do you PREFER…" and the first option is "1. Red", so the
+ * tool-approval conjunct cannot see it — which is why a blocked Claude painted
+ * blue (working) instead of amber.
+ */
+const CLAUDE_QUESTION = [
+	"",
+	" ▐▛███▛█   Claude Code v2.1.236",
+	"▝▜██████▀  Opus 5 (1M context) with high effort · Claude Max",
+	"  ▝▝ ▝▝    ~/code/switchboard",
+	"",
+	"",
+	"❯ Use the AskUserQuestion tool to ask me one question: do I prefer red or blue? Offer exactly those two options. Do nothing else.",
+	"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+	" ☐ Color",
+	"",
+	"Do you prefer red or blue?",
+	"",
+	"❯ 1. Red",
+	"     You prefer red.",
+	"  2. Blue",
+	"     You prefer blue.",
+	"  3. Type something.",
+	"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+	"  4. Chat about this",
+	"",
+	"Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\n");
+
+/**
+ * The three OTHER pickers Claude draws, all captured live in the same scratch
+ * session. They exist because the choice-prompt markers are only trustworthy if
+ * no NON-blocking picker also carries them — an independent review of the plan
+ * rightly refused to accept that on assertion alone.
+ *
+ * Measured: none carries "Chat about this", and none carries "Enter to select".
+ * The trust prompt is the sharpest of the three, because it DOES draw a numbered
+ * "1. Yes" list and its footer verb is "confirm", not "select".
+ */
+const CLAUDE_TRUST_FOOTER = [
+	" Accessing workspace:",
+	" /private/tmp",
+	" Quick safety check: Is this a project you created or one you trust?",
+	" ❯ 1. Yes, I trust this folder",
+	"   2. No, exit",
+	" Enter to confirm · Esc to cancel",
+].join("\n");
+
+const CLAUDE_RESUME_PICKER = [
+	"  Resume session",
+	"  │ ⌕ Search…",
+	"  ❯ Show question state in EA system button",
+	"    2 seconds ago · main · 1.3MB",
+	"  Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to preview · Ctrl+R to rename · Type to search · Esc to cancel",
+].join("\n");
+
+const CLAUDE_SLASH_MENU = [
+	"  /claude-md-management:revise-claude-md   Update CLAUDE.md with learnings from this session",
+	"  /writing-evaluator                       Multi-perspective writing evaluation for business documents.",
+	"────────────────────────────────────────",
+	"❯ /",
+	"  ⏵⏵ auto mode on (shift+tab to cycle)",
+].join("\n");
+
 describe("How trustworthy a blocked verdict can be", () => {
 	/** Codex writes "waiting for approval" into its own rollout log, so it is
 	 * knowable without a terminal at all. */
@@ -134,6 +208,56 @@ describe("Approval-prompt detection", () => {
 		expect(paneShowsAgentPrompt("claude", "1. Yes\n2. No")).toBe(false);
 	});
 
+	/** THE REGRESSION. A blocked Claude showing a question — not a tool approval —
+	 * must read as blocked. Measured: with `--permission-mode auto` the approvals
+	 * auto-accept, so questions are the prompts that actually hold the operator. */
+	it("matches Claude's choice prompt, which carries neither approval marker", () => {
+		expect(CLAUDE_QUESTION).not.toContain("Do you want to");
+		expect(CLAUDE_QUESTION).not.toContain("1. Yes");
+		expect(paneShowsAgentPrompt("claude", CLAUDE_QUESTION)).toBe(true);
+	});
+
+	/** Each marker alone is ordinary text. All three are required together. */
+	it("does not fire on any single choice marker alone", () => {
+		expect(paneShowsAgentPrompt("claude", "Press Enter to select a file from the list")).toBe(false);
+		expect(paneShowsAgentPrompt("claude", "The dialog closed. Esc to cancel was shown in the footer.")).toBe(false);
+		expect(paneShowsAgentPrompt("claude", "4. Chat about this")).toBe(false);
+	});
+
+	/** ALL THREE two-of-three combinations, so no future edit can quietly drop one
+	 * marker and stay green. Each of these would pass a two-marker implementation. */
+	it("does not fire on any two of the three markers", () => {
+		// footer pair, no discriminator
+		expect(paneShowsAgentPrompt("claude", "Enter to select · ↑/↓ to navigate · Esc to cancel")).toBe(false);
+		// discriminator + "Enter to select", no "Esc to cancel"
+		expect(paneShowsAgentPrompt("claude", "  4. Chat about this\nEnter to select · ↑/↓ to navigate")).toBe(false);
+		// discriminator + "Esc to cancel", no "Enter to select"
+		expect(paneShowsAgentPrompt("claude", "  4. Chat about this\nEnter to confirm · Esc to cancel")).toBe(false);
+	});
+
+	/** All three PHRASES present, but as prose rather than as a live prompt. This is
+	 * the residual the function's doc comment warns about, and the anchoring is what
+	 * holds it: the footer must be one line carrying both halves, and the
+	 * discriminator must be a numbered option line. */
+	it("does not fire when all three phrases appear as ordinary prose", () => {
+		const prose = [
+			"The picker footer reads Enter to select and then Esc to cancel,",
+			"and the last option is always Chat about this — see the docs.",
+		].join("\n");
+		expect(prose).toContain("Enter to select");
+		expect(prose).toContain("Esc to cancel");
+		expect(prose).toContain("Chat about this");
+		expect(paneShowsAgentPrompt("claude", prose)).toBe(false);
+	});
+
+	/** Claude's other pickers, from real captures. The operator is already
+	 * interacting in all three; none is the agent waiting on a decision. */
+	it("does not fire on Claude's trust, resume or slash-command pickers", () => {
+		expect(paneShowsAgentPrompt("claude", CLAUDE_TRUST_FOOTER)).toBe(false);
+		expect(paneShowsAgentPrompt("claude", CLAUDE_RESUME_PICKER)).toBe(false);
+		expect(paneShowsAgentPrompt("claude", CLAUDE_SLASH_MENU)).toBe(false);
+	});
+
 	it("matches both of Cursor's wordings", () => {
 		expect(paneShowsAgentPrompt("cursor", "  $ wc -c note.txt Waiting for approval...")).toBe(true);
 		expect(paneShowsAgentPrompt("cursor", " Run this command?\n Not in allowlist: wc\n  → Run (once) (y)")).toBe(true);
@@ -149,9 +273,51 @@ describe("Approval-prompt detection", () => {
 	/** Codex's own log already carries `blocked`, so scraping it could only add
 	 * false positives. It is never scraped, whatever the pane happens to show. */
 	it("never scrapes for codex, even given text that would match another kind", () => {
-		for (const text of [CLAUDE_BASH, CLAUDE_EDIT, "Waiting for approval", "Run this command?\nRun (once)", ""]) {
+		for (const text of [CLAUDE_BASH, CLAUDE_EDIT, CLAUDE_QUESTION, "Waiting for approval", "Run this command?\nRun (once)", ""]) {
 			expect(paneShowsAgentPrompt("codex", text)).toBe(false);
 		}
+	});
+});
+
+/**
+ * The measured regression, end to end through the pure layer: the exact data flow
+ * `src/actions/ai-project.ts` uses (line 298 turns the pane text into a probe,
+ * which decideAgentFace then composes).
+ *
+ * Both instance states are asserted deliberately. A blocked Claude keeps its idle
+ * "✳" title, so it arrives here as `waiting`; the transcript heuristic can also
+ * call it `working`. The prompt on screen must win from EITHER.
+ */
+describe("A Claude question read end-to-end through the pure layer", () => {
+	const probeFor = (text: string) => (paneShowsAgentPrompt("claude", text) ? "blocked" : "clear") as const;
+
+	it.each(["working", "waiting"] as const)("paints blocked from instanceState %s", (instanceState) => {
+		expect(
+			decideAgentFace({
+				kind: "claude",
+				hasTarget: true,
+				matchCount: 1,
+				instanceState,
+				scanStatus: "ok",
+				hasCapturedId: false,
+				blockedProbe: probeFor(CLAUDE_QUESTION),
+			}),
+		).toBe("blocked");
+	});
+
+	/** The other side of it: an ordinary picker must leave the face alone. */
+	it("leaves the resume picker reading as its own state", () => {
+		expect(
+			decideAgentFace({
+				kind: "claude",
+				hasTarget: true,
+				matchCount: 1,
+				instanceState: "working",
+				scanStatus: "ok",
+				hasCapturedId: false,
+				blockedProbe: probeFor(CLAUDE_RESUME_PICKER),
+			}),
+		).toBe("working");
 	});
 });
 

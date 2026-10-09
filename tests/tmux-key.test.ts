@@ -3,9 +3,9 @@ import { buildTmuxKeyImage, evaluateKeyStatus } from "../src/mac/tmux-key.js";
 import type { TmuxWindow } from "../src/mac/tmux.js";
 
 const WINDOWS: TmuxWindow[] = [
-	{ session: "dev", index: 1, name: "movingavg", active: true },
-	{ session: "dev", index: 2, name: "logs", active: false },
-	{ session: "ops", index: 1, name: "deploy", active: true },
+	{ session: "dev", index: 1, name: "movingavg", active: true, id: "@1", serverPid: "100" },
+	{ session: "dev", index: 2, name: "logs", active: false, id: "@2", serverPid: "100" },
+	{ session: "ops", index: 1, name: "deploy", active: true, id: "@3", serverPid: "100" },
 ];
 const CLIENTS = new Map([
 	["dev", "/dev/ttys007"],

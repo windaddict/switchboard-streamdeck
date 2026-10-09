@@ -13,7 +13,23 @@ vi.mock("../src/mac/tmux-runner.js", () => ({
 	runTmux: tmux,
 }));
 
+import * as frontTmux from "../src/mac/front-tmux.js";
 import { invalidateFrontTmux, resolveFrontTmux } from "../src/mac/front-tmux.js";
+
+// `resolveFrontTmuxDetailed` is read off the namespace (not named in the import)
+// so that, while it is absent, each test below fails on its own assertion instead
+// of the whole file failing at import.
+type Detailed =
+	| { kind: "front"; front: { session: string; tty: string } }
+	| { kind: "not-frontmost" }
+	| { kind: "no-client" }
+	| { kind: "probe-failed"; step: "front-app" | "iterm-tty" | "list-clients"; stderr: string };
+const detailed = (path: string): Promise<Detailed> | undefined =>
+	(frontTmux as unknown as { resolveFrontTmuxDetailed?: (p: string) => Promise<Detailed> }).resolveFrontTmuxDetailed?.(path);
+
+const ITERM = { ok: true, stdout: "com.googlecode.iterm2\n", stderr: "", code: "success" };
+const FAIL_RUN = { ok: false, stdout: "", stderr: "osascript exploded", code: "error" };
+
 
 function primeProbe(tty: string, session: string) {
 	jxa.mockResolvedValue({ ok: true, stdout: "com.googlecode.iterm2\n", stderr: "", code: "success" });
@@ -79,5 +95,126 @@ describe("resolveFrontTmux", () => {
 		jxa.mockResolvedValue({ ok: true, stdout: "com.apple.mail\n", stderr: "", code: "success" });
 		expect(await resolveFrontTmux("/opt/tmux")).toBeNull();
 		expect(applescript).not.toHaveBeenCalled();
+	});
+});
+
+describe("resolveFrontTmuxDetailed", () => {
+	/** Each scenario scripts the three probes; `kind` is what the classifier must report. */
+	const scenarios: Array<{ name: string; kind: Detailed["kind"]; step?: string; prime: () => void }> = [
+		{
+			name: "front app probe failure",
+			kind: "probe-failed",
+			step: "front-app",
+			prime: () => {
+				jxa.mockResolvedValue(FAIL_RUN);
+			},
+		},
+		{
+			name: "iTerm tty failure",
+			kind: "probe-failed",
+			step: "iterm-tty",
+			prime: () => {
+				jxa.mockResolvedValue(ITERM);
+				applescript.mockResolvedValue(FAIL_RUN);
+				tmux.mockResolvedValue({ ok: true, stdout: "/dev/ttys007|dev\n", stderr: "" });
+			},
+		},
+		{
+			name: "list-clients failure",
+			kind: "probe-failed",
+			step: "list-clients",
+			prime: () => {
+				jxa.mockResolvedValue(ITERM);
+				applescript.mockResolvedValue({ ok: true, stdout: "/dev/ttys007\n", stderr: "", code: "success" });
+				tmux.mockResolvedValue({ ok: false, stdout: "", stderr: "no server running", code: "error" });
+			},
+		},
+		{
+			name: "non-iTerm front app",
+			kind: "not-frontmost",
+			prime: () => {
+				jxa.mockResolvedValue({ ok: true, stdout: "com.apple.mail\n", stderr: "", code: "success" });
+			},
+		},
+		{
+			name: "iTerm pane that is not a tmux client",
+			kind: "no-client",
+			prime: () => {
+				jxa.mockResolvedValue(ITERM);
+				applescript.mockResolvedValue({ ok: true, stdout: "/dev/ttys099\n", stderr: "", code: "success" });
+				tmux.mockResolvedValue({ ok: true, stdout: "/dev/ttys007|dev\n", stderr: "" });
+			},
+		},
+	];
+
+	it("front app probe failure must classify as probe-failed", async () => {
+		scenarios[0].prime();
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "front app probe failure must classify as probe-failed").toBe("probe-failed");
+		expect(r?.kind === "probe-failed" && r.step, "front app probe failure must name its step").toBe("front-app");
+		expect(r?.kind === "probe-failed" && r.stderr, "front app probe failure must carry stderr").toContain("osascript exploded");
+		// A failed first probe must not go on to query iTerm.
+		expect(applescript).not.toHaveBeenCalled();
+	});
+
+	it("iTerm tty failure must classify as probe-failed", async () => {
+		scenarios[1].prime();
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "iTerm tty failure must classify as probe-failed").toBe("probe-failed");
+		expect(r?.kind === "probe-failed" && r.step, "iTerm tty failure must name its step").toBe("iterm-tty");
+	});
+
+	it("list-clients failure must classify as probe-failed", async () => {
+		scenarios[2].prime();
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "list-clients failure must classify as probe-failed").toBe("probe-failed");
+		expect(r?.kind === "probe-failed" && r.step, "list-clients failure must name its step").toBe("list-clients");
+		expect(r?.kind === "probe-failed" && r.stderr, "list-clients failure must carry stderr").toContain("no server running");
+	});
+
+	it("non-iTerm front app must classify as not-frontmost", async () => {
+		scenarios[3].prime();
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "non-iTerm front app must classify as not-frontmost").toBe("not-frontmost");
+		expect(applescript, "not-frontmost must not query iTerm").not.toHaveBeenCalled();
+	});
+
+	it("an iTerm pane that is not a tmux client must classify as no-client", async () => {
+		scenarios[4].prime();
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "non-tmux iTerm pane must classify as no-client").toBe("no-client");
+	});
+
+	it("a resolved client must classify as front with its session and tty", async () => {
+		primeProbe("/dev/ttys007", "dev");
+		const r = await detailed("/opt/tmux");
+		expect(r?.kind, "resolved client must classify as front").toBe("front");
+		expect(r?.kind === "front" && r.front, "resolved client must carry session and tty").toEqual({
+			session: "dev",
+			tty: "/dev/ttys007",
+		});
+	});
+
+	it("a classified result is cached like a resolved one", async () => {
+		scenarios[0].prime();
+		const a = await detailed("/opt/tmux");
+		const b = await detailed("/opt/tmux");
+		expect(a?.kind, "classified result must be cached: first call must classify").toBe("probe-failed");
+		expect(b, "classified result must be cached: second call must match the first").toEqual(a);
+		expect(jxa, "classified result must be cached: one probe for two calls").toHaveBeenCalledTimes(1);
+	});
+
+	it("resolveFrontTmux still returns null for every non-front classification", async () => {
+		for (const sc of scenarios) {
+			invalidateFrontTmux();
+			vi.clearAllMocks();
+			sc.prime();
+			const r = await detailed("/opt/tmux");
+			// The classifier must exist and agree with the scenario before the wrapper means anything.
+			expect(r?.kind, `wrapper contract (${sc.name}): detailed result must classify as ${sc.kind}`).toBe(sc.kind);
+			invalidateFrontTmux();
+			sc.prime();
+			expect(await resolveFrontTmux("/opt/tmux"), `wrapper contract (${sc.name}): resolveFrontTmux must return null`).toBeNull();
+		}
 	});
 });

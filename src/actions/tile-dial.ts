@@ -10,8 +10,10 @@ import streamDeck, {
 	type WillAppearEvent,
 } from "@elgato/streamdeck";
 
+import { describeHelperResult } from "../mac/dial-outcome.js";
 import { rotationSteps } from "../mac/rotation.js";
 import { serialize } from "../mac/serialize.js";
+import { reportDial } from "./dial-report.js";
 import { respondToAccessibilityCheck } from "./pi-permissions.js";
 import {
 	activeTileScheme,
@@ -28,7 +30,9 @@ import { runTile } from "../mac/tile-runner.js";
  * arrangement — clockwise steps forward, counter-clockwise retraces the same
  * style in reverse. Touch-tap toggles between the button's two configured
  * arrangements (e.g. columns ↔ grid). Press maximizes the window within the
- * screen's visible frame.
+ * screen's visible frame. A gesture that moved nothing (no Accessibility grant,
+ * no focused window or screen) flashes the dial's alert and logs once, via
+ * `reportDial`.
  */
 @action({ UUID: "com.movingavg.switchboard.tile" })
 export class ArrangeWindow extends SingletonAction<TileSettings> {
@@ -56,11 +60,11 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 			for (let i = 0; i < steps; i++) {
 				const step = nextTile(settings, dir);
 				const result = await runTile(step.cell, import.meta.url);
-				if (!result.trusted) this.warnUntrusted();
-				if (!result.ok) {
-					// The helper reported no window moved — do not persist or
-					// render a position the screen doesn't show.
-					streamDeck.logger.warn("Arrange Window: helper reported no focused window/screen.");
+				const report = describeHelperResult("Arrange Window", result, "moving the window");
+				if (report.alert) {
+					// Nothing moved — do not persist or render a position the
+					// screen doesn't show.
+					await reportDial(ev.action, report);
 					return;
 				}
 				settings = { ...settings, activeScheme: step.activeScheme, index: step.index };
@@ -75,8 +79,12 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 		// next rotation starts fresh from the first cell.
 		await serialize(ev.action.id, async () => {
 			const result = await runTile(FULL_CELL, import.meta.url);
-			if (!result.trusted) this.warnUntrusted();
-			if (!result.ok) return; // nothing moved — keep the real state
+			const report = describeHelperResult("Arrange Window", result, "maximizing the window");
+			if (report.alert) {
+				// Nothing moved — keep the real state.
+				await reportDial(ev.action, report);
+				return;
+			}
 			const updated: TileSettings = { ...(await ev.action.getSettings()), index: -1 };
 			await ev.action.setSettings(updated);
 			await this.render(ev.action, updated, "max");
@@ -119,12 +127,5 @@ export class ArrangeWindow extends SingletonAction<TileSettings> {
 		} catch (err) {
 			streamDeck.logger.debug(`setFeedback skipped: ${String(err)}`);
 		}
-	}
-
-	private warnUntrusted(): void {
-		streamDeck.logger.error(
-			"Arrange Window blocked. Grant Accessibility: System Settings > Privacy & " +
-				"Security > Accessibility > enable Stream Deck (moving windows needs this).",
-		);
 	}
 }

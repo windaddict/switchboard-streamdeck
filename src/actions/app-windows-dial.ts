@@ -21,7 +21,9 @@ import {
 	parseFrontWindow,
 	toggleAppWindowsMode,
 } from "../mac/app-windows.js";
+import { describeScriptResult } from "../mac/dial-outcome.js";
 import { rotationDirection } from "../mac/rotation.js";
+import { reportDial } from "./dial-report.js";
 import { respondToAccessibilityCheck } from "./pi-permissions.js";
 
 type AppWindowsSettings = Record<string, never>;
@@ -32,6 +34,9 @@ type AppWindowsSettings = Record<string, never>;
  * applications themselves. The touchscreen shows the current mode and the
  * front app/window, refreshed after each step. The mode is transient (held in
  * memory per dial), so every appearance starts in the familiar windows mode.
+ * A failed cycle (no Accessibility grant, or any script error) flashes the
+ * dial's alert and logs once, via `reportDial`; the strip readback is
+ * repaint-only and never alerts.
  */
 /** Quiet time after the last tick before the strip readback runs. */
 const REFRESH_DEBOUNCE_MS = 250;
@@ -66,12 +71,7 @@ export class CycleAppWindows extends SingletonAction<AppWindowsSettings> {
 			mode === "apps"
 				? await runJxa(appCycleJxa(direction))
 				: await runAppleScript(appWindowCycleScript(direction));
-		if (!result.ok && result.code === "permission-denied") {
-			streamDeck.logger.error(
-				"Window cycling blocked. Grant Accessibility: System Settings > Privacy & " +
-					"Security > Accessibility > enable Stream Deck.",
-			);
-		}
+		await reportDial(ev.action, describeScriptResult("Cycle App Windows", result, "accessibility"));
 
 		// The cycle script already returns the activated app's name — paint from
 		// it directly instead of spending a second osascript round-trip per tick.
