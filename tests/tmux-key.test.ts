@@ -50,6 +50,11 @@ describe("evaluateKeyStatus — the hot chain", () => {
 		const got = evaluateKeyStatus({ ...HOT, target: "development:@8#100-1" });
 		expect(got).toEqual({ state: "unknown", session: "", window: "@8 gone" });
 	});
+	it("a key captured by v1.5.0 (pid-only id) also reads '<id> gone'", () => {
+		// The live miss: the operator's v1.5.0 key showed "dev:@8#5…" instead.
+		const got = evaluateKeyStatus({ ...HOT, target: "dev:@8#52416" });
+		expect(got).toEqual({ state: "unknown", session: "", window: "@8 gone" });
+	});
 	it("unknown for an unconfigured button", () => {
 		expect(evaluateKeyStatus({ ...HOT, target: "" }).state).toBe("unknown");
 	});

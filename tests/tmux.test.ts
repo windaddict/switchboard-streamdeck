@@ -12,6 +12,7 @@ import {
 	tmuxWindowOptions,
 	windowOptionsFromList,
 	exactTargetFor,
+	parseIdTarget,
 	type TmuxWindow,
 } from "../src/mac/tmux.js";
 
@@ -249,8 +250,11 @@ describe("resolveTarget — session:@id (tmux window id)", () => {
 		const reused = parseWindows("dev|8|1|@8|100-2|claude\n");
 		expect(resolveTarget(reused, "dev:@8#100-1")).toBeNull();
 	});
-	it("does not resolve a v1.5.0 pid-only id target (it reads as a name that matches nothing)", () => {
+	it("reads a v1.5.0 pid-only target as an id that never resolves, even on the same server", () => {
+		// v1.5.0 stored "@8#<pid>". The pid alone is not a server identity, so
+		// such a key must go unresolved (and say so) rather than match anything.
 		const windows = parseWindows("dev|8|1|@8|100-1|claude\n");
+		expect(parseIdTarget("dev:@8#100")).toEqual({ session: "dev", id: "@8", server: "100" });
 		expect(resolveTarget(windows, "dev:@8#100")).toBeNull();
 	});
 	it("treats @digits without a server pid as a NAME, as it always was", () => {

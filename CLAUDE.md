@@ -103,7 +103,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1046 tests today
+npm test              # vitest (pure modules) — 1047 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -358,7 +358,7 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   bare `@8` would bind a stranger after every reboot, and the OS can reuse
   the pid, so the pid alone was not enough (v1.5.0 shipped pid-only; those
   keys now read as gone). A mismatch reads as unresolved ("@8 gone").
-  `@digits` without `#pid-start` is still a NAME.
+  `@digits` with no `#…` is still a NAME.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:

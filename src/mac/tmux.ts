@@ -137,9 +137,15 @@ export function sessionForTty(clients: Map<string, string>, tty: string): string
 	return null;
 }
 
-/** Split a `session:@id#pid-start` target (see {@link resolveTarget}); null for any other form. */
+/**
+ * Split a `session:@id#pid-start` target (see {@link resolveTarget}); null for
+ * any other form. Also accepts v1.5.0's pid-only `session:@id#pid`: its
+ * server ("123") can never equal a current `<pid>-<start>`, so such a key is
+ * unresolved and its face says which id is gone, instead of showing the
+ * target as a window name that matches nothing.
+ */
 export function parseIdTarget(target: string): { session: string; id: string; server: string } | null {
-	const m = /^([^:]*):(@\d+)#(\d+-\d+)$/.exec(target.trim());
+	const m = /^([^:]*):(@\d+)#(\d+(?:-\d+)?)$/.exec(target.trim());
 	return m === null ? null : { session: m[1], id: m[2], server: m[3] };
 }
 
@@ -154,9 +160,9 @@ export function parseIdTarget(target: string): { session: string; id: string; se
  *   {@link TmuxWindow.id}, {@link TmuxWindow.server}). Matches only the window
  *   with that id, on that server run, in exactly that session (case-sensitive, as tmux session names
  *   are). When that window is gone — closed, or the server restarted — it
- *   returns `null`; it never falls back to a name or an index. `@digits`
- *   WITHOUT `#pid-start` is not this form: it is read as a name, as it always
- *   was (v1.5.0's pid-only `@8#123` therefore matches nothing).
+ *   returns `null`; it never falls back to a name or an index. v1.5.0's
+ *   pid-only `@8#123` is this form too and never resolves. `@digits` with no
+ *   `#…` is not this form: it is read as a name, as it always was.
  *
  * - `"session:name"` — the part before `:` must match a window's session
  *   exactly (case-insensitive) AND the part after must match the window's name
