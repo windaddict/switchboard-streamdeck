@@ -30,7 +30,10 @@
 			amber and turning while it works, white and still when it's waiting for
 			your input.<br /><br />
 			<b>Tip:</b> hold the key for &frac12;&nbsp;second to capture the current tmux
-			window into this button (✓ flashes when saved).<br /><br />
+			window into this button (✓ flashes when saved). It is saved by name; when
+			another window in the session shares that name it is saved by tmux's
+			window id, which lasts until that window closes or tmux restarts.
+			Then hold the key again to recapture.<br /><br />
 			<b>Requires:</b> <b>iTerm2</b> with a running <b>tmux</b> server, plus
 			Automation access for iTerm2 (macOS prompts on first use).
 		</div>

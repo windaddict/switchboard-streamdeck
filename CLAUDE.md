@@ -103,7 +103,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1022 tests today
+npm test              # vitest (pure modules) — 1041 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -346,6 +346,17 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   finding for code that compiles. Include the docs that live outside `src/`
   (`ui/*.html`, the manifest `Tooltip`) — a doc review that omits them misses
   real errors, because the reviewer can only see what you send.
+- **A tmux window NAME is not an identity.** Agents' windows auto-name
+  themselves (`claude` twice in one session is normal), and `resolveTarget`
+  takes the FIRST match, so a `session:name` key captured from the second one
+  lit and raised the first. Index is no fix either: the operator's tmux.conf
+  sets `renumber-windows on`, so every close shifts the indexes above it.
+  Focus tmux binds a shared name by window id via `exactTargetFor` (capture
+  and the dropdown both use it), and the press switches by id too. The id
+  form is `session:@N#<server pid>`: a server never reuses an id, but a
+  RESTARTED one numbers from @0 again (measured on a scratch server), so a
+  bare `@8` would bind a stranger after every reboot. A pid mismatch reads
+  as unresolved. `@digits` without `#pid` is still a NAME.
 - **Verifying tmux syntax:** use a scratch session (`tmux new-session -d -s __sdtest` …
   `kill-session -t __sdtest`) — never experiment on live sessions.
 - **Two distinct macOS permissions, classified separately** in `applescript/runner.ts`:

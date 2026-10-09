@@ -8388,14 +8388,15 @@ const TMUX_CANDIDATES = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/
 function findTmuxPath(exists = existsSync) {
     return TMUX_CANDIDATES.find(exists) ?? "tmux";
 }
-/** tmux args that emit one window per line as `session|index|active|name`.
+/** tmux args that emit one window per line as `session|index|active|id|pid|name`
+ * (`pid` is the tmux SERVER's pid, repeated on every row).
  * The NAME is last: window names may legally contain `|`, so every fixed-width
  * field comes first and the parser joins the remainder back into the name. */
 const LIST_WINDOWS_ARGS = [
     "list-windows",
     "-a",
     "-F",
-    "#{session_name}|#{window_index}|#{window_active}|#{window_name}",
+    "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}|#{window_name}",
 ];
 /** tmux args that emit one client per line as `tty|session`. */
 const LIST_CLIENTS_ARGS = ["list-clients", "-F", "#{client_tty}|#{client_session}"];
@@ -9016,6 +9017,221 @@ function hslToHex(h, s, l) {
 }
 
 /**
+ * Pure parsing + target-resolution helpers for driving tmux from the plugin.
+ *
+ * None of these functions shell out — they take the raw stdout of tmux
+ * commands as strings and return plain data, so they are fully unit-testable.
+ */
+/**
+ * Parse the output of:
+ *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_id}|#{pid}|#{window_name}"
+ *
+ * Each non-blank line is split on `|`: `session | index | active | id | pid | name…`.
+ * The window NAME is the LAST field and may itself contain `|` — the fixed
+ * fields come first and the remainder is joined back into the name. `active`
+ * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
+ */
+function parseWindows(output) {
+    const windows = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line.length === 0) {
+            continue;
+        }
+        const fields = line.split("|");
+        if (fields.length < 6) {
+            continue;
+        }
+        const [session, index, active, id, serverPid] = fields;
+        windows.push({
+            session,
+            index: Number(index),
+            name: fields.slice(5).join("|"),
+            active: active === "1",
+            id,
+            serverPid,
+        });
+    }
+    return windows;
+}
+/**
+ * Parse the output of:
+ *   tmux list-clients -F "#{client_tty}|#{client_session}"
+ *
+ * Returns a map of session name → client tty. If a session appears on more
+ * than one line, the FIRST occurrence wins. Blank and malformed lines (fewer
+ * than two `|`-separated fields) are skipped.
+ */
+function parseClients(output) {
+    const clients = new Map();
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line.length === 0) {
+            continue;
+        }
+        const fields = line.split("|");
+        if (fields.length < 2) {
+            continue;
+        }
+        const [tty, session] = fields;
+        if (!clients.has(session)) {
+            clients.set(session, tty);
+        }
+    }
+    return clients;
+}
+/** Preserve every attached client tty per session instead of silently picking one. */
+function parseClientTtys(output) {
+    const clients = new Map();
+    for (const rawLine of output.split("\n")) {
+        const fields = rawLine.trim().split("|");
+        if (fields.length < 2 || fields[0] === "" || fields[1] === "")
+            continue;
+        const [tty, session] = fields;
+        const ttys = clients.get(session) ?? [];
+        if (!ttys.includes(tty))
+            ttys.push(tty);
+        clients.set(session, ttys);
+    }
+    return clients;
+}
+/** Prefer the already-focused client, otherwise preserve tmux's deterministic order. */
+function chooseClientTty(ttys, focusedTty) {
+    if (focusedTty !== "" && ttys.includes(focusedTty))
+        return focusedTty;
+    return ttys[0] ?? null;
+}
+/** Target one attached client and its exact tmux window — by index, or by window id ("@8"). */
+function switchClientToWindowArgs(session, window, clientTty) {
+    return ["switch-client", "-c", clientTty, "-t", `${session}:${window}`];
+}
+/**
+ * Reverse lookup on {@link parseClients}: which session is attached to the
+ * given client tty? Null for "" or an unknown tty.
+ */
+function sessionForTty(clients, tty) {
+    if (tty === "")
+        return null;
+    for (const [session, clientTty] of clients) {
+        if (clientTty === tty)
+            return session;
+    }
+    return null;
+}
+/**
+ * Resolve a user-supplied target string to a single {@link TmuxWindow}.
+ *
+ * The target is trimmed first; an empty/whitespace-only target returns `null`.
+ *
+ * Three forms are supported:
+ *
+ * - `"session:@id#pid"` — tmux's window id plus the server pid (see
+ *   {@link TmuxWindow.id}). Matches only the window with that id, on that
+ *   server, in exactly that session (case-sensitive, as tmux session names
+ *   are). When that window is gone — closed, or the server restarted — it
+ *   returns `null`; it never falls back to a name or an index. `@digits`
+ *   WITHOUT `#pid` is not this form: it is read as a name, as it always was.
+ *
+ * - `"session:name"` — the part before `:` must match a window's session
+ *   exactly (case-insensitive) AND the part after must match the window's name
+ *   exactly (case-insensitive). If the part after `:` is all digits, it ALSO
+ *   matches when it equals the window's index.
+ *
+ * - `"name"` (no colon) — first try a case-insensitive EXACT name match across
+ *   all windows; if none, fall back to a case-insensitive SUBSTRING match.
+ *   Returns the first match in either pass.
+ *
+ * Returns `null` when nothing matches.
+ */
+function resolveTarget$1(windows, target) {
+    const trimmed = target.trim();
+    if (trimmed.length === 0) {
+        return null;
+    }
+    const colon = trimmed.indexOf(":");
+    if (colon !== -1) {
+        const namePart = trimmed.slice(colon + 1);
+        const byId = /^(@\d+)#(\d+)$/.exec(namePart);
+        if (byId !== null) {
+            const session = trimmed.slice(0, colon);
+            const [, id, pid] = byId;
+            return windows.find((w) => w.session === session && w.id === id && w.serverPid === pid) ?? null;
+        }
+        const sessionPart = trimmed.slice(0, colon).toLowerCase();
+        const namePartLower = namePart.toLowerCase();
+        const isIndex = namePart.length > 0 && /^\d+$/.test(namePart);
+        const indexValue = isIndex ? Number(namePart) : NaN;
+        for (const w of windows) {
+            if (w.session.toLowerCase() !== sessionPart) {
+                continue;
+            }
+            if (w.name.toLowerCase() === namePartLower) {
+                return w;
+            }
+            if (isIndex && w.index === indexValue) {
+                return w;
+            }
+        }
+        return null;
+    }
+    const targetLower = trimmed.toLowerCase();
+    // Pass 1: exact (case-insensitive) name match.
+    for (const w of windows) {
+        if (w.name.toLowerCase() === targetLower) {
+            return w;
+        }
+    }
+    // Pass 2: substring (case-insensitive) name match.
+    for (const w of windows) {
+        if (w.name.toLowerCase().includes(targetLower)) {
+            return w;
+        }
+    }
+    return null;
+}
+/** Human-readable dropdown label, e.g. `"dev: movingavg"`. */
+function tmuxWindowLabel(w) {
+    return `${w.session}: ${w.name}`;
+}
+/**
+ * The target string that binds a key to exactly window `w`, for capture and
+ * for the settings dropdown. `session:name` when that name is unique in the
+ * session (it survives a tmux restart and reads well); otherwise
+ * `session:@id#pid`, because {@link resolveTarget} takes the FIRST match and a
+ * shared name would send the key to a different window — and would move again
+ * whenever a same-named window closes. Names and sessions are compared
+ * case-insensitively here because the resolver compares them that way.
+ * Every candidate is checked by resolving it against `windows`; "" when
+ * neither resolves to `w` (only possible without an id or a server pid).
+ */
+function exactTargetFor(windows, w) {
+    const shared = windows.some((o) => o !== w &&
+        o.session.toLowerCase() === w.session.toLowerCase() &&
+        o.name.toLowerCase() === w.name.toLowerCase());
+    const candidates = shared ? [] : [`${w.session}:${w.name}`];
+    if (w.id !== "" && w.serverPid !== "")
+        candidates.push(`${w.session}:${w.id}#${w.serverPid}`);
+    return candidates.find((t) => resolveTarget$1(windows, t) === w) ?? "";
+}
+/**
+ * The settings dropdown's entries: one per window that some target can name,
+ * valued by {@link exactTargetFor}. A window bound by id gets its index in
+ * the label, since two same-named entries are otherwise indistinguishable.
+ * `skipped` counts windows that could not be offered, for the caller to log.
+ */
+function tmuxWindowOptions(windows) {
+    const items = [];
+    for (const w of windows) {
+        const value = exactTargetFor(windows, w);
+        if (value === "")
+            continue;
+        const byName = value === `${w.session}:${w.name}`;
+        items.push({ label: byName ? tmuxWindowLabel(w) : `${tmuxWindowLabel(w)} (window ${w.index})`, value });
+    }
+    return { items, skipped: windows.length - items.length };
+}
+
+/**
  * Pure logic for the "cycle tmux window" dial: rotate to move between windows,
  * push for last-window, and render a dynamic touchscreen background that
  * reflects the current session/window. All functions are pure (no tmux, no
@@ -9095,14 +9311,20 @@ function parseCurrentWindow(output) {
     };
 }
 /**
- * "Teach the button": the Focus-tmux target string for a captured current
- * window, in the same `session:name` form the dropdown persists. "" (nothing
- * to save) when the session is blank — i.e. no tmux server was running.
+ * "Teach the button": the Focus-tmux target for the window in front, read
+ * from ONE `list-windows -a` snapshot — the active window of `session` (the
+ * session in the frontmost terminal) is the captured window, and
+ * {@link exactTargetFor} names it so the key resolves back to it. Reading
+ * the current window and the list from one snapshot means a window closing
+ * mid-capture cannot pair one window's identity with another's position.
+ * "" (nothing to save) when the session is blank — no tmux server — or has
+ * no active window in the list, or no target can name it.
  */
-function captureTmuxTarget(current) {
-    if (current.session.trim() === "")
+function captureTmuxTarget(windows, session) {
+    if (session.trim() === "")
         return "";
-    return `${current.session}:${current.name}`;
+    const current = windows.find((w) => w.session === session && w.active);
+    return current === undefined ? "" : exactTargetFor(windows, current);
 }
 /** Parse the per-window active flags ("1" = active) preserving window order. */
 function parseActiveFlags(output) {
@@ -10129,173 +10351,6 @@ class PressGate {
             clearTimeout(t);
         this.timers.delete(id);
     }
-}
-
-/**
- * Pure parsing + target-resolution helpers for driving tmux from the plugin.
- *
- * None of these functions shell out — they take the raw stdout of tmux
- * commands as strings and return plain data, so they are fully unit-testable.
- */
-/**
- * Parse the output of:
- *   tmux list-windows -a -F "#{session_name}|#{window_index}|#{window_active}|#{window_name}"
- *
- * Each non-blank line is split on `|`: `session | index | active | name…`.
- * The window NAME is the LAST field and may itself contain `|` — the fixed
- * fields come first and the remainder is joined back into the name. `active`
- * is `true` only for the literal string `"1"`. Blank/short lines are skipped.
- */
-function parseWindows(output) {
-    const windows = [];
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line.length === 0) {
-            continue;
-        }
-        const fields = line.split("|");
-        if (fields.length < 4) {
-            continue;
-        }
-        const [session, index, active] = fields;
-        windows.push({
-            session,
-            index: Number(index),
-            name: fields.slice(3).join("|"),
-            active: active === "1",
-        });
-    }
-    return windows;
-}
-/**
- * Parse the output of:
- *   tmux list-clients -F "#{client_tty}|#{client_session}"
- *
- * Returns a map of session name → client tty. If a session appears on more
- * than one line, the FIRST occurrence wins. Blank and malformed lines (fewer
- * than two `|`-separated fields) are skipped.
- */
-function parseClients(output) {
-    const clients = new Map();
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line.length === 0) {
-            continue;
-        }
-        const fields = line.split("|");
-        if (fields.length < 2) {
-            continue;
-        }
-        const [tty, session] = fields;
-        if (!clients.has(session)) {
-            clients.set(session, tty);
-        }
-    }
-    return clients;
-}
-/** Preserve every attached client tty per session instead of silently picking one. */
-function parseClientTtys(output) {
-    const clients = new Map();
-    for (const rawLine of output.split("\n")) {
-        const fields = rawLine.trim().split("|");
-        if (fields.length < 2 || fields[0] === "" || fields[1] === "")
-            continue;
-        const [tty, session] = fields;
-        const ttys = clients.get(session) ?? [];
-        if (!ttys.includes(tty))
-            ttys.push(tty);
-        clients.set(session, ttys);
-    }
-    return clients;
-}
-/** Prefer the already-focused client, otherwise preserve tmux's deterministic order. */
-function chooseClientTty(ttys, focusedTty) {
-    if (focusedTty !== "" && ttys.includes(focusedTty))
-        return focusedTty;
-    return ttys[0] ?? null;
-}
-/** Target one attached client and its exact tmux window. */
-function switchClientToWindowArgs(session, index, clientTty) {
-    return ["switch-client", "-c", clientTty, "-t", `${session}:${index}`];
-}
-/**
- * Reverse lookup on {@link parseClients}: which session is attached to the
- * given client tty? Null for "" or an unknown tty.
- */
-function sessionForTty(clients, tty) {
-    if (tty === "")
-        return null;
-    for (const [session, clientTty] of clients) {
-        if (clientTty === tty)
-            return session;
-    }
-    return null;
-}
-/**
- * Resolve a user-supplied target string to a single {@link TmuxWindow}.
- *
- * The target is trimmed first; an empty/whitespace-only target returns `null`.
- *
- * Two forms are supported:
- *
- * - `"session:name"` — the part before `:` must match a window's session
- *   exactly (case-insensitive) AND the part after must match the window's name
- *   exactly (case-insensitive). If the part after `:` is all digits, it ALSO
- *   matches when it equals the window's index.
- *
- * - `"name"` (no colon) — first try a case-insensitive EXACT name match across
- *   all windows; if none, fall back to a case-insensitive SUBSTRING match.
- *   Returns the first match in either pass.
- *
- * Returns `null` when nothing matches.
- */
-function resolveTarget$1(windows, target) {
-    const trimmed = target.trim();
-    if (trimmed.length === 0) {
-        return null;
-    }
-    const colon = trimmed.indexOf(":");
-    if (colon !== -1) {
-        const sessionPart = trimmed.slice(0, colon).toLowerCase();
-        const namePart = trimmed.slice(colon + 1);
-        const namePartLower = namePart.toLowerCase();
-        const isIndex = namePart.length > 0 && /^\d+$/.test(namePart);
-        const indexValue = isIndex ? Number(namePart) : NaN;
-        for (const w of windows) {
-            if (w.session.toLowerCase() !== sessionPart) {
-                continue;
-            }
-            if (w.name.toLowerCase() === namePartLower) {
-                return w;
-            }
-            if (isIndex && w.index === indexValue) {
-                return w;
-            }
-        }
-        return null;
-    }
-    const targetLower = trimmed.toLowerCase();
-    // Pass 1: exact (case-insensitive) name match.
-    for (const w of windows) {
-        if (w.name.toLowerCase() === targetLower) {
-            return w;
-        }
-    }
-    // Pass 2: substring (case-insensitive) name match.
-    for (const w of windows) {
-        if (w.name.toLowerCase().includes(targetLower)) {
-            return w;
-        }
-    }
-    return null;
-}
-/** Human-readable dropdown label, e.g. `"dev: movingavg"`. */
-function tmuxWindowLabel(w) {
-    return `${w.session}: ${w.name}`;
-}
-/** Stable dropdown/target value, e.g. `"dev:movingavg"`. */
-function tmuxWindowValue(w) {
-    return `${w.session}:${w.name}`;
 }
 
 /**
@@ -14473,7 +14528,9 @@ let FocusTmuxWindow = (() => {
             }
             // Optionally switch tmux to the exact window (default on).
             if (settings.switchWindow !== false) {
-                const selected = await runTmux(switchClientToWindowArgs(match.session, match.index, tty), tmux);
+                // By id when there is one: under renumber-windows the index can shift
+                // while iTerm is being raised, if a lower window closes meanwhile.
+                const selected = await runTmux(switchClientToWindowArgs(match.session, match.id || match.index, tty), tmux);
                 if (!selected.ok) {
                     streamDeck.logger.error(`tmux switch-client failed: ${selected.stderr || "no server?"}`);
                     await key.showAlert();
@@ -14503,10 +14560,17 @@ let FocusTmuxWindow = (() => {
                 await key.showAlert();
                 return;
             }
-            const result = await runTmux(currentWindowArgs(front.session), tmux);
-            const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
+            const list = await runTmux(LIST_WINDOWS_ARGS, tmux);
+            if (!list.ok) {
+                streamDeck.logger.warn(`Focus tmux capture: tmux list-windows failed (${list.stderr || "no server?"}).`);
+                await key.showAlert();
+                return;
+            }
+            // One snapshot: the front session's active window, named so the key
+            // resolves back to it (by id when another window shares its name).
+            const target = captureTmuxTarget(parseWindows(list.stdout), front.session);
             if (target === "") {
-                streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);
+                streamDeck.logger.warn(`Focus tmux capture: no active window in ${front.session} that a target can name.`);
                 await key.showAlert();
                 return;
             }
@@ -14523,10 +14587,11 @@ let FocusTmuxWindow = (() => {
                 return;
             const tmux = findTmuxPath();
             const result = await runTmux(LIST_WINDOWS_ARGS, tmux);
-            const items = parseWindows(result.stdout).map((w) => ({
-                label: tmuxWindowLabel(w),
-                value: tmuxWindowValue(w),
-            }));
+            if (!result.ok)
+                streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}).`);
+            const { items, skipped } = tmuxWindowOptions(parseWindows(result.stdout));
+            if (skipped > 0)
+                streamDeck.logger.warn(`Focus tmux: ${skipped} tmux window(s) left out of the dropdown — no target names them uniquely.`);
             await streamDeck.ui.current?.sendToPropertyInspector({ event: "getTmuxWindows", items });
         }
     });

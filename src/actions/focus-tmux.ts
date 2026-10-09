@@ -32,8 +32,7 @@ import {
 	chooseClientTty,
 	parseWindows,
 	resolveTarget,
-	tmuxWindowLabel,
-	tmuxWindowValue,
+	tmuxWindowOptions,
 	switchClientToWindowArgs,
 } from "../mac/tmux.js";
 import { buildTmuxKeyImage, evaluateKeyStatus } from "../mac/tmux-key.js";
@@ -44,7 +43,7 @@ import {
 	runTmux,
 } from "../mac/tmux-runner.js";
 import { invalidateFrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
-import { captureTmuxTarget, currentWindowArgs, parseCurrentWindow } from "../mac/tmux-window.js";
+import { captureTmuxTarget } from "../mac/tmux-window.js";
 import { runFocusPress } from "./focus-lock.js";
 
 type FocusTmuxSettings = {
@@ -272,7 +271,9 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 		// Optionally switch tmux to the exact window (default on).
 		if (settings.switchWindow !== false) {
-			const selected = await runTmux(switchClientToWindowArgs(match.session, match.index, tty), tmux);
+			// By id when there is one: under renumber-windows the index can shift
+			// while iTerm is being raised, if a lower window closes meanwhile.
+			const selected = await runTmux(switchClientToWindowArgs(match.session, match.id || match.index, tty), tmux);
 			if (!selected.ok) {
 				streamDeck.logger.error(`tmux switch-client failed: ${selected.stderr || "no server?"}`);
 				await key.showAlert();
@@ -304,10 +305,17 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 			await key.showAlert();
 			return;
 		}
-		const result = await runTmux(currentWindowArgs(front.session), tmux);
-		const target = result.ok ? captureTmuxTarget(parseCurrentWindow(result.stdout)) : "";
+		const list = await runTmux(LIST_WINDOWS_ARGS, tmux);
+		if (!list.ok) {
+			streamDeck.logger.warn(`Focus tmux capture: tmux list-windows failed (${list.stderr || "no server?"}).`);
+			await key.showAlert();
+			return;
+		}
+		// One snapshot: the front session's active window, named so the key
+		// resolves back to it (by id when another window shares its name).
+		const target = captureTmuxTarget(parseWindows(list.stdout), front.session);
 		if (target === "") {
-			streamDeck.logger.warn(`Focus tmux capture: no current window (${result.stderr || "no server?"}).`);
+			streamDeck.logger.warn(`Focus tmux capture: no active window in ${front.session} that a target can name.`);
 			await key.showAlert();
 			return;
 		}
@@ -327,10 +335,9 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 
 		const tmux = findTmuxPath();
 		const result = await runTmux(LIST_WINDOWS_ARGS, tmux);
-		const items = parseWindows(result.stdout).map((w) => ({
-			label: tmuxWindowLabel(w),
-			value: tmuxWindowValue(w),
-		}));
+		if (!result.ok) streamDeck.logger.warn(`Focus tmux dropdown: tmux list-windows failed (${result.stderr || "no server?"}).`);
+		const { items, skipped } = tmuxWindowOptions(parseWindows(result.stdout));
+		if (skipped > 0) streamDeck.logger.warn(`Focus tmux: ${skipped} tmux window(s) left out of the dropdown — no target names them uniquely.`);
 
 		await streamDeck.ui.current?.sendToPropertyInspector({ event: "getTmuxWindows", items });
 	}

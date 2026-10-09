@@ -7,7 +7,7 @@
 
 import type { RotationDirection } from "./rotation.js";
 import { round, svgToDataUri } from "./svg.js";
-import type { TmuxWindow } from "./tmux.js";
+import { exactTargetFor, type TmuxWindow } from "./tmux.js";
 
 /** What the dial rotation moves through: the current session or every session. */
 export type TmuxScope = "session" | "all";
@@ -110,13 +110,19 @@ export function parseCurrentWindow(output: string): CurrentWindow {
 }
 
 /**
- * "Teach the button": the Focus-tmux target string for a captured current
- * window, in the same `session:name` form the dropdown persists. "" (nothing
- * to save) when the session is blank — i.e. no tmux server was running.
+ * "Teach the button": the Focus-tmux target for the window in front, read
+ * from ONE `list-windows -a` snapshot — the active window of `session` (the
+ * session in the frontmost terminal) is the captured window, and
+ * {@link exactTargetFor} names it so the key resolves back to it. Reading
+ * the current window and the list from one snapshot means a window closing
+ * mid-capture cannot pair one window's identity with another's position.
+ * "" (nothing to save) when the session is blank — no tmux server — or has
+ * no active window in the list, or no target can name it.
  */
-export function captureTmuxTarget(current: CurrentWindow): string {
-	if (current.session.trim() === "") return "";
-	return `${current.session}:${current.name}`;
+export function captureTmuxTarget(windows: TmuxWindow[], session: string): string {
+	if (session.trim() === "") return "";
+	const current = windows.find((w) => w.session === session && w.active);
+	return current === undefined ? "" : exactTargetFor(windows, current);
 }
 
 /** Parse the per-window active flags ("1" = active) preserving window order. */
