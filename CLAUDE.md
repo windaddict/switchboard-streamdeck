@@ -480,6 +480,10 @@ Short version — see that command for the exact, ordered steps. Session-learned
   `feat:` in the delta makes it a MINOR, whatever prompted the release.
 - `npm run pack` rewrites manifest.json WITHOUT its trailing newline — after packing,
   `git checkout -- com.movingavg.switchboard.sdPlugin/manifest.json`.
+- `npm run pack:zip` ships ONLY committed files (`git archive HEAD`) and refuses
+  a dirty plugin folder. Before v1.5.0 it ran `ditto` over the whole folder, and
+  every release zip from v1.3.2 to v1.4.1 shipped the operator's `logs/` (paths,
+  session names) and the source map. Never go back to zipping the folder.
 - Every `npm run build` drops plugin.js's executable bit: commit with
   `git add -A && git update-index --chmod=+x com.movingavg.switchboard.sdPlugin/bin/plugin.js`.
 

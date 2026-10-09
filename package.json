@@ -10,7 +10,7 @@
 		"build:helper": "bash scripts/build-helpers.sh",
 		"validate": "streamdeck validate com.movingavg.switchboard.sdPlugin",
 		"pack": "streamdeck pack com.movingavg.switchboard.sdPlugin --output dist --force",
-		"pack:zip": "mkdir -p dist && ditto -c -k --keepParent com.movingavg.switchboard.sdPlugin dist/com.movingavg.switchboard.sdPlugin.zip",
+		"pack:zip": "git diff --quiet HEAD -- com.movingavg.switchboard.sdPlugin || { echo 'pack:zip: the plugin folder has uncommitted changes; the zip ships committed files only' >&2; exit 1; }; mkdir -p dist && git archive --format=zip -o dist/com.movingavg.switchboard.sdPlugin.zip HEAD com.movingavg.switchboard.sdPlugin",
 		"watch": "rollup -c -w",
 		"test": "vitest run",
 		"test:watch": "vitest",
