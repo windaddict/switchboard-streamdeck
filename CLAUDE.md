@@ -418,11 +418,14 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   The step's face is never drawn. `SupportedInMultiActions` is `true` for Safari
   Tab Jump, Open / Switch App, Focus tmux Window, Open File and Paste Snippet,
   and `false` for the other eleven (six dials, Window Ring, AI Project, the three
-  legacy agent keys).
+  legacy agent keys). Live check (`multi-action-live`) passed on 2026-10-08:
+  the multi-action picker listed exactly those five.
 - **sdpi-components is bundled** in `ui/lib/sdpi-components.js` (v4.0.1, MIT, with
   Lit under BSD 3-Clause) and the notices ship in `ui/lib/THIRD-PARTY-LICENSES.md`.
   Update by replacing the file with a new pinned release, never by editing it.
   Pages load it as `lib/sdpi-components.js`, so settings screens render offline.
+  Live check (`sdpi-bundle-live`) passed on 2026-10-08: settings screens
+  rendered with the network off.
 - **Dial failures go through `src/mac/dial-outcome.ts` + `reportDial`**
   (`src/actions/dial-report.ts`): one log line and one `showAlert` per gesture whose
   helper, AppleScript, terminal probe or tmux command fails. A rejected
