@@ -14326,8 +14326,9 @@ async function classify(tmuxPath) {
 /** How often the key faces re-check the live focus state. */
 const POLL_MS$2 = 2500;
 /**
- * Raise the iTerm2 window hosting a tmux session (matched by one of its window
- * names) and optionally switch tmux to that window. The dropdown is populated
+ * Raise the iTerm2 window hosting a tmux session (matched by window name, or by
+ * tmux window id when the name is shared) and optionally switch tmux to that
+ * window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
  * survives tmux layout changes. Holding the key ("teach the button") captures
  * the current tmux window as the new target. The key face renders live: a

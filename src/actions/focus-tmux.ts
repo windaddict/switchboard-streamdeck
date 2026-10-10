@@ -47,9 +47,11 @@ import { captureTmuxTarget } from "../mac/tmux-window.js";
 import { runFocusPress } from "./focus-lock.js";
 
 type FocusTmuxSettings = {
-	/** Target window as "session:name" (from the dropdown) or a bare name. */
+	/** Target window: "session:name", "session:@id#pid-start" for a window whose
+	 * name is shared in its session (both from capture or the dropdown — see
+	 * `exactTargetFor`), or a bare name. */
 	target?: string;
-	/** Also run `tmux select-window` to switch to it. Defaults to true. */
+	/** Also switch the client to that window (`tmux switch-client`). Defaults to true. */
 	switchWindow?: boolean;
 };
 
@@ -57,8 +59,9 @@ type FocusTmuxSettings = {
 const POLL_MS = 2500;
 
 /**
- * Raise the iTerm2 window hosting a tmux session (matched by one of its window
- * names) and optionally switch tmux to that window. The dropdown is populated
+ * Raise the iTerm2 window hosting a tmux session (matched by window name, or by
+ * tmux window id when the name is shared) and optionally switch tmux to that
+ * window. The dropdown is populated
  * live from `tmux list-windows`; the target is re-resolved at press time so it
  * survives tmux layout changes. Holding the key ("teach the button") captures
  * the current tmux window as the new target. The key face renders live: a

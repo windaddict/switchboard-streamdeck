@@ -48,6 +48,15 @@ plugin is shippable as-is.
       rectangles are in 20 px coordinates and will move), and compare against
       another plugin's icons in the action list.
 
+- [ ] **Update the dev dependencies Dependabot flags.** 12 open alerts on
+      2026-10-08 (2 critical), all development-scope: tinypool, fast-uri,
+      source-map-js, brace-expansion, vitest/@vitest/mocker. None is in the
+      shipped bundle (runtime deps: @elgato/streamdeck, @elgato/schemas, ws).
+- [ ] **Claude Project switches tmux by window index** (`claude-project.ts`
+      passes `pane.windowIndex`), so under `renumber-windows` a lower window
+      closing mid-press can select the wrong window. Focus tmux and AI Project
+      switch by id. Left alone because Claude Project is due for deletion
+      (see the retirement commitment in CLAUDE.md); fix only if that slips.
 - [ ] **Rate-limit dial failure logging.** A dial logs one line per detent:
       on 2026-10-05, one spin of Scroll with Accessibility revoked wrote 12
       identical "Scroll Window blocked" ERROR lines in 3 s (and BBEdit wrote 5
