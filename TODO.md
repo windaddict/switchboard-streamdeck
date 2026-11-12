@@ -109,3 +109,19 @@ plugin is shippable as-is.
       Homebrew installs work. **Rebuild (`npm run build`) and commit it whenever
       source changes**, or the installed copy ships stale code. A pre-release
       check or CI step should enforce this.
+
+## Claude state via `claude agents --json` (follow-ups)
+
+- [ ] Bind Claude keys by the `sessionId` that `claude agents --json` now
+      exposes, gated on a minimum CLI version. Not done now: an old CLI gives an
+      empty id, which would orphan configured keys.
+- [ ] Retire the title/transcript fallback once that minimum version is enforced.
+- [ ] Stuck `busy` after parking a mid-flight turn (claudeissues #87131): consider
+      a transcript-quiet timeout only if it is observed on the deck.
+- [ ] Find the `claude` binary from a detected process's executable path, so
+      installs outside the four fixed locations get the CLI report.
+- [ ] Measure an attached background session (`claude --bg`, then `claude attach`):
+      does its `claude agents --json` entry carry `pid`/`status`, and is that pid a
+      tty-bearing process that `claude-scan` detects? Only if both hold, merge
+      background entries with an integer `pid` and string `status` in
+      `parseClaudeAgents` (today they are ignored and fall back).

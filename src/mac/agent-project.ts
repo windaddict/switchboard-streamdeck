@@ -13,14 +13,18 @@
  *   - Codex records "I am waiting for your approval" in its own rollout log, so
  *     a blocked Codex session is knowable from a file, on any host, with no
  *     terminal scraping at all. Its `state` already carries `blocked`.
- *   - Claude Code and Cursor write nothing that distinguishes "blocked on the
+ *   - Claude Code reports its own state through `claude agents --json`
+ *     (`status:"waiting"` = waiting on you), so a Claude the CLI listed is
+ *     blocked-authoritative on any host. Only when the CLI is unavailable does
+ *     Claude fall back to the rule below, shared with Cursor.
+ *   - An UNREPORTED Claude and Cursor write nothing that distinguishes "blocked on the
  *     operator" from "busy working". The ONLY direct evidence is the prompt
  *     drawn on the terminal — for Claude that is EITHER a tool approval OR a
  *     choice prompt (a question, or a plan awaiting approval), which share no
  *     wording — and the only terminal this plugin can read is a tmux pane. Outside tmux, "blocked" is simply not observable for
  *     those two — see {@link blockedEvidenceFor}.
- *   - Measured, and the reason {@link decideAgentFace} exists in this form:
- *     Claude Code keeps its IDLE title marker (a "✳") on screen while its
+ *   - Measured (history; still needed for the fallback scrape), and the reason
+ *     {@link decideAgentFace} exists in this form: Claude Code keeps its IDLE title marker (a "✳") on screen while its
  *     approval prompt is up, so a blocked Claude session's file-derived state
  *     reads `waiting`, not `working`. Cursor's blocked session has no
  *     `turn_ended` record yet and so reads `working`. A rule that only upgrades
@@ -89,6 +93,12 @@ export interface AgentInstance {
 	 * binds by project path only (it exposes no per-session id a key can hold). */
 	sessionId: string;
 	state: Exclude<AgentState, "none">;
+	/** The agent itself reported this state (Codex: rollout log; Claude:
+	 * `claude agents --json`). False/absent when inferred from title,
+	 * transcript or shell signals (Claude fallback) or from transcript shape
+	 * (Cursor). Optional so a missing field falls to the conservative side:
+	 * the pane scrape. */
+	reported?: boolean;
 }
 
 /**
@@ -97,10 +107,13 @@ export interface AgentInstance {
  * Callers use it to decide whether scraping a pane is worth doing at all, and
  * to avoid promising a "needs you" light they cannot actually deliver.
  */
-export function blockedEvidenceFor(kind: AgentKind, host: AgentHost): BlockedEvidence {
+export function blockedEvidenceFor(kind: AgentKind, host: AgentHost, reported: boolean): BlockedEvidence {
 	// Codex reports blocking in its own rollout log, so it needs no terminal and
 	// works outside tmux too.
 	if (kind === "codex") return "authoritative";
+	// A Claude whose state came from `claude agents --json` reports blocked
+	// itself (`status:"waiting"`), on any host, so its pane is never scraped.
+	if (kind === "claude" && reported) return "authoritative";
 	// Claude and Cursor are only observable through the pane text, and the only
 	// terminal this plugin can read is a tmux pane.
 	return host === "tmux" ? "terminal" : "unavailable";
@@ -121,7 +134,8 @@ export function blockedEvidenceFor(kind: AgentKind, host: AgentHost): BlockedEvi
  *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
  *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
  *     any kind whose blocked verdict can ONLY come from scraping a pane
- *     (`blockedEvidenceFor(kind, "tmux") === "terminal"` — claude and cursor).
+ *     (`blockedEvidenceFor(kind, "tmux", reported) === "terminal"` — an unreported
+ *     claude, and cursor).
  *     For those, "clear" would be a confident negative on a question that was
  *     never actually asked; the honest answer is `"failed"`. Codex is
  *     unaffected either way — its blocked verdict never depends on a pane.
@@ -130,8 +144,9 @@ export function blockedProbeForMissingPane(
 	kind: AgentKind,
 	panesOk: boolean,
 	clientsOk: boolean,
+	reported: boolean,
 ): "clear" | "failed" {
-	if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux") === "terminal") return "failed";
+	if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux", reported) === "terminal") return "failed";
 	return "clear";
 }
 

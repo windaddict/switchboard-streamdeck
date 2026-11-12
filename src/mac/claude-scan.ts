@@ -21,6 +21,17 @@
  * failure is deliberately tolerated is the shell-busy child probe — see the
  * comment at that call.
  *
+ * The same concurrent burst also runs `claude agents --json` (found in one of
+ * four fixed locations, see claude-agents.ts; ~0.12s) and merges Claude's own
+ * report into each instance by pid. If the binary is missing, exits non-zero,
+ * times out or prints something unusable, `snapshot.claudeAgents` says
+ * "unavailable" with a reason and every instance carries `reported: null`;
+ * `status` stays "ok" and the older signals decide state. The call is inside
+ * the scan, so `fresh` scans ask the CLI again. LIMIT: the pgrep result and
+ * the CLI listing are merged by pid alone; a pid freed and reused by another
+ * claude inside the same few-millisecond burst could take the wrong report for
+ * at most one tick.
+ *
  * A caller that needs the machine's CURRENT state rather than a shared,
  * cached one (a key press about to act) passes `{ fresh: true }`. Fresh
  * bypasses three separate caches, all of them, or the option would lie about
@@ -31,6 +42,13 @@
 
 import { execFile as nodeExecFile } from "node:child_process";
 
+import {
+	type AgentsSource,
+	CLAUDE_AGENTS_ARGS,
+	findClaudePath,
+	parseClaudeAgents,
+	reportedState,
+} from "./claude-agents.js";
 import {
 	busyParentsFrom,
 	type ClaudeInstance,
@@ -58,6 +76,12 @@ export interface ClaudeScanOptions {
 	 * is not fresh at all on the press path this option exists for.
 	 */
 	fresh?: boolean;
+	/**
+	 * Path of the `claude` binary asked for `agents --json`. Tests inject it so
+	 * they never touch this machine's binaries. `undefined` means look it up
+	 * with `findClaudePath()`; `null` means "no binary" and nothing is spawned.
+	 */
+	claudePath?: string | null;
 }
 
 /**
@@ -83,11 +107,26 @@ export interface ClaudeScanOptions {
 export interface ClaudeScanSnapshot {
 	status: "ok" | "unknown";
 	instances: ClaudeInstance[];
+	/**
+	 * Whether `claude agents --json` answered: "ok" (parsed; each instance's
+	 * `reported` is its listed state or null when unlisted), "unavailable" (no
+	 * binary, non-zero exit, timeout, spawn error or unparsable output; `reason`
+	 * says which; every `reported` is null) or "unasked" (no claude running, so
+	 * the CLI was not spawned). It never changes `status`: presence and project
+	 * come from pgrep/ps/lsof, so a broken CLI cannot hide a session.
+	 */
+	claudeAgents: { source: AgentsSource; reason: string };
 }
 
 const TIMEOUT_MS = 4000;
 
-type RunResult = { ok: boolean; stdout: string; exitCode: number | null };
+type RunResult = {
+	ok: boolean;
+	stdout: string;
+	exitCode: number | null;
+	/** Why the call failed: the timeout kill, a non-zero exit, or a spawn error. */
+	errorKind: "none" | "timeout" | "exit" | "spawn";
+};
 
 function run(
 	file: string,
@@ -101,10 +140,13 @@ function run(
 			// even though Node may still surface a numeric `code`.
 			const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
 			const code = terminated ? null : e?.code;
+			const errorKind: RunResult["errorKind"] =
+				e === null ? "none" : terminated ? "timeout" : typeof code === "number" ? "exit" : "spawn";
 			resolve({
 				ok: error === null,
 				stdout: String(stdout ?? ""),
 				exitCode: typeof code === "number" ? code : null,
+				errorKind,
 			});
 		});
 	});
@@ -185,8 +227,9 @@ export function lsofCwdArgs(pids: number[]): string[] {
  * pid (60s). */
 export function scanClaudeInstances(
 	exec: ExecFileLike = nodeExecFile as unknown as ExecFileLike,
+	options: ClaudeScanOptions = {},
 ): Promise<ClaudeInstance[]> {
-	return scanClaudeSnapshot(exec).then((snapshot) => snapshot.instances);
+	return scanClaudeSnapshot(exec, options).then((snapshot) => snapshot.instances);
 }
 
 /** The same scan, carrying whether its probes actually answered. */
@@ -203,7 +246,7 @@ export function scanClaudeSnapshot(
 		}
 	}
 	const mySeq = ++seq;
-	const p = doScan(exec, mySeq, options.fresh === true);
+	const p = doScan(exec, mySeq, options.fresh === true, options.claudePath);
 	worldInFlight = p;
 	void p.finally(() => {
 		if (worldInFlight === p) worldInFlight = null;
@@ -300,27 +343,73 @@ async function refreshCwds(
 	return true;
 }
 
-async function doScan(exec: ExecFileLike, mySeq: number, fresh: boolean): Promise<ClaudeScanSnapshot> {
+const UNASKED: ClaudeScanSnapshot["claudeAgents"] = { source: "unasked", reason: "" };
+
+type AgentsAnswer = {
+	claudeAgents: ClaudeScanSnapshot["claudeAgents"];
+	byPid: Map<number, { reported: ClaudeInstance["reported"]; waitingFor: string }>;
+};
+
+/**
+ * Ask `claude agents --json` for Claude's own report. Never throws and never
+ * affects the scan's `status`: any failure yields `unavailable` with a fixed
+ * reason string (never CLI output, so no session data reaches a log).
+ */
+async function askClaudeAgents(claudePath: string | null, exec: ExecFileLike): Promise<AgentsAnswer> {
+	const byPid: AgentsAnswer["byPid"] = new Map();
+	const unavailable = (reason: string): AgentsAnswer => ({
+		claudeAgents: { source: "unavailable", reason },
+		byPid,
+	});
+	if (claudePath === null) return unavailable("no claude binary");
+	const result = await run(claudePath, CLAUDE_AGENTS_ARGS, exec);
+	if (!result.ok) {
+		if (result.errorKind === "timeout") return unavailable("timeout");
+		if (result.errorKind === "exit") return unavailable(`exit ${result.exitCode}`);
+		return unavailable("spawn error");
+	}
+	const parsed = parseClaudeAgents(result.stdout);
+	if (!parsed.ok) return unavailable(`unparsable: ${parsed.reason}`);
+	for (const s of parsed.sessions) {
+		byPid.set(s.pid, { reported: reportedState(s.status), waitingFor: s.waitingFor });
+	}
+	return { claudeAgents: { source: "ok", reason: "" }, byPid };
+}
+
+async function doScan(
+	exec: ExecFileLike,
+	mySeq: number,
+	fresh: boolean,
+	claudePathOption?: string | null,
+): Promise<ClaudeScanSnapshot> {
 	const now = Date.now();
 	const pgrep = await run("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
-	if (pgrepFoundNothing(pgrep)) return remember(now, mySeq, { status: "ok", instances: [] });
+	if (pgrepFoundNothing(pgrep)) {
+		return remember(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
+	}
 	if (!pgrep.ok) return rememberUnknown(now, mySeq);
 	const pids = pgrep.stdout
 		.split("\n")
 		.map((l) => Number.parseInt(l.trim(), 10))
 		.filter((n) => Number.isFinite(n));
-	if (pids.length === 0) return remember(now, mySeq, { status: "ok", instances: [] });
+	if (pids.length === 0) return remember(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
 	const ps = await run("/bin/ps", claudeDetailArgs(pids), exec);
 	if (!ps.ok) return rememberUnknown(now, mySeq);
 	const claudes = claudesFrom(parsePsProcs(ps.stdout));
-	if (claudes.length === 0) return remember(now, mySeq, { status: "ok", instances: [] });
+	if (claudes.length === 0) return remember(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
 	const claudePids = new Set(claudes.map((c) => c.pid));
 
 	// The shell-busy child chain and the cwd lookup both depend only on the ps
 	// above, so they run CONCURRENTLY instead of one waiting on the other.
-	const [busyPids, cwdsOk] = await Promise.all([
+	// The `claude agents --json` call joins the same burst (~0.12s). Like the
+	// shell-busy probe, its failure does NOT degrade `status`: presence and
+	// project are established elsewhere, and the report only supplies state.
+	// It runs on `fresh` scans too, since it lives inside doScan.
+	const claudePath = claudePathOption === undefined ? findClaudePath() : claudePathOption;
+	const [busyPids, cwdsOk, agents] = await Promise.all([
 		shellBusyPids(claudePids, exec),
 		refreshCwds(claudes, exec, now, fresh),
+		askClaudeAgents(claudePath, exec),
 	]);
 	if (!cwdsOk) return rememberUnknown(now, mySeq);
 
@@ -334,12 +423,18 @@ async function doScan(exec: ExecFileLike, mySeq: number, fresh: boolean): Promis
 			tty: p.tty,
 			cwd: cwdCache.get(p.pid)?.cwd ?? "",
 			shellBusy: busyPids.has(p.pid),
+			reported: agents.byPid.get(p.pid)?.reported ?? null,
+			waitingFor: agents.byPid.get(p.pid)?.waitingFor ?? "",
 		}))
 		.filter((i) => i.cwd !== "");
 	// A live claude whose cwd lsof did not report cannot be bound to a project,
 	// so the list is not the whole truth even though every command succeeded.
 	const incomplete = instances.length !== claudes.length;
-	return remember(now, mySeq, { status: incomplete ? "unknown" : "ok", instances });
+	return remember(now, mySeq, {
+		status: incomplete ? "unknown" : "ok",
+		instances,
+		claudeAgents: agents.claudeAgents,
+	});
 }
 
 function remember(at: number, mySeq: number, snapshot: ClaudeScanSnapshot): ClaudeScanSnapshot {
@@ -357,7 +452,10 @@ function remember(at: number, mySeq: number, snapshot: ClaudeScanSnapshot): Clau
  * this whole channel exists to avoid. */
 function rememberUnknown(at: number, mySeq: number): ClaudeScanSnapshot {
 	const stale = worldCache?.snapshot.instances.map((instance) => ({ ...instance })) ?? [];
-	return remember(at, mySeq, { status: "unknown", instances: stale });
+	// `claudeAgents` and each instance's `reported`/`waitingFor` are carried as
+	// last known, like `shellBusy`.
+	const claudeAgents = worldCache?.snapshot.claudeAgents ?? UNASKED;
+	return remember(at, mySeq, { status: "unknown", instances: stale, claudeAgents });
 }
 
 /** Is a process with exactly this name running? (pgrep -x; used to avoid

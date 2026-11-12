@@ -14,8 +14,8 @@ import { cwd } from 'node:process';
 import fs, { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readdir, stat, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { readdir, stat, open, realpath } from 'node:fs/promises';
 
 /**!
  * @author Elgato
@@ -9455,7 +9455,9 @@ function buildAllWindowsFeedback(windows, current) {
  * lives in claude-scan.ts; this module only parses and decides.
  *
  * Identity model: a button targets a PROJECT DIRECTORY. A claude process
- * belongs to it when its cwd matches. State comes from two signals:
+ * belongs to it when its cwd matches. State comes FIRST from Claude Code's own
+ * report (`claude agents --json`, see claude-agents.ts). The signals below are
+ * the FALLBACK when that report is unavailable or does not list the pid:
  * the tmux pane title's spinner marker when the instance is tmux-hosted
  * (always readable via the tmux server), else the freshness of the newest
  * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
@@ -9473,6 +9475,9 @@ function buildAllWindowsFeedback(windows, current) {
  *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
  *   us to an undocumented, version-fragile format — rejected as
  *   disproportionate to a transient, self-correcting misread.
+ * - The CLI report can stick on `busy` after a parked mid-flight turn
+ *   (claudeissues #87131, 2.1.220): the key stays blue until the session is
+ *   used again. The report's JSON format also carries no stability promise.
  */
 /**
  * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
@@ -9560,14 +9565,22 @@ function instancesForProject(instances, projectPath) {
 /** A transcript younger than this is "actively working". */
 const TRANSCRIPT_FRESH_MS = 30_000;
 /**
- * Decide the project's Claude state. Title marker wins when known (the tmux
- * pane title's spinner stays animated through long tool calls, where the
- * transcript goes quiet); transcript freshness covers hosts whose titles we
- * can't read without launching apps.
+ * Decide one Claude session's state. Claude Code's own report
+ * (`claude agents --json`) outranks every inferred signal: reported working
+ * is working, reported blocked is blocked, and reported idle is waiting
+ * EXCEPT that a live shell-snapshot child still reads working ("Brewed … · 1
+ * shell still running"). An owing transcript does NOT override reported idle:
+ * that is the /login false positive. With no report (or an unrecognised
+ * status) the older chain applies: title spinner, shell child, owing
+ * transcript, idle title, fresh transcript mtime.
  */
-function projectClaudeState(args) {
-    if (!args.present)
-        return "none";
+function claudeVerdict(args) {
+    if (args.reported === "working")
+        return "working";
+    if (args.reported === "blocked")
+        return "blocked";
+    if (args.reported === "waiting")
+        return args.shellBusy === true ? "working" : "waiting";
     if (args.titleWorking === true)
         return "working"; // braille spinner: fast-path
     if (args.shellBusy === true)
@@ -9585,6 +9598,17 @@ function projectClaudeState(args) {
         return "working";
     }
     return "waiting";
+}
+/**
+ * The legacy key's project state: {@link claudeVerdict} with `blocked` folded
+ * into `waiting` (that key's `ClaudeState` has no blocked; its white means
+ * "not working").
+ */
+function projectClaudeState(args) {
+    if (!args.present)
+        return "none";
+    const verdict = claudeVerdict(args);
+    return verdict === "blocked" ? "waiting" : verdict;
 }
 const MONO$4 = "Menlo, Monaco, monospace";
 function truncate$4(value, max) {
@@ -9671,6 +9695,155 @@ function buildClaudeProjectKeyImage(args) {
 }
 
 /**
+ * WHAT IT'S FOR: the one place Switchboard reads Claude Code's own report of
+ * what each session is doing — `claude agents --json` — so the keys stop
+ * inferring state from a terminal title that Claude Code 2.1.236+ no longer
+ * updates under tmux.
+ *
+ * Field contract (from the Claude Code agent-view docs, fetched 2026-11-10):
+ * the command prints a JSON array. An entry with `kind: "interactive"` is a
+ * terminal session and carries `pid`, `cwd`, `sessionId` and, while the process
+ * is alive, `status` (`busy`, `waiting` or `idle`). `waitingFor` is present when
+ * `status` is `waiting`. `kind: "background"` entries carry `state` (`working|blocked|done|failed|stopped`). The docs list `pid` and `status` for ANY entry "while the process is alive", but every background entry measured (2.1.311, 2026-11-10 and 2026-11-11) had neither. This parser ignores background entries whatever they carry, so a background session gets no CLI state and falls back to the older signals (measuring an attached one is in TODO.md). There is no tty or tmux field, so presence and identity still
+ * come from pgrep/ps/lsof (see claude-scan.ts); this module supplies only the
+ * state, merged in by pid.
+ *
+ * Maturity: the docs label agent view a "research preview" and make no promise
+ * that the JSON format stays stable. The parser therefore validates the one
+ * field the decision needs (`status`) and reports an incompatible shape as
+ * unavailable instead of guessing. An entry with another `kind` or without a
+ * positive integer `pid` is dropped; when that leaves no session at all and at least
+ * one dropped entry was not a `background` entry, the whole listing is
+ * unavailable ("no usable interactive entry"), so a renamed `kind` or `pid`
+ * field is logged once. The limit: a listing that keeps even one valid
+ * session drops the others silently. Measured cost: about 0.12 s per call
+ * (2026-11-10, 11 sessions).
+ *
+ * Fail-safe mapping: `busy` reads working, `waiting` reads blocked, `idle`
+ * reads waiting, and every other value reads `unknown`, which falls through to
+ * the older signals and can never read as blocked.
+ *
+ * Where the CLI is found: `findClaudePath` searches exactly four fixed
+ * locations (`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`,
+ * `~/.claude/local/claude`, `~/.local/bin/claude`). A Claude Code installed
+ * anywhere else is not found, and the scan falls back to the older signals.
+ */
+const CLAUDE_AGENTS_ARGS = ["agents", "--json"];
+/** The only places the CLI is searched, in order. Never a bare `claude`:
+ * Stream Deck launches plugins with a minimal PATH. */
+function CLAUDE_CANDIDATES(home) {
+    return [
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+        `${home}/.claude/local/claude`,
+        `${home}/.local/bin/claude`,
+    ];
+}
+/** First existing candidate, else null (a null is faster than a failed spawn). */
+function findClaudePath(exists = existsSync, home = homedir()) {
+    for (const candidate of CLAUDE_CANDIDATES(home)) {
+        if (exists(candidate))
+            return candidate;
+    }
+    return null;
+}
+const str = (v) => (typeof v === "string" ? v : "");
+/**
+ * Parse `claude agents --json` stdout into interactive sessions keyed by pid.
+ * Garbage is `ok:false`, never an empty list, because an empty list would read
+ * as "no session is reported" instead of "the report is unusable".
+ */
+function parseClaudeAgents(stdout) {
+    let data;
+    try {
+        data = JSON.parse(stdout);
+    }
+    catch {
+        return { ok: false, reason: "invalid JSON" };
+    }
+    if (!Array.isArray(data))
+        return { ok: false, reason: "not an array" };
+    const sessions = [];
+    // Entries skipped that were not plain background sessions. If nothing is
+    // kept and something was, a `kind` or `pid` field was probably renamed.
+    let droppedUnknown = 0;
+    for (const raw of data) {
+        if (raw === null || typeof raw !== "object") {
+            droppedUnknown++;
+            continue;
+        }
+        const e = raw;
+        // A pid must be a positive integer: 0 or a negative names no process
+        // pgrep can find, so keeping it would only hide that nothing matched.
+        if (e.kind !== "interactive" || !Number.isInteger(e.pid) || e.pid <= 0) {
+            if (e.kind !== "background")
+                droppedUnknown++;
+            continue;
+        }
+        // `status` is present while the process is alive; its absence means the
+        // format changed (e.g. a renamed field), so the whole report is unusable.
+        if (typeof e.status !== "string" || e.status === "") {
+            return { ok: false, reason: "interactive entry without status" };
+        }
+        sessions.push({
+            pid: e.pid,
+            cwd: str(e.cwd),
+            sessionId: str(e.sessionId),
+            status: e.status,
+            waitingFor: str(e.waitingFor),
+        });
+    }
+    // The CLI is asked only after pgrep found a live claude, so an all-dropped
+    // listing is a format change, not an empty machine: report it so the loss
+    // is logged once instead of every key silently falling back.
+    if (sessions.length === 0 && droppedUnknown > 0)
+        return { ok: false, reason: "no usable interactive entry" };
+    return { ok: true, sessions };
+}
+/** Map the CLI's `status` to a state; anything unrecognised is `unknown`. */
+function reportedState(status) {
+    switch (status) {
+        case "busy":
+            return "working";
+        case "waiting":
+            return "blocked";
+        case "idle":
+            return "waiting";
+        default:
+            return "unknown";
+    }
+}
+/** True for a state the CLI actually decided. Such an instance needs no
+ * fallback signal, so no transcript is read for it (agent-scan.ts and the
+ * legacy Claude Project key both gate their transcript read on this). */
+function isRecognisedReport(r) {
+    return r === "working" || r === "blocked" || r === "waiting";
+}
+/** `lost` on ok/undefined -> unavailable, `regained` on unavailable -> ok;
+ * `unasked` is transparent (nothing was running, so nothing was learned). */
+function agentsSourceTransition(prev, next) {
+    if (next === "unavailable" && prev !== "unavailable")
+        return "lost";
+    if (next === "ok" && prev === "unavailable")
+        return "regained";
+    return null;
+}
+/** The log line for a transition, or null. The action shell prints only this. */
+function agentsSourceLogLine(prev, next, reason) {
+    const t = agentsSourceTransition(prev, next);
+    if (t === "lost") {
+        return {
+            level: "warn",
+            message: `Claude state: claude agents --json unavailable (${reason}); falling back to title/transcript signals`,
+        };
+    }
+    if (t === "regained") {
+        return { level: "info", message: "Claude state: claude agents --json available again" };
+    }
+    return null;
+}
+
+/**
  * WHAT IT'S FOR: the one place that asks the machine "which Claude Code CLI
  * sessions exist right now, in which project folders, and is a shell tool
  * still running under each?" — so every Claude-facing key repaints from a
@@ -9693,6 +9866,17 @@ function buildClaudeProjectKeyImage(args) {
  * failure is deliberately tolerated is the shell-busy child probe — see the
  * comment at that call.
  *
+ * The same concurrent burst also runs `claude agents --json` (found in one of
+ * four fixed locations, see claude-agents.ts; ~0.12s) and merges Claude's own
+ * report into each instance by pid. If the binary is missing, exits non-zero,
+ * times out or prints something unusable, `snapshot.claudeAgents` says
+ * "unavailable" with a reason and every instance carries `reported: null`;
+ * `status` stays "ok" and the older signals decide state. The call is inside
+ * the scan, so `fresh` scans ask the CLI again. LIMIT: the pgrep result and
+ * the CLI listing are merged by pid alone; a pid freed and reused by another
+ * claude inside the same few-millisecond burst could take the wrong report for
+ * at most one tick.
+ *
  * A caller that needs the machine's CURRENT state rather than a shared,
  * cached one (a key press about to act) passes `{ fresh: true }`. Fresh
  * bypasses three separate caches, all of them, or the option would lie about
@@ -9709,10 +9893,12 @@ function run$2(file, args, exec) {
             // even though Node may still surface a numeric `code`.
             const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
             const code = terminated ? null : e?.code;
+            const errorKind = e === null ? "none" : terminated ? "timeout" : typeof code === "number" ? "exit" : "spawn";
             resolve({
                 ok: error === null,
                 stdout: String(stdout ?? ""),
                 exitCode: typeof code === "number" ? code : null,
+                errorKind,
             });
         });
     });
@@ -9775,15 +9961,6 @@ let publishedSeq$2 = 0;
 function lsofCwdArgs(pids) {
     return ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"];
 }
-/** All running Claude Code CLI instances with their ttys, project cwds, and
- * whether a shell tool is running under each — WITHOUT the trust channel.
- * Kept for callers that only ever act on sessions they actually found; prefer
- * {@link scanClaudeSnapshot} where an empty list would be painted as an
- * answer. TTL-cached so concurrent pollers share one scan; cwds cached per
- * pid (60s). */
-function scanClaudeInstances(exec = execFile) {
-    return scanClaudeSnapshot(exec).then((snapshot) => snapshot.instances);
-}
 /** The same scan, carrying whether its probes actually answered. */
 function scanClaudeSnapshot(exec = execFile, options = {}) {
     if (!options.fresh) {
@@ -9795,7 +9972,7 @@ function scanClaudeSnapshot(exec = execFile, options = {}) {
         }
     }
     const mySeq = ++seq$2;
-    const p = doScan$2(exec, mySeq, options.fresh === true);
+    const p = doScan$2(exec, mySeq, options.fresh === true, options.claudePath);
     worldInFlight = p;
     void p.finally(() => {
         if (worldInFlight === p)
@@ -9869,11 +10046,42 @@ async function refreshCwds(claudes, exec, now, fresh) {
         cwdCache.set(pid, { cwd, at: now });
     return true;
 }
-async function doScan$2(exec, mySeq, fresh) {
+const UNASKED = { source: "unasked", reason: "" };
+/**
+ * Ask `claude agents --json` for Claude's own report. Never throws and never
+ * affects the scan's `status`: any failure yields `unavailable` with a fixed
+ * reason string (never CLI output, so no session data reaches a log).
+ */
+async function askClaudeAgents(claudePath, exec) {
+    const byPid = new Map();
+    const unavailable = (reason) => ({
+        claudeAgents: { source: "unavailable", reason },
+        byPid,
+    });
+    if (claudePath === null)
+        return unavailable("no claude binary");
+    const result = await run$2(claudePath, CLAUDE_AGENTS_ARGS, exec);
+    if (!result.ok) {
+        if (result.errorKind === "timeout")
+            return unavailable("timeout");
+        if (result.errorKind === "exit")
+            return unavailable(`exit ${result.exitCode}`);
+        return unavailable("spawn error");
+    }
+    const parsed = parseClaudeAgents(result.stdout);
+    if (!parsed.ok)
+        return unavailable(`unparsable: ${parsed.reason}`);
+    for (const s of parsed.sessions) {
+        byPid.set(s.pid, { reported: reportedState(s.status), waitingFor: s.waitingFor });
+    }
+    return { claudeAgents: { source: "ok", reason: "" }, byPid };
+}
+async function doScan$2(exec, mySeq, fresh, claudePathOption) {
     const now = Date.now();
     const pgrep = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
-    if (pgrepFoundNothing$1(pgrep))
-        return remember$2(now, mySeq, { status: "ok", instances: [] });
+    if (pgrepFoundNothing$1(pgrep)) {
+        return remember$2(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
+    }
     if (!pgrep.ok)
         return rememberUnknown$2(now, mySeq);
     const pids = pgrep.stdout
@@ -9881,19 +10089,25 @@ async function doScan$2(exec, mySeq, fresh) {
         .map((l) => Number.parseInt(l.trim(), 10))
         .filter((n) => Number.isFinite(n));
     if (pids.length === 0)
-        return remember$2(now, mySeq, { status: "ok", instances: [] });
+        return remember$2(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
     const ps = await run$2("/bin/ps", claudeDetailArgs(pids), exec);
     if (!ps.ok)
         return rememberUnknown$2(now, mySeq);
     const claudes = claudesFrom(parsePsProcs(ps.stdout));
     if (claudes.length === 0)
-        return remember$2(now, mySeq, { status: "ok", instances: [] });
+        return remember$2(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
     const claudePids = new Set(claudes.map((c) => c.pid));
     // The shell-busy child chain and the cwd lookup both depend only on the ps
     // above, so they run CONCURRENTLY instead of one waiting on the other.
-    const [busyPids, cwdsOk] = await Promise.all([
+    // The `claude agents --json` call joins the same burst (~0.12s). Like the
+    // shell-busy probe, its failure does NOT degrade `status`: presence and
+    // project are established elsewhere, and the report only supplies state.
+    // It runs on `fresh` scans too, since it lives inside doScan.
+    const claudePath = claudePathOption === undefined ? findClaudePath() : claudePathOption;
+    const [busyPids, cwdsOk, agents] = await Promise.all([
         shellBusyPids(claudePids, exec),
         refreshCwds(claudes, exec, now, fresh),
+        askClaudeAgents(claudePath, exec),
     ]);
     if (!cwdsOk)
         return rememberUnknown$2(now, mySeq);
@@ -9907,12 +10121,18 @@ async function doScan$2(exec, mySeq, fresh) {
         tty: p.tty,
         cwd: cwdCache.get(p.pid)?.cwd ?? "",
         shellBusy: busyPids.has(p.pid),
+        reported: agents.byPid.get(p.pid)?.reported ?? null,
+        waitingFor: agents.byPid.get(p.pid)?.waitingFor ?? "",
     }))
         .filter((i) => i.cwd !== "");
     // A live claude whose cwd lsof did not report cannot be bound to a project,
     // so the list is not the whole truth even though every command succeeded.
     const incomplete = instances.length !== claudes.length;
-    return remember$2(now, mySeq, { status: incomplete ? "unknown" : "ok", instances });
+    return remember$2(now, mySeq, {
+        status: incomplete ? "unknown" : "ok",
+        instances,
+        claudeAgents: agents.claudeAgents,
+    });
 }
 function remember$2(at, mySeq, snapshot) {
     if (mySeq >= publishedSeq$2) {
@@ -9928,7 +10148,10 @@ function remember$2(at, mySeq, snapshot) {
  * this whole channel exists to avoid. */
 function rememberUnknown$2(at, mySeq) {
     const stale = worldCache?.snapshot.instances.map((instance) => ({ ...instance })) ?? [];
-    return remember$2(at, mySeq, { status: "unknown", instances: stale });
+    // `claudeAgents` and each instance's `reported`/`waitingFor` are carried as
+    // last known, like `shellBusy`.
+    const claudeAgents = worldCache?.snapshot.claudeAgents ?? UNASKED;
+    return remember$2(at, mySeq, { status: "unknown", instances: stale, claudeAgents });
 }
 /** Is a process with exactly this name running? (pgrep -x; used to avoid
  * AppleScript-launching a terminal app that isn't open.) */
@@ -9941,15 +10164,14 @@ function processRunning(name, exec = execFile) {
 }
 
 /**
- * Detect Claude Code inside tmux windows — and whether it is WORKING or
- * WAITING for input — from signals tmux already captures. Claude Code sets
- * the terminal title (OSC), which tmux stores as `pane_title`: while working
- * the title starts with an animated braille spinner frame (U+2800–U+28FF);
- * while idle at the prompt it starts with a static "✳". Presence is
- * `pane_current_command == "claude"`. Pure parsing/decision only.
+ * Detect Claude Code inside tmux windows from the pane title tmux already
+ * stores. This is now a FALLBACK signal: the primary source is
+ * `claude agents --json` (see claude-agents.ts). Under tmux, Claude Code
+ * 2.1.236+ pins a static "✳" title (`tengu_static_title_under_mux`), so the
+ * title says nothing there; otherwise it is a spinner frame (braille
+ * U+2800–U+28FF, or ◐◑◒◓) while working and "✳" while idle. Pure parsing and
+ * decision only.
  */
-/** tmux args listing every pane as `session|windowIndex|windowName|command|title`
- * (title LAST — it is a task summary and may itself contain `|`). */
 /** tmux args listing every pane as `paneTty|session|windowIndex|command|title`
  * (title LAST — it may contain `|`). Pane ttys identify tmux-hosted processes:
  * they are invisible to iTerm/Terminal tab lists, so a raise-by-tty must
@@ -9994,80 +10216,25 @@ function titleWorking(title) {
     return startsWithSpinner(trimmed);
 }
 /** True when the title matches Claude Code's WORKING format: a braille
- * spinner frame (U+2800–U+28FF) followed by a space and the task summary.
+ * spinner frame (U+2800–U+28FF) or a half-circle frame (◐◑◒◓, U+25D0–U+25D3,
+ * the 2.1.236+ spinner) followed by a space and the task summary.
  * Trimmed first (identity and state must read the same bytes), and the
  * marker+space shape rejects unrelated TUI titles that merely start with a
  * braille character. */
 function startsWithSpinner(title) {
     const t = title.trim();
     const cp = t.codePointAt(0);
-    if (cp === undefined || cp < 0x2800 || cp > 0x28ff)
+    const isBraille = cp !== undefined && cp >= 0x2800 && cp <= 0x28ff;
+    const isHalfCircle = cp !== undefined && cp >= 0x25d0 && cp <= 0x25d3;
+    if (!isBraille && !isHalfCircle)
         return false;
     return t.length === 1 || t[1] === " ";
 }
-/**
- * Claude Code's state inside one tmux window (matched by session + window
- * name, same as the key's target). Several claude panes in one window:
- * WORKING wins — the key should read busy if anything is busy.
- */
-function claudeStateForWindow(panes, session, windowName) {
-    let state = "none";
-    for (const p of panes) {
-        if (p.session !== session || p.windowName !== windowName)
-            continue;
-        // command === "claude" is the authoritative identity. The ONE sanctioned
-        // fallback: a WORKING-format title (braille frame + space) on a pane
-        // whose foreground command is a tool — Claude's OSC title persists while
-        // a foreground shell tool momentarily owns the tty. The fallback is
-        // deliberately braille-only: a stale ✳ on a dead/reused pane must never
-        // be adopted as a waiting Claude forever.
-        if (p.command !== "claude") {
-            if (startsWithSpinner(p.title))
-                return "working";
-            continue;
-        }
-        if (startsWithSpinner(p.title))
-            return "working";
-        state = "waiting";
-    }
-    return state;
-}
-/** Does this window contain a pane whose tty hosts a shell-busy claude?
- * Feeds the tmux keys the "turn ended but a background shell still runs"
- * case, where the pane title reads ✳ (waiting). */
-function windowShellBusy(panes, session, windowName, busyTtys) {
-    return panes.some((p) => p.session === session && p.windowName === windowName && busyTtys.has(p.tty));
-}
-/** A pane title that could belong to Claude (braille spinner OR the ✳ idle
- * marker) — used only to LOCATE a claude pane for the cwd lookup, never to
- * decide working/waiting. */
-function startsWithSpinnerOrStar(title) {
-    const t = title.trim();
-    const cp = t.codePointAt(0);
-    if (cp === undefined)
-        return false;
-    return cp === 0x2733 || (cp >= 0x2800 && cp <= 0x28ff);
-}
-/** The project cwds of EVERY claude pane in a window (panes whose command is
- * claude OR whose title carries Claude's marker), via a tty→cwd map — so the
- * tmux keys can read those projects' transcripts for the Brewing signal. A
- * split window can host more than one claude; any working one should light
- * the key, so all are returned (deduped). Empty when none matched. */
-function windowClaudeCwds(panes, session, windowName, ttyToCwd) {
-    const cwds = new Set();
-    for (const p of panes) {
-        if (p.session !== session || p.windowName !== windowName)
-            continue;
-        if (p.command !== "claude" && !startsWithSpinnerOrStar(p.title))
-            continue;
-        const cwd = ttyToCwd.get(p.tty);
-        if (cwd)
-            cwds.add(cwd);
-    }
-    return [...cwds];
-}
 
 /**
+ * FALLBACK signal behind `claude agents --json` (claude-agents.ts): used only
+ * for a session the CLI did not report.
+ *
  * Freshness of a project's newest Claude Code transcript. Sessions append to
  * ~/.claude/projects/<slug>/<session>.jsonl while working; the newest file's
  * mtime goes stale within seconds of the session going idle (verified live).
@@ -10075,6 +10242,22 @@ function windowClaudeCwds(panes, session, windowName, ttyToCwd) {
  * plugin process that serves every key and dial.
  */
 const BATCH = 64;
+const LOCAL_COMMAND_PREFIXES = [
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-stdout>",
+];
+/** A user record written by a local slash command (no assistant reply follows). */
+function isLocalCommandRecord(entry) {
+    if (entry.isMeta === true)
+        return true;
+    const content = entry.message?.content;
+    if (typeof content !== "string")
+        return false;
+    const head = content.trimStart();
+    return LOCAL_COMMAND_PREFIXES.some((p) => head.startsWith(p));
+}
 /**
  * Does the transcript tail show Claude OWING the next assistant turn — i.e.
  * actively working, even when the terminal title reads ✳ and the file is
@@ -10107,6 +10290,11 @@ function transcriptOwesResponse(lines) {
         try {
             const entry = JSON.parse(line);
             if (entry.type !== "user" && entry.type !== "assistant")
+                continue;
+            // A local slash command (/login, measured 2026-11-10) appends user
+            // records that no assistant turn ever answers; counting them would
+            // read the session as working forever.
+            if (entry.type === "user" && isLocalCommandRecord(entry))
                 continue;
             const uses = [];
             const content = entry.message?.content;
@@ -10372,6 +10560,34 @@ class PressGate {
             clearTimeout(t);
         this.timers.delete(id);
     }
+}
+
+/**
+ * WHAT IT'S FOR: writes ONE log line when Switchboard loses or regains
+ * `claude agents --json` (Claude Code's own state report), so a silent switch
+ * to the older title/transcript signals leaves evidence. It prints only what
+ * the pure `agentsSourceLogLine` returns, so the decision is tested there.
+ *
+ * Process-wide memory (`last`) makes this fire once per transition, never per
+ * poll tick, even though AI Project, Focus tmux and the legacy Claude Project
+ * key all report every tick. The limit: scans are logged in the order they
+ * FINISH. Non-fresh callers share one in-flight scan, but a `fresh` scan (an
+ * AI Project press) runs alongside a poll, so if the CLI changes availability
+ * between two overlapping scans, the older one can finish last and add one
+ * extra lost/regained pair of lines.
+ * The reason is one of claude-scan's fixed strings and never carries CLI
+ * output, so no session data reaches the log.
+ */
+let last;
+function noteClaudeAgentsSource(src) {
+    if (src === undefined)
+        return;
+    const line = agentsSourceLogLine(last, src.source, src.reason);
+    if (line !== null)
+        streamDeck.logger[line.level](line.message);
+    // `unasked` (nothing was running) neither loses nor regains the source.
+    if (src.source !== "unasked")
+        last = src.source;
 }
 
 /**
@@ -10729,7 +10945,12 @@ let ClaudeProject = (() => {
         async snapshot() {
             const tmux = findTmuxPath();
             const [instances, panesRes, clientsRes, front] = await Promise.all([
-                scanClaudeInstances(),
+                // The snapshot (not the bare instance list) so a deck with only this
+                // key still logs losing `claude agents --json`, once per transition.
+                scanClaudeSnapshot().then((snap) => {
+                    noteClaudeAgentsSource(snap.claudeAgents);
+                    return snap.instances;
+                }),
                 runTmux(LIST_PANE_TTYS_ARGS, tmux),
                 runTmux(LIST_CLIENTS_ARGS, tmux),
                 runJxa(FRONT_APP_BUNDLE_JXA),
@@ -10804,7 +11025,7 @@ let ClaudeProject = (() => {
                     }
                 }
             }
-            const transcript = instance !== undefined
+            const transcript = instance !== undefined && !isRecognisedReport(instance.reported)
                 ? await newestTranscriptState(project)
                 : { ageMs: null, working: false };
             const claude = projectClaudeState({
@@ -10813,6 +11034,7 @@ let ClaudeProject = (() => {
                 transcriptAgeMs: transcript.ageMs,
                 transcriptWorking: transcript.working,
                 shellBusy: instance?.shellBusy === true,
+                reported: instance?.reported ?? null,
             });
             return svgToDataUri(buildClaudeProjectKeyImage({
                 project: project || "no target",
@@ -11590,14 +11812,18 @@ let CodexProject = (() => {
  *   - Codex records "I am waiting for your approval" in its own rollout log, so
  *     a blocked Codex session is knowable from a file, on any host, with no
  *     terminal scraping at all. Its `state` already carries `blocked`.
- *   - Claude Code and Cursor write nothing that distinguishes "blocked on the
+ *   - Claude Code reports its own state through `claude agents --json`
+ *     (`status:"waiting"` = waiting on you), so a Claude the CLI listed is
+ *     blocked-authoritative on any host. Only when the CLI is unavailable does
+ *     Claude fall back to the rule below, shared with Cursor.
+ *   - An UNREPORTED Claude and Cursor write nothing that distinguishes "blocked on the
  *     operator" from "busy working". The ONLY direct evidence is the prompt
  *     drawn on the terminal — for Claude that is EITHER a tool approval OR a
  *     choice prompt (a question, or a plan awaiting approval), which share no
  *     wording — and the only terminal this plugin can read is a tmux pane. Outside tmux, "blocked" is simply not observable for
  *     those two — see {@link blockedEvidenceFor}.
- *   - Measured, and the reason {@link decideAgentFace} exists in this form:
- *     Claude Code keeps its IDLE title marker (a "✳") on screen while its
+ *   - Measured (history; still needed for the fallback scrape), and the reason
+ *     {@link decideAgentFace} exists in this form: Claude Code keeps its IDLE title marker (a "✳") on screen while its
  *     approval prompt is up, so a blocked Claude session's file-derived state
  *     reads `waiting`, not `working`. Cursor's blocked session has no
  *     `turn_ended` record yet and so reads `working`. A rule that only upgrades
@@ -11625,10 +11851,14 @@ let CodexProject = (() => {
  * Callers use it to decide whether scraping a pane is worth doing at all, and
  * to avoid promising a "needs you" light they cannot actually deliver.
  */
-function blockedEvidenceFor(kind, host) {
+function blockedEvidenceFor(kind, host, reported) {
     // Codex reports blocking in its own rollout log, so it needs no terminal and
     // works outside tmux too.
     if (kind === "codex")
+        return "authoritative";
+    // A Claude whose state came from `claude agents --json` reports blocked
+    // itself (`status:"waiting"`), on any host, so its pane is never scraped.
+    if (kind === "claude" && reported)
         return "authoritative";
     // Claude and Cursor are only observable through the pane text, and the only
     // terminal this plugin can read is a tmux pane.
@@ -11649,13 +11879,14 @@ function blockedEvidenceFor(kind, host) {
  *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
  *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
  *     any kind whose blocked verdict can ONLY come from scraping a pane
- *     (`blockedEvidenceFor(kind, "tmux") === "terminal"` — claude and cursor).
+ *     (`blockedEvidenceFor(kind, "tmux", reported) === "terminal"` — an unreported
+ *     claude, and cursor).
  *     For those, "clear" would be a confident negative on a question that was
  *     never actually asked; the honest answer is `"failed"`. Codex is
  *     unaffected either way — its blocked verdict never depends on a pane.
  */
-function blockedProbeForMissingPane(kind, panesOk, clientsOk) {
-    if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux") === "terminal")
+function blockedProbeForMissingPane(kind, panesOk, clientsOk, reported) {
+    if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux", reported) === "terminal")
         return "failed";
     return "clear";
 }
@@ -12706,15 +12937,19 @@ function rememberUnknown(at, gen, mySeq) {
  *
  * Two asymmetries are real and are handled explicitly rather than papered over:
  *
- *   - **Claude's state is not derivable from process facts alone.** Codex and
- *     Cursor each write a log their scanner reads, so their scanner returns a
- *     finished verdict. Claude's depends on its terminal title, its transcript,
- *     and whether a shell tool is still running — so this module needs the
- *     caller to hand it the tmux pane titles it cannot see for itself.
- *   - **Only Codex reports being blocked.** Claude and Cursor reveal an
- *     approval prompt on screen and nowhere else, so a "blocked" verdict for
- *     those two is added by the caller from a terminal scrape, and is
- *     unavailable outside tmux. See `blockedEvidenceFor` in `agent-project`.
+ *   - **Claude's state comes from the CLI when it answers.** Codex and Cursor
+ *     each write a log their scanner reads. Claude reports its own state
+ *     through `claude agents --json` (read inside `claude-scan`); an instance
+ *     the CLI listed carries `reported: true` and never reads a transcript.
+ *     Only when the CLI is unavailable, or has not yet listed a new pid, does
+ *     Claude's state depend on its terminal title, its transcript and whether
+ *     a shell tool is still running, so the caller should still hand this
+ *     module the tmux pane titles for that fallback.
+ *   - **Blocked is reported by Codex AND by a CLI-listed Claude.** An
+ *     unreported Claude and Cursor reveal an approval prompt on screen and
+ *     nowhere else, so a "blocked" verdict for those is added by the caller
+ *     from a terminal scrape, and is unavailable outside tmux. See
+ *     `blockedEvidenceFor` in `agent-project`.
  *
  * Scanning is per-kind on purpose: a key that has already captured its agent
  * asks for exactly one kind, so the steady-state cost is identical to the old
@@ -12755,28 +12990,38 @@ function normalizeTty(tty) {
     return tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
 }
 /**
- * Claude's verdict, assembled from the three signals its own action uses.
- * `titleWorking` is null when no pane title was available (a non-tmux host),
- * which `projectClaudeState` already treats as "fall back to transcript
- * freshness" rather than as evidence of idleness.
+ * Claude's verdict. When the CLI listed this pid (`reported` is working,
+ * blocked or waiting) the report decides, and the transcript is NOT read: a
+ * reported instance costs no file I/O. Otherwise the older signals decide:
+ * pane title, shell child, transcript. `titleWorking` is null when no pane
+ * title was available (a non-tmux host), which counts as "no evidence" rather
+ * than as idleness.
  *
- * Note what this deliberately CANNOT return: `blocked`. Claude keeps its idle
- * title while an approval prompt is on screen (measured), so nothing here can
- * see that — the caller supplies it from the terminal.
+ * Unlike the fallback path, a REPORTED Claude can be `blocked`: the CLI says
+ * `waiting` on you. An unreported Claude still cannot be; the caller supplies
+ * that from a terminal scrape.
  */
-async function computeClaudeState(cwd, paneTitle, shellBusy, projectsBase) {
+async function computeClaudeState(cwd, paneTitle, shellBusy, reported, projectsBase) {
+    if (isRecognisedReport(reported)) {
+        const verdict = claudeVerdict({
+            reported,
+            shellBusy,
+            titleWorking: null,
+            transcriptAgeMs: null,
+        });
+        return { state: verdict, reported: true };
+    }
     const transcript = projectsBase === undefined
         ? await newestTranscriptState(cwd)
         : await newestTranscriptState(cwd, Date.now(), projectsBase);
-    const state = projectClaudeState({
-        present: true,
+    const state = claudeVerdict({
+        reported: null,
         titleWorking: paneTitle === undefined ? null : titleWorking(paneTitle),
         transcriptAgeMs: transcript.ageMs,
         transcriptWorking: transcript.working,
         shellBusy,
     });
-    // `present: true` above forecloses "none"; the narrowing is for the compiler.
-    return state === "none" ? "unknown" : state;
+    return { state, reported: false };
 }
 async function scanCodexBranch(exec, fresh) {
     const snap = await scanCodexSnapshot(exec, fresh ? { fresh: true } : undefined);
@@ -12806,8 +13051,11 @@ async function scanCursorBranch(exec, fresh) {
         })),
     };
 }
-async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProjectsBase) {
-    const snap = await scanClaudeSnapshot(exec, fresh ? { fresh: true } : undefined);
+async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProjectsBase, claudePath) {
+    const snap = await scanClaudeSnapshot(exec, {
+        ...(fresh ? { fresh: true } : {}),
+        ...(claudePath === undefined ? {} : { claudePath }),
+    });
     // Identity (kind/pid/tty/cwd) depends only on the scan, not on the pane
     // titles, so it is kicked off immediately and resolved ALONGSIDE the
     // titles promise below rather than waiting on it serially.
@@ -12822,7 +13070,7 @@ async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProj
             cwd = await realpath(i.cwd);
         }
         catch { /* may exit mid-scan */ }
-        return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy };
+        return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy, reported: i.reported };
     }));
     // CONTRACT (A6): this must never reject. A caller's titles promise can
     // fail (a tmux probe errored) — that degrades Claude's title signal to
@@ -12838,9 +13086,9 @@ async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProj
     const identities = await identityP;
     const instances = await Promise.all(identities.map(async (id) => {
         const watched = claudeState === "all" || claudeState.has(normalizeProjectPath(id.cwd));
-        const state = watched
-            ? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, claudeProjectsBase)
-            : "unknown";
+        const computed = watched
+            ? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, id.reported, claudeProjectsBase)
+            : { state: "unknown", reported: false };
         return {
             kind: "claude",
             pid: id.pid,
@@ -12848,10 +13096,11 @@ async function scanClaudeBranch(exec, fresh, paneTitles, claudeState, claudeProj
             cwd: id.cwd,
             // Claude binds by project path — it has no captured session id.
             sessionId: "",
-            state,
+            state: computed.state,
+            reported: computed.reported,
         };
     }));
-    return { failed: snap.status !== "ok", instances };
+    return { failed: snap.status !== "ok", instances, claudeAgents: snap.claudeAgents };
 }
 /**
  * Every running session of the requested kinds, in one vocabulary.
@@ -12874,7 +13123,7 @@ async function scanAgents(kinds, paneTitles = new Map(), exec = execFile, option
         wanted.has("codex") ? scanCodexBranch(exec, fresh) : null,
         wanted.has("cursor") ? scanCursorBranch(exec, fresh) : null,
         wanted.has("claude")
-            ? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase)
+            ? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase, options.claudePath)
             : null,
     ]);
     const failedKinds = [];
@@ -12892,7 +13141,12 @@ async function scanAgents(kinds, paneTitles = new Map(), exec = execFile, option
             failedKinds.push(kind);
         instances.push(...result.instances);
     }
-    return { status: failedKinds.length > 0 ? "unknown" : "ok", failedKinds, instances };
+    return {
+        status: failedKinds.length > 0 ? "unknown" : "ok",
+        failedKinds,
+        instances,
+        ...(claudeResult?.claudeAgents === undefined ? {} : { claudeAgents: claudeResult.claudeAgents }),
+    };
 }
 /** The kinds a key must scan: just its captured one, or all three while it is
  * still untaught and any of them could be the answer to a capture. */
@@ -13049,6 +13303,47 @@ function selectAgentInstance(instances, kind, project, sessionId) {
  * project folder and a folder with two Claude sessions is simply ambiguous. */
 function bindsBySession(kind) {
     return kind !== "claude";
+}
+
+/**
+ * WHAT IT'S FOR: the one place that decides whether a key's agent is waiting
+ * on you, and whether the pane must be read to find out, so "a Claude that
+ * reported itself is never scraped" is a tested rule, not a comment.
+ *
+ * Pure: the tmux `capture-pane` call is injected as `capture`, so a test can
+ * count how many times it runs. The AI Project action supplies the real
+ * capture (and logs its failures); this module owns only the decision.
+ *
+ * Decision order, each step cheaper than the next:
+ *   1. No pane for the key: {@link blockedProbeForMissingPane} (a reported
+ *      Claude, Codex and a total tmux outage are `clear`; a pane-listing
+ *      failure with a live tmux is `failed` for an unreported Claude/Cursor).
+ *   2. {@link blockedEvidenceFor} is not `terminal` (Codex, or a Claude the
+ *      CLI reported on): `clear`, and `capture` is never called. The agent's
+ *      own state already says whether it is blocked.
+ *   3. Otherwise capture the pane once per tick (several keys can watch the
+ *      same pane; `captured` holds the in-flight PROMISE so a second key
+ *      shares it) and match the agent's prompt wording.
+ */
+async function probeBlocked(args) {
+    const { kind, host, pane, reported, panesOk, clientsOk, captured, capture } = args;
+    if (pane === undefined) {
+        // "No pane" is ambiguous by itself; panesOk/clientsOk tell "no session
+        // here" apart from "the pane listing failed" (see the pure decision).
+        return blockedProbeForMissingPane(kind, panesOk, clientsOk, reported);
+    }
+    if (blockedEvidenceFor(kind, host, reported) !== "terminal")
+        return "clear";
+    let shotP = captured.get(pane.paneId);
+    if (shotP === undefined) {
+        shotP = capture(pane.paneId);
+        captured.set(pane.paneId, shotP);
+    }
+    const shot = await shotP;
+    // A probe that errored has NOT told us the agent is unblocked.
+    if (!shot.ok)
+        return "failed";
+    return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
 }
 
 const POLL_MS$4 = 2500;
@@ -13214,6 +13509,7 @@ let AiProject = (() => {
                 failedKinds: agents.failedKinds,
                 clientsOk: clientsResult.ok,
                 panesOk: panesResult.ok,
+                claudeAgents: agents.claudeAgents,
             };
         }
         refreshAll() { return this.refresher.request(); }
@@ -13225,41 +13521,6 @@ let AiProject = (() => {
             catch {
                 return normalized;
             }
-        }
-        /**
-         * Is this session holding for the operator? Only asked when the terminal is
-         * the ONLY place that answer exists — Codex records it in its own log and so
-         * never needs scraping, and outside tmux there is no screen we can read.
-         *
-         * `captured` is a Map of PROMISES, not settled results (A4/6d.3): per-key
-         * bodies now run concurrently, so two keys can race to ask for the same
-         * pane in the same tick — storing the promise lets the second one share
-         * the first one's in-flight capture instead of firing a duplicate.
-         */
-        async blockedOnApproval(kind, host, pane, tmux, captured, panesOk, clientsOk) {
-            if (pane === undefined) {
-                // A4: "no pane" is ambiguous by itself — see the pure decision this
-                // defers to for why panesOk/clientsOk tell it apart from a genuine
-                // pane-listing failure.
-                return blockedProbeForMissingPane(kind, panesOk, clientsOk);
-            }
-            if (blockedEvidenceFor(kind, host) !== "terminal")
-                return "clear";
-            // Several keys can watch the same pane; capture it once per tick.
-            let shotP = captured.get(pane.paneId);
-            if (shotP === undefined) {
-                shotP = runTmux(captureAgentPaneArgs(pane.paneId), tmux).then((result) => {
-                    if (!result.ok)
-                        streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
-                    return { ok: result.ok, text: result.stdout };
-                });
-                captured.set(pane.paneId, shotP);
-            }
-            const shot = await shotP;
-            // A probe that errored has NOT told us the agent is unblocked.
-            if (!shot.ok)
-                return "failed";
-            return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
         }
         async doRefreshAll() {
             if (this.visible.size === 0)
@@ -13288,10 +13549,11 @@ let AiProject = (() => {
                     watchedClaudeProjects.add(normalizeProjectPath(canonical));
             }
             const snap = await this.snapshot(kinds, { claudeState: watchedClaudeProjects });
+            noteClaudeAgentsSource(snap.claudeAgents);
             const tmux = findTmuxPath();
             this.spin++;
             // One capture-pane per pane per tick, however many keys watch it,
-            // shared via its PROMISE — see blockedOnApproval.
+            // shared via its PROMISE — see probeBlocked.
             const captured = new Map();
             const blockedProbes = [];
             const unseenActionable = [];
@@ -13315,7 +13577,17 @@ let AiProject = (() => {
                     host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
                 }
                 const blockedProbe = instance !== null && kind !== undefined
-                    ? await this.blockedOnApproval(kind, host, pane, tmux, captured, snap.panesOk, snap.clientsOk)
+                    ? await probeBlocked({
+                        kind, host, pane,
+                        // A Claude that reported its own state is never scraped (probeBlocked).
+                        reported: instance.reported === true,
+                        panesOk: snap.panesOk, clientsOk: snap.clientsOk, captured,
+                        capture: (paneId) => runTmux(captureAgentPaneArgs(paneId), tmux).then((result) => {
+                            if (!result.ok)
+                                streamDeck.logger.warn(`AI Project: capture-pane failed for ${paneId}: ${result.stderr}`);
+                            return { ok: result.ok, text: result.stdout };
+                        }),
+                    })
                     : "clear";
                 blockedProbes.push(blockedProbe);
                 const state = decideAgentFace({
@@ -14420,29 +14692,37 @@ let FocusTmuxWindow = (() => {
                         return "";
                     return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
                 });
-                const [front, windowsRes, clientsRes, panesRes, instances, focusedTty, otherAgents] = await Promise.all([
+                // Pane titles for the scan's Claude fallback, derived from the same
+                // pane listing the keys use; never rejects (an empty map on failure).
+                const panesP = runTmux(LIST_PANE_TTYS_ARGS, tmux);
+                const titlesP = panesP
+                    .then((r) => r.ok
+                    ? new Map(parsePaneTtys(r.stdout).map((p) => [p.tty, p.title]))
+                    : new Map())
+                    .catch(() => new Map());
+                const [front, windowsRes, clientsRes, panesRes, agents, focusedTty] = await Promise.all([
                     frontP,
                     runTmux(LIST_WINDOWS_ARGS, tmux),
                     runTmux(LIST_CLIENTS_ARGS, tmux),
-                    runTmux(LIST_PANE_TTYS_ARGS, tmux),
-                    scanClaudeInstances(),
+                    panesP,
+                    // All three agents through the shared adapter, started in the SAME
+                    // burst. Claude's state comes from `claude agents --json` when found
+                    // (see claude-agents.ts), else from its title/transcript fallback.
+                    // No `claudeState` selector: it would need the cwds this very scan
+                    // finds, and a reported instance never reads a transcript anyway.
+                    scanAgents(["claude", "codex", "cursor"], titlesP),
                     focusedTtyP,
-                    // Codex and Cursor, via the shared adapter, started in the SAME
-                    // burst rather than after it. Claude is deliberately NOT requested
-                    // here: its own path below is richer (it upgrades a ✳ idle title to
-                    // "working" from a backgrounded shell or a transcript that owes the
-                    // next turn), and duplicating it would be a second opinion that
-                    // could disagree with itself.
-                    scanAgents(["codex", "cursor"]),
                 ]);
+                noteClaudeAgentsSource(agents.claudeAgents);
                 const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
                 let anyInteresting = iTermFrontmost;
                 const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
                 const clients = parseClients(clientsRes.stdout);
                 const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
-                const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
-                const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
-                const transcriptWorking = new Map(); // cwd -> working, deduped per tick
+                // Only kinds whose probe answered: a failed scan returns nothing,
+                // which would read as "no agent here" and retract a spark that
+                // belongs there (that kind's spark is omitted for the tick instead).
+                const trusted = agents.instances.filter((i) => kindTrusted(agents, i.kind));
                 for (const key of this.visible.values()) {
                     const settings = await key.getSettings();
                     const status = evaluateKeyStatus({
@@ -14452,44 +14732,11 @@ let FocusTmuxWindow = (() => {
                         iTermFrontmost,
                         focusedTty,
                     });
-                    let claude = status.state === "unknown"
+                    // A reported blocked Claude folds into "waiting" here (no amber on
+                    // this key), as Codex and Cursor already do.
+                    const claude = status.state === "unknown"
                         ? "none"
-                        : claudeStateForWindow(panes, status.session, status.window);
-                    // A ✳ title only means "no tool executing" — Claude also shows it
-                    // while BREWING (awaiting the model after a prompt/tool result).
-                    // Upgrade waiting→working when a backgrounded shell runs, or when
-                    // this window's Claude transcript shows it owing the next turn.
-                    if (claude === "waiting") {
-                        if (windowShellBusy(panes, status.session, status.window, busyTtys)) {
-                            claude = "working";
-                        }
-                        else {
-                            for (const cwd of windowClaudeCwds(panes, status.session, status.window, ttyToCwd)) {
-                                let working = transcriptWorking.get(cwd);
-                                if (working === undefined) {
-                                    working = (await newestTranscriptState(cwd)).working;
-                                    transcriptWorking.set(cwd, working);
-                                }
-                                if (working) {
-                                    claude = "working";
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Whatever Claude concluded, a Codex or Cursor session in the same
-                    // window can still be mid-turn — and for a window with no Claude in
-                    // it at all this is the only signal there is.
-                    // Only layer when those probes actually answered. A failed scan
-                    // returns nothing, which would otherwise read as "no agent here"
-                    // and quietly retract a spark that belongs there.
-                    if (claude !== "working" && status.state !== "unknown" && otherAgents.status === "ok") {
-                        const other = agentSparkForWindow(otherAgents.instances, panes, status.session, status.window);
-                        if (other === "working")
-                            claude = "working";
-                        else if (claude === "none" && other === "waiting")
-                            claude = "waiting";
-                    }
+                        : agentSparkForWindow(trusted, panes, status.session, status.window);
                     if (status.state === "hot" || claude === "working")
                         anyInteresting = true;
                     const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));

@@ -54,24 +54,28 @@
 			sessions and reading their state needs no permission.<br /><br />
 			<b>What amber can and cannot see.</b> Codex records &ldquo;waiting for your
 			approval&rdquo; in its own session log, so amber works for Codex in any
-			terminal. Claude Code and Cursor write nothing that distinguishes it from
-			ordinary work &mdash; the only evidence is the prompt on screen, which this
-			key can read for <b>tmux-hosted sessions only</b>. In a bare iTerm2 or
-			Terminal window those two show a waiting prompt as blue (running).
-			For Claude that means two different prompts: a tool approval, and a
-			question awaiting your decision &mdash; the question being the one you
-			meet most, since approvals auto-accept under
-			<code>--permission-mode auto</code>. Claude's <i>plan</i>-approval prompt
-			appears to use the same component and so should behave the same way, but
-			that was inferred from the CLI binary, never measured against a live plan
-			prompt.
+			terminal. Claude Code reports its own state through
+			<code>claude agents --json</code>, so amber works for Claude in any
+			terminal <b>for an interactive session that command lists with a
+			recognised status, when the command is found</b> in one of four places
+			(<code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code>,
+			<code>~/.claude/local</code>, <code>~/.local/bin</code>) and your Claude
+			Code build supports it. Otherwise the key falls back to reading the prompt
+			on screen, which works for <b>tmux-hosted sessions only</b>; in a bare
+			iTerm2 or Terminal window a waiting Claude then shows as blue (running).
+			Cursor has no such report, so it is screen-only and tmux-only. The screen
+			fallback covers a tool approval and a question awaiting your decision;
+			Claude's <i>plan</i>-approval prompt appears to use the same component,
+			but that was inferred from the CLI binary, never measured.
+			A mid-turn session that was parked can stay blue until you use it again.
+			Local commands such as <code>/login</code> no longer read as running.
 			Detection is deliberately narrow, so a future release of either tool that
 			rewords its prompt makes amber stop appearing rather than start lying
 			&mdash; though recognised prompt wording appearing in ordinary output can
 			still, in principle, read as amber.<br /><br />
 			<b>Codex and Cursor</b> bind to one exact session, so two sessions in one
-			folder are never confused. <b>Claude Code</b> has no session identifier and
-			binds by project folder, so two Claude sessions in the same folder read as
+			folder are never confused. <b>Claude Code</b> keys bind by project folder
+			(its reported session id is not used yet), so two Claude sessions in the same folder read as
 			ambiguous (gray) rather than being guessed between.
 		</div>
 	</body>

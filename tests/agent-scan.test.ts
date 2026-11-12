@@ -1,4 +1,9 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { projectSlug } from "../src/mac/claude-project.js";
 
 import type { AgentInstance } from "../src/mac/agent-project.js";
 import {
@@ -21,6 +26,14 @@ import {
 import { invalidateClaudeScan } from "../src/mac/claude-scan.js";
 import { invalidateCodexScan } from "../src/mac/codex-scan.js";
 import { invalidateCursorScan } from "../src/mac/cursor-scan.js";
+import { newestTranscriptState } from "../src/mac/claude-transcript.js";
+
+// Passthrough spy: every test still reads transcripts exactly as before; the
+// spy only lets a test COUNT reads (Decision 6: a reported instance reads none).
+vi.mock("../src/mac/claude-transcript.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/mac/claude-transcript.js")>();
+	return { ...actual, newestTranscriptState: vi.fn(actual.newestTranscriptState) };
+});
 
 const inst = (
 	kind: AgentInstance["kind"],
@@ -255,6 +268,11 @@ describe("The tmux key's agent spark", () => {
 		expect(agentSparkForWindow([at("cursor", "/dev/ttys001", "blocked")], panes, "dev", "movingavg")).toBe("waiting");
 	});
 
+	it("the spark folds a reported blocked Claude into waiting", () => {
+		const reportedBlocked: AgentInstance = { ...at("claude", "/dev/ttys001", "blocked"), reported: true };
+		expect(agentSparkForWindow([reportedBlocked], panes, "dev", "movingavg")).toBe("waiting");
+	});
+
 	it("never leaks state across windows or sessions", () => {
 		const inst = [at("codex", "/dev/ttys003", "working")];
 		expect(agentSparkForWindow(inst, panes, "dev", "movingavg")).toBe("none");
@@ -280,6 +298,7 @@ describe("scanAgents (the unified scan itself)", () => {
 	 * everything scanAgents' claude branch needs downstream of pgrep. */
 	function claudeOnlyExec(onLsof?: () => void) {
 		return vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === "/opt/homebrew/bin/claude") return cb(null, "[]", ""); // the CLI lists nobody: every pid reads unreported
 			if (file === "/usr/bin/pgrep" && args[1] === "claude") return cb(null, "1\n", "");
 			if (file === "/usr/bin/pgrep") return cb(null, "", ""); // child-busy probe: none
 			if (file === "/bin/ps" && isClaudeDetailPs(args)) return cb(null, "1 9 ttys001 claude\n", "");
@@ -308,14 +327,19 @@ describe("scanAgents (the unified scan itself)", () => {
 			["codex", "cursor", "claude"],
 			new Map(),
 			exec as unknown as AgentExecFileLike,
-			{ claudeProjectsBase: FIXTURE_CLAUDE_BASE },
+			{ claudeProjectsBase: FIXTURE_CLAUDE_BASE, claudePath: "/opt/homebrew/bin/claude" },
 		);
 		// Claude's pgrep already fired even though codex's is still gated open —
 		// the three branches were dispatched together, not sequentially.
 		expect(claudePgrepCalled).toBe(true);
 		releaseCodex!();
 		const result = await resultP;
-		expect(result).toEqual({ status: "ok", failedKinds: [], instances: [] });
+		expect(result).toEqual({
+			status: "ok",
+			failedKinds: [],
+			instances: [],
+			claudeAgents: { source: "unasked", reason: "" },
+		});
 	});
 
 	it("accepts pane titles as a promise and still applies Claude's title signal", async () => {
@@ -324,6 +348,7 @@ describe("scanAgents (the unified scan itself)", () => {
 		const titlesP = Promise.resolve(new Map([["/dev/ttys001", "⠁ doing stuff"]]));
 		const result = await scanAgents(["claude"], titlesP, exec as unknown as AgentExecFileLike, {
 			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+			claudePath: "/opt/homebrew/bin/claude",
 		});
 		expect(result.status).toBe("ok");
 		expect(result.instances).toHaveLength(1);
@@ -335,10 +360,11 @@ describe("scanAgents (the unified scan itself)", () => {
 		const result = await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, {
 			claudeState: new Set(), // nothing watched
 			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+			claudePath: "/opt/homebrew/bin/claude",
 		});
 		expect(result.status).toBe("ok");
 		expect(result.instances).toEqual([
-			{ kind: "claude", pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", sessionId: "", state: "unknown" },
+			{ kind: "claude", pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", sessionId: "", state: "unknown", reported: false },
 		]);
 	});
 
@@ -353,6 +379,7 @@ describe("scanAgents (the unified scan itself)", () => {
 		});
 		const result = await scanAgents(["codex", "claude"], new Map(), exec as unknown as AgentExecFileLike, {
 			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+			claudePath: "/opt/homebrew/bin/claude",
 		});
 		expect(result.status).toBe("unknown");
 		expect(result.failedKinds).toEqual(["codex"]);
@@ -365,11 +392,12 @@ describe("scanAgents (the unified scan itself)", () => {
 	it("fresh + a warm cwdCache still probes every pid (A1)", async () => {
 		let lsofCalls = 0;
 		const exec = claudeOnlyExec(() => lsofCalls++);
-		await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, { claudeProjectsBase: FIXTURE_CLAUDE_BASE });
+		await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, { claudeProjectsBase: FIXTURE_CLAUDE_BASE, claudePath: "/opt/homebrew/bin/claude" });
 		expect(lsofCalls).toBe(1);
 		await scanAgents(["claude"], new Map(), exec as unknown as AgentExecFileLike, {
 			fresh: true,
 			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+			claudePath: "/opt/homebrew/bin/claude",
 		});
 		expect(lsofCalls).toBe(2); // re-probed despite the memo being warm
 	});
@@ -385,8 +413,92 @@ describe("scanAgents (the unified scan itself)", () => {
 		rejecting.catch(() => {});
 		const result = await scanAgents(["claude"], rejecting, exec as unknown as AgentExecFileLike, {
 			claudeProjectsBase: FIXTURE_CLAUDE_BASE,
+			claudePath: "/opt/homebrew/bin/claude",
 		});
 		expect(result.status).toBe("ok");
 		expect(result.instances).toHaveLength(1); // did not throw/reject the whole scan
+	});
+});
+
+describe("scanAgents — Claude's own report", () => {
+	const CLAUDE = "/opt/homebrew/bin/claude";
+	// A path that does not exist: a test that did not mean to read transcripts
+	// must fail closed, never read the operator's real ~/.claude/projects.
+	const NO_BASE = "/nonexistent/switchboard-test-fixture/claude-projects";
+	type Cb = (error: Error | null, stdout: string, stderr: string) => void;
+	const isDetailPs = (args: readonly string[]) => args[0] === "-o" && String(args[1]).startsWith("pid=,ppid=,tty=");
+	const report = (status: string, extra: Record<string, unknown> = {}) =>
+		JSON.stringify([{ pid: 1, cwd: "/Users/j/code/app", kind: "interactive", startedAt: 1, sessionId: "s1", name: "n", status, ...extra }]);
+
+	/** One claude at pid 1 / ttys001 / cwd /Users/j/code/app; `cli` answers the binary. */
+	function exec(cli: (cb: Cb) => void) {
+		return vi.fn((file: string, args: readonly string[], _o: unknown, cb: Cb) => {
+			if (file === CLAUDE) return cli(cb);
+			if (file === "/usr/bin/pgrep" && args[1] === "claude") return cb(null, "1\n", "");
+			if (file === "/usr/bin/pgrep") return cb(null, "", "");
+			if (file === "/bin/ps" && isDetailPs(args)) return cb(null, "1 9 ttys001 claude\n", "");
+			if (file === "/bin/ps") return cb(null, "", "");
+			return cb(null, "p1\nfcwd\nn/Users/j/code/app\n", "");
+		});
+	}
+	const scan = (e: unknown, titles: Map<string, string>, base: string = NO_BASE) =>
+		scanAgents(["claude"], titles, e as AgentExecFileLike, {
+			claudeProjectsBase: base,
+			claudePath: CLAUDE,
+		} as never);
+
+	beforeEach(() => {
+		invalidateClaudeScan();
+		invalidateCodexScan();
+		invalidateCursorScan();
+	});
+
+	it("a Claude the CLI reports as waiting is blocked with no pane and no transcript", async () => {
+		const result = await scan(exec((cb) => cb(null, report("waiting", { waitingFor: "permission prompt" }), "")), new Map());
+		expect(result.instances[0]?.state, "scanAgents: reported waiting is blocked").toBe("blocked");
+		expect((result.instances[0] as { reported?: boolean }).reported).toBe(true);
+		expect((result as { claudeAgents?: unknown }).claudeAgents).toMatchObject({ source: "ok" });
+	});
+
+	it("a Claude the CLI reports busy is working even with a ✳ title", async () => {
+		const result = await scan(
+			exec((cb) => cb(null, report("busy"), "")),
+			new Map([["/dev/ttys001", "✳ idle looking"]]),
+		);
+		expect(result.instances[0]?.state, "scanAgents: reported busy beats the ✳ title").toBe("working");
+	});
+
+	it("when the CLI is unavailable, Claude falls back to the title with reported false", async () => {
+		const result = await scan(
+			exec((cb) => cb(Object.assign(new Error("x"), { code: 1 }), "", "")),
+			new Map([["/dev/ttys001", "⠁ doing stuff"]]),
+		);
+		expect(
+			(result.instances[0] as { reported?: boolean }).reported,
+			"scanAgents: fallback instance is not reported",
+		).toBe(false);
+		expect(result.instances[0]?.state).toBe("working");
+		expect((result as { claudeAgents?: unknown }).claudeAgents).toMatchObject({ source: "unavailable" });
+	});
+
+	it("a reported idle Claude ignores an owing transcript on disk", async () => {
+		const base = await mkdtemp(join(tmpdir(), "sb-agent-scan-"));
+		const dir = join(base, projectSlug("/Users/j/code/app"));
+		await mkdir(dir, { recursive: true });
+		const use = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "A", name: "Bash" }] } });
+		const res = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "A" }] } });
+		await writeFile(join(dir, "s.jsonl"), [use, res].join("\n") + "\n"); // dangling tool_result: owes the next turn
+		const result = await scan(exec((cb) => cb(null, report("idle"), "")), new Map(), base);
+		expect(result.instances[0]?.state, "scanAgents: reported idle ignores an owing transcript").toBe("waiting");
+	});
+	it("a reported Claude reads no transcript, and an unreported one does", async () => {
+		const reads = vi.mocked(newestTranscriptState);
+		reads.mockClear();
+		await scan(exec((cb) => cb(null, report("idle"), "")), new Map());
+		expect(reads.mock.calls.length, "scanAgents: reported Claude reads no transcript").toBe(0);
+		invalidateClaudeScan();
+		reads.mockClear();
+		await scan(exec((cb) => cb(Object.assign(new Error("x"), { code: 1 }), "", "")), new Map());
+		expect(reads.mock.calls.length, "scanAgents: unreported Claude reads its transcript").toBeGreaterThan(0);
 	});
 });

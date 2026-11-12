@@ -5,7 +5,9 @@
  * lives in claude-scan.ts; this module only parses and decides.
  *
  * Identity model: a button targets a PROJECT DIRECTORY. A claude process
- * belongs to it when its cwd matches. State comes from two signals:
+ * belongs to it when its cwd matches. State comes FIRST from Claude Code's own
+ * report (`claude agents --json`, see claude-agents.ts). The signals below are
+ * the FALLBACK when that report is unavailable or does not list the pid:
  * the tmux pane title's spinner marker when the instance is tmux-hosted
  * (always readable via the tmux server), else the freshness of the newest
  * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
@@ -23,8 +25,12 @@
  *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
  *   us to an undocumented, version-fragile format — rejected as
  *   disproportionate to a transient, self-correcting misread.
+ * - The CLI report can stick on `busy` after a parked mid-flight turn
+ *   (claudeissues #87131, 2.1.220): the key stays blue until the session is
+ *   used again. The report's JSON format also carries no stability promise.
  */
 
+import type { ClaudeReportedState } from "./claude-agents.js";
 import type { ClaudeState } from "./claude-state.js";
 import { deprecationBadge } from "./deprecation.js";
 import { hslToHex } from "./svg.js";
@@ -39,6 +45,11 @@ export interface ClaudeInstance {
 	cwd: string;
 	/** A shell tool (foreground or backgrounded) is running under this claude. */
 	shellBusy: boolean;
+	/** Claude Code's own verdict for this pid from `claude agents --json`;
+	 * null when the CLI did not answer for it (fall back to the signals). */
+	reported: ClaudeReportedState | null;
+	/** The CLI's `waitingFor` text; "" unless it gave one. */
+	waitingFor: string;
 }
 
 export interface PsProc {
@@ -143,30 +154,39 @@ export function instancesForProject(
 /** A transcript younger than this is "actively working". */
 export const TRANSCRIPT_FRESH_MS = 30_000;
 
+export type ClaudeVerdict = "working" | "blocked" | "waiting";
+
 /**
- * Decide the project's Claude state. Title marker wins when known (the tmux
- * pane title's spinner stays animated through long tool calls, where the
- * transcript goes quiet); transcript freshness covers hosts whose titles we
- * can't read without launching apps.
+ * Decide one Claude session's state. Claude Code's own report
+ * (`claude agents --json`) outranks every inferred signal: reported working
+ * is working, reported blocked is blocked, and reported idle is waiting
+ * EXCEPT that a live shell-snapshot child still reads working ("Brewed … · 1
+ * shell still running"). An owing transcript does NOT override reported idle:
+ * that is the /login false positive. With no report (or an unrecognised
+ * status) the older chain applies: title spinner, shell child, owing
+ * transcript, idle title, fresh transcript mtime.
  */
-export function projectClaudeState(args: {
-	present: boolean;
+export function claudeVerdict(args: {
+	/** The CLI's verdict for this pid; null/undefined when it did not answer. */
+	reported?: ClaudeReportedState | null;
 	/** true/false when a tmux pane title was readable; null when unknown. */
 	titleWorking: boolean | null;
 	/** Age of the newest transcript .jsonl in ms; null when none found. */
 	transcriptAgeMs: number | null;
 	/** The transcript shows Claude OWING the next turn — Brewing (awaiting the
 	 * model after a prompt/tool result) or a tool running. This is the
-	 * authoritative "is it working" signal: the ✳ terminal title does NOT mean
-	 * "waiting for you", only "no tool actively executing", which is ALSO true
-	 * while Brewing. So this OUTRANKS the idle title. */
+	 * authoritative inferred "is it working" signal: the ✳ terminal title does
+	 * NOT mean "waiting for you", only "no tool actively executing", which is
+	 * ALSO true while Brewing. So this OUTRANKS the idle title. */
 	transcriptWorking?: boolean;
 	/** A shell tool is running under the claude process right now. OUTRANKS an
-	 * idle title: a backgrounded shell keeps running after the turn ends and
-	 * the title flips to ✳ ("Brewed … · 1 shell still running"). */
+	 * idle title or idle report: a backgrounded shell keeps running after the
+	 * turn ends and the title flips to ✳ ("Brewed … · 1 shell still running"). */
 	shellBusy?: boolean;
-}): ClaudeState {
-	if (!args.present) return "none";
+}): ClaudeVerdict {
+	if (args.reported === "working") return "working";
+	if (args.reported === "blocked") return "blocked";
+	if (args.reported === "waiting") return args.shellBusy === true ? "working" : "waiting";
 	if (args.titleWorking === true) return "working"; // braille spinner: fast-path
 	if (args.shellBusy === true) return "working";
 	// The PRECISE transcript signal (Claude owes the next turn) overrides the ✳
@@ -180,6 +200,24 @@ export function projectClaudeState(args: {
 		return "working";
 	}
 	return "waiting";
+}
+
+/**
+ * The legacy key's project state: {@link claudeVerdict} with `blocked` folded
+ * into `waiting` (that key's `ClaudeState` has no blocked; its white means
+ * "not working").
+ */
+export function projectClaudeState(args: {
+	present: boolean;
+	reported?: ClaudeReportedState | null;
+	titleWorking: boolean | null;
+	transcriptAgeMs: number | null;
+	transcriptWorking?: boolean;
+	shellBusy?: boolean;
+}): ClaudeState {
+	if (!args.present) return "none";
+	const verdict = claudeVerdict(args);
+	return verdict === "blocked" ? "waiting" : verdict;
 }
 
 /** Where the button's project is currently hosted (drives the eyebrow). */

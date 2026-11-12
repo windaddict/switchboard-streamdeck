@@ -13,16 +13,8 @@ import streamDeck, {
 import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { CoalescedRunner, shouldPollThisTick } from "../mac/coalesce.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
-import { scanClaudeInstances } from "../mac/claude-scan.js";
-import { agentSparkForWindow, scanAgents } from "../mac/agent-scan.js";
-import {
-	claudeStateForWindow,
-	LIST_PANE_TTYS_ARGS,
-	parsePaneTtys,
-	windowClaudeCwds,
-	windowShellBusy,
-} from "../mac/claude-state.js";
-import { newestTranscriptState } from "../mac/claude-transcript.js";
+import { agentSparkForWindow, kindTrusted, scanAgents } from "../mac/agent-scan.js";
+import { LIST_PANE_TTYS_ARGS, parsePaneTtys } from "../mac/claude-state.js";
 import { buildITermRaiseScript, ITERM_BUNDLE_ID, ITERM_FOCUSED_TTY_SCRIPT, parseITermFocusResult } from "../mac/iterm.js";
 import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
@@ -45,6 +37,7 @@ import {
 import { invalidateFrontTmux, resolveFrontTmux } from "../mac/front-tmux.js";
 import { captureTmuxTarget } from "../mac/tmux-window.js";
 import { runFocusPress } from "./focus-lock.js";
+import { noteClaudeAgentsSource } from "./agents-source-log.js";
 
 type FocusTmuxSettings = {
 	/** Target window: "session:name", "session:@id#pid-start" for a window whose
@@ -143,29 +136,39 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 				if (!(front.ok && front.stdout.trim() === ITERM_BUNDLE_ID)) return "";
 				return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
 			});
-			const [front, windowsRes, clientsRes, panesRes, instances, focusedTty, otherAgents] = await Promise.all([
+			// Pane titles for the scan's Claude fallback, derived from the same
+			// pane listing the keys use; never rejects (an empty map on failure).
+			const panesP = runTmux(LIST_PANE_TTYS_ARGS, tmux);
+			const titlesP = panesP
+				.then((r) =>
+					r.ok
+						? new Map(parsePaneTtys(r.stdout).map((p) => [p.tty, p.title] as [string, string]))
+						: new Map<string, string>(),
+				)
+				.catch(() => new Map<string, string>());
+			const [front, windowsRes, clientsRes, panesRes, agents, focusedTty] = await Promise.all([
 				frontP,
 				runTmux(LIST_WINDOWS_ARGS, tmux),
 				runTmux(LIST_CLIENTS_ARGS, tmux),
-				runTmux(LIST_PANE_TTYS_ARGS, tmux),
-				scanClaudeInstances(),
+				panesP,
+				// All three agents through the shared adapter, started in the SAME
+				// burst. Claude's state comes from `claude agents --json` when found
+				// (see claude-agents.ts), else from its title/transcript fallback.
+				// No `claudeState` selector: it would need the cwds this very scan
+				// finds, and a reported instance never reads a transcript anyway.
+				scanAgents(["claude", "codex", "cursor"], titlesP),
 				focusedTtyP,
-				// Codex and Cursor, via the shared adapter, started in the SAME
-				// burst rather than after it. Claude is deliberately NOT requested
-				// here: its own path below is richer (it upgrades a ✳ idle title to
-				// "working" from a backgrounded shell or a transcript that owes the
-				// next turn), and duplicating it would be a second opinion that
-				// could disagree with itself.
-				scanAgents(["codex", "cursor"]),
 			]);
+			noteClaudeAgentsSource(agents.claudeAgents);
 			const iTermFrontmost = front.ok && front.stdout.trim() === ITERM_BUNDLE_ID;
 			let anyInteresting = iTermFrontmost;
 			const windows = windowsRes.ok ? parseWindows(windowsRes.stdout) : [];
 			const clients = parseClients(clientsRes.stdout);
 			const panes = panesRes.ok ? parsePaneTtys(panesRes.stdout) : [];
-			const busyTtys = new Set(instances.filter((i) => i.shellBusy).map((i) => i.tty));
-			const ttyToCwd = new Map(instances.map((i) => [i.tty, i.cwd]));
-			const transcriptWorking = new Map<string, boolean>(); // cwd -> working, deduped per tick
+			// Only kinds whose probe answered: a failed scan returns nothing,
+			// which would read as "no agent here" and retract a spark that
+			// belongs there (that kind's spark is omitted for the tick instead).
+			const trusted = agents.instances.filter((i) => kindTrusted(agents, i.kind));
 
 			for (const key of this.visible.values()) {
 				const settings = await key.getSettings();
@@ -176,42 +179,12 @@ export class FocusTmuxWindow extends SingletonAction<FocusTmuxSettings> {
 					iTermFrontmost,
 					focusedTty,
 				});
-				let claude =
+				// A reported blocked Claude folds into "waiting" here (no amber on
+				// this key), as Codex and Cursor already do.
+				const claude =
 					status.state === "unknown"
 						? "none"
-						: claudeStateForWindow(panes, status.session, status.window);
-				// A ✳ title only means "no tool executing" — Claude also shows it
-				// while BREWING (awaiting the model after a prompt/tool result).
-				// Upgrade waiting→working when a backgrounded shell runs, or when
-				// this window's Claude transcript shows it owing the next turn.
-				if (claude === "waiting") {
-					if (windowShellBusy(panes, status.session, status.window, busyTtys)) {
-						claude = "working";
-					} else {
-						for (const cwd of windowClaudeCwds(panes, status.session, status.window, ttyToCwd)) {
-							let working = transcriptWorking.get(cwd);
-							if (working === undefined) {
-								working = (await newestTranscriptState(cwd)).working;
-								transcriptWorking.set(cwd, working);
-							}
-							if (working) {
-								claude = "working";
-								break;
-							}
-						}
-					}
-				}
-				// Whatever Claude concluded, a Codex or Cursor session in the same
-				// window can still be mid-turn — and for a window with no Claude in
-				// it at all this is the only signal there is.
-				// Only layer when those probes actually answered. A failed scan
-				// returns nothing, which would otherwise read as "no agent here"
-				// and quietly retract a spark that belongs there.
-				if (claude !== "working" && status.state !== "unknown" && otherAgents.status === "ok") {
-					const other = agentSparkForWindow(otherAgents.instances, panes, status.session, status.window);
-					if (other === "working") claude = "working";
-					else if (claude === "none" && other === "waiting") claude = "waiting";
-				}
+						: agentSparkForWindow(trusted, panes, status.session, status.window);
 				if (status.state === "hot" || claude === "working") anyInteresting = true;
 				const image = svgToDataUri(buildTmuxKeyImage(status, claude, this.spin));
 				if (this.lastImage.get(key.id) === image) continue; // unchanged — save the round-trip

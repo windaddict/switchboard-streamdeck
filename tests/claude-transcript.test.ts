@@ -113,3 +113,48 @@ describe("newestTranscriptState memo (F006)", () => {
 		expect((await newestTranscriptState(PROJECT, Date.now(), base)).working).toBe(false); // idle
 	});
 });
+
+// --- local slash commands (/login) append user records with no reply -------
+const LOGIN_ASSISTANT = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } });
+const LOGIN_CAVEAT = JSON.stringify({
+	type: "user", isMeta: true,
+	message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code…" },
+});
+const LOGIN_CMD = JSON.stringify({
+	type: "user",
+	message: { role: "user", content: "<command-name>/login</command-name>\n<command-message>login</command-message>\n<command-args></command-args>" },
+});
+const LOGIN_OUT = JSON.stringify({
+	type: "user",
+	message: { role: "user", content: "<local-command-stdout>Login successful</local-command-stdout>" },
+});
+
+it("local slash-command records (/login) do not count as an owed turn", () => {
+	expect(
+		transcriptOwesResponse([LOGIN_ASSISTANT, LOGIN_CAVEAT, LOGIN_CMD, LOGIN_OUT]),
+		"transcript: /login records are not an owed turn",
+	).toBe(false);
+});
+
+it("an isMeta user record is ignored even without the command tags", () => {
+	const meta = JSON.stringify({ type: "user", isMeta: true, message: { content: "anything" } });
+	expect(transcriptOwesResponse([LOGIN_ASSISTANT, meta]), "transcript: isMeta records are ignored").toBe(false);
+});
+
+it("a transcript file ending on the /login tail reads idle", async () => {
+	invalidateTranscriptMemo();
+	const base = await makeBase();
+	const use = JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "A", name: "Bash" }] } });
+	const res = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "A" }] } });
+	const p = join(base, projectSlug(PROJECT), "s.jsonl");
+	await writeFile(p, [use, res, LOGIN_ASSISTANT, LOGIN_CAVEAT, LOGIN_CMD, LOGIN_OUT].join("\n") + "\n");
+	const t = new Date(Date.now() - 120_000);
+	await utimes(p, t, t);
+	const state = await newestTranscriptState(PROJECT, Date.now(), base);
+	expect(state.working, "transcript file: /login tail reads idle").toBe(false);
+});
+
+it("a real prompt after a local command still owes", () => {
+	const prompt = JSON.stringify({ type: "user", message: { role: "user", content: "now fix the bug" } });
+	expect(transcriptOwesResponse([LOGIN_ASSISTANT, LOGIN_CMD, LOGIN_OUT, prompt])).toBe(true);
+});

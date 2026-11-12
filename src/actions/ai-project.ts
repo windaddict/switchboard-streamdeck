@@ -23,12 +23,9 @@ import {
 	type AgentTurnMemory,
 	agentUnknownIsAmbiguity,
 	commitIsStale,
-	blockedEvidenceFor,
-	blockedProbeForMissingPane,
 	buildAgentProjectKeyImage,
 	decideAgentFace,
 	initialTurnMemory,
-	paneShowsAgentPrompt,
 	trackAgentTurn,
 	unseenIsActionable,
 } from "../mac/agent-project.js";
@@ -61,6 +58,8 @@ import {
 	TERMINAL_PROCESS_NAME,
 } from "../mac/terminal.js";
 import { processRunning } from "../mac/claude-scan.js";
+import { probeBlocked } from "../mac/blocked-probe.js";
+import { noteClaudeAgentsSource } from "./agents-source-log.js";
 import { expandHome } from "../mac/files.js";
 import { runFocusPress } from "./focus-lock.js";
 
@@ -82,6 +81,8 @@ interface Snapshot {
 	focusedTty: string;
 	scanStatus: "ok" | "unknown";
 	failedKinds: AgentKind[];
+	/** Whether `claude agents --json` answered (present when Claude was scanned). */
+	claudeAgents?: { source: "ok" | "unavailable" | "unasked"; reason: string };
 	/** Did `list-clients` answer? Indistinguishable from "no tmux server" in
 	 * general — but if panes came back, tmux is plainly alive and a failure here
 	 * means the client map is missing, not empty. */
@@ -247,6 +248,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			failedKinds: agents.failedKinds,
 			clientsOk: clientsResult.ok,
 			panesOk: panesResult.ok,
+			claudeAgents: agents.claudeAgents,
 		};
 	}
 
@@ -255,47 +257,6 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	private async canonicalProject(project: string): Promise<string> {
 		const normalized = normalizeProjectPath(expandHome(project, homedir()));
 		try { return await realpath(normalized); } catch { return normalized; }
-	}
-
-	/**
-	 * Is this session holding for the operator? Only asked when the terminal is
-	 * the ONLY place that answer exists — Codex records it in its own log and so
-	 * never needs scraping, and outside tmux there is no screen we can read.
-	 *
-	 * `captured` is a Map of PROMISES, not settled results (A4/6d.3): per-key
-	 * bodies now run concurrently, so two keys can race to ask for the same
-	 * pane in the same tick — storing the promise lets the second one share
-	 * the first one's in-flight capture instead of firing a duplicate.
-	 */
-	private async blockedOnApproval(
-		kind: AgentKind,
-		host: AgentHost,
-		pane: AgentPane | undefined,
-		tmux: string,
-		captured: Map<string, Promise<{ ok: boolean; text: string }>>,
-		panesOk: boolean,
-		clientsOk: boolean,
-	): Promise<"clear" | "blocked" | "failed"> {
-		if (pane === undefined) {
-			// A4: "no pane" is ambiguous by itself — see the pure decision this
-			// defers to for why panesOk/clientsOk tell it apart from a genuine
-			// pane-listing failure.
-			return blockedProbeForMissingPane(kind, panesOk, clientsOk);
-		}
-		if (blockedEvidenceFor(kind, host) !== "terminal") return "clear";
-		// Several keys can watch the same pane; capture it once per tick.
-		let shotP = captured.get(pane.paneId);
-		if (shotP === undefined) {
-			shotP = runTmux(captureAgentPaneArgs(pane.paneId), tmux).then((result) => {
-				if (!result.ok) streamDeck.logger.warn(`AI Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
-				return { ok: result.ok, text: result.stdout };
-			});
-			captured.set(pane.paneId, shotP);
-		}
-		const shot = await shotP;
-		// A probe that errored has NOT told us the agent is unblocked.
-		if (!shot.ok) return "failed";
-		return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
 	}
 
 	private async doRefreshAll(): Promise<void> {
@@ -326,10 +287,11 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		}
 
 		const snap = await this.snapshot(kinds, { claudeState: watchedClaudeProjects });
+		noteClaudeAgentsSource(snap.claudeAgents);
 		const tmux = findTmuxPath();
 		this.spin++;
 		// One capture-pane per pane per tick, however many keys watch it,
-		// shared via its PROMISE — see blockedOnApproval.
+		// shared via its PROMISE — see probeBlocked.
 		const captured = new Map<string, Promise<{ ok: boolean; text: string }>>();
 		const blockedProbes: Array<"clear" | "blocked" | "failed"> = [];
 		const unseenActionable: boolean[] = [];
@@ -353,7 +315,17 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 				host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
 			}
 			const blockedProbe = instance !== null && kind !== undefined
-				? await this.blockedOnApproval(kind, host, pane, tmux, captured, snap.panesOk, snap.clientsOk)
+				? await probeBlocked({
+					kind, host, pane,
+					// A Claude that reported its own state is never scraped (probeBlocked).
+					reported: instance.reported === true,
+					panesOk: snap.panesOk, clientsOk: snap.clientsOk, captured,
+					capture: (paneId) =>
+						runTmux(captureAgentPaneArgs(paneId), tmux).then((result) => {
+							if (!result.ok) streamDeck.logger.warn(`AI Project: capture-pane failed for ${paneId}: ${result.stderr}`);
+							return { ok: result.ok, text: result.stdout };
+						}),
+				})
 				: "clear" as const;
 			blockedProbes.push(blockedProbe);
 			const state: AgentState = decideAgentFace({

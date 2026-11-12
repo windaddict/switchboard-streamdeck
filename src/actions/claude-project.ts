@@ -18,7 +18,8 @@ import {
 	instancesForProject,
 	projectClaudeState,
 } from "../mac/claude-project.js";
-import { processRunning, scanClaudeInstances } from "../mac/claude-scan.js";
+import { isRecognisedReport } from "../mac/claude-agents.js";
+import { processRunning, scanClaudeSnapshot } from "../mac/claude-scan.js";
 import {
 	LIST_PANE_TTYS_ARGS,
 	type PaneTty,
@@ -31,6 +32,7 @@ import { PressGate } from "../mac/press-gate.js";
 import { svgToDataUri } from "../mac/svg.js";
 import { chooseClientTty, parseClientTtys, switchClientToWindowArgs } from "../mac/tmux.js";
 import { findTmuxPath, LIST_CLIENTS_ARGS, runTmux } from "../mac/tmux-runner.js";
+import { noteClaudeAgentsSource } from "./agents-source-log.js";
 import { runFocusPress } from "./focus-lock.js";
 import {
 	buildTerminalRaiseScript,
@@ -119,7 +121,12 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 	private async snapshot(): Promise<Snapshot> {
 		const tmux = findTmuxPath();
 		const [instances, panesRes, clientsRes, front] = await Promise.all([
-			scanClaudeInstances(),
+			// The snapshot (not the bare instance list) so a deck with only this
+			// key still logs losing `claude agents --json`, once per transition.
+			scanClaudeSnapshot().then((snap) => {
+				noteClaudeAgentsSource(snap.claudeAgents);
+				return snap.instances;
+			}),
 			runTmux(LIST_PANE_TTYS_ARGS, tmux),
 			runTmux(LIST_CLIENTS_ARGS, tmux),
 			runJxa(FRONT_APP_BUNDLE_JXA),
@@ -199,7 +206,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 		}
 
 		const transcript =
-			instance !== undefined
+			instance !== undefined && !isRecognisedReport(instance.reported)
 				? await newestTranscriptState(project)
 				: { ageMs: null, working: false };
 		const claude = projectClaudeState({
@@ -208,6 +215,7 @@ export class ClaudeProject extends SingletonAction<ClaudeProjectSettings> {
 			transcriptAgeMs: transcript.ageMs,
 			transcriptWorking: transcript.working,
 			shellBusy: instance?.shellBusy === true,
+			reported: instance?.reported ?? null,
 		});
 
 		return svgToDataUri(

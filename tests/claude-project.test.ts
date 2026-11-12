@@ -14,6 +14,7 @@ import {
 	TRANSCRIPT_FRESH_MS,
 } from "../src/mac/claude-project.js";
 import { deprecationBadge } from "../src/mac/deprecation.js";
+import * as claudeProjectModule from "../src/mac/claude-project.js";
 
 describe("cheap ps scan (parsePsProcs / claudesFrom / childrenOf)", () => {
 	const PS = [
@@ -86,8 +87,8 @@ describe("projectSlug", () => {
 
 describe("instancesForProject", () => {
 	const instances = [
-		{ pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", shellBusy: false },
-		{ pid: 2, tty: "/dev/ttys002", cwd: "/Users/j/code/other", shellBusy: false },
+		{ pid: 1, tty: "/dev/ttys001", cwd: "/Users/j/code/app", shellBusy: false, reported: null, waitingFor: "" },
+		{ pid: 2, tty: "/dev/ttys002", cwd: "/Users/j/code/other", shellBusy: false, reported: null, waitingFor: "" },
 	];
 	it("matches by normalized path (trailing slash tolerated)", () => {
 		expect(instancesForProject(instances, "/Users/j/code/app/")).toHaveLength(1);
@@ -205,4 +206,61 @@ describe("buildClaudeProjectKeyImage", () => {
 			}
 		}
 	});
+});
+
+// --- claudeVerdict: the CLI's report outranks the inferred signals ---------
+// `claudeVerdict` does not exist yet; the call is guarded so each test fails
+// on its marker, not on a TypeError.
+type Verdict = "working" | "blocked" | "waiting";
+const verdict = (args: Record<string, unknown>): Verdict | undefined => {
+	const fn = (claudeProjectModule as Record<string, unknown>).claudeVerdict;
+	return typeof fn === "function" ? (fn as (a: Record<string, unknown>) => Verdict)(args) : undefined;
+};
+const legacy = (args: Record<string, unknown>) =>
+	(projectClaudeState as unknown as (a: Record<string, unknown>) => string)(args);
+
+it("claudeVerdict: a reported busy session is working whatever the title and transcript say", () => {
+	expect(
+		verdict({ reported: "working", titleWorking: false, transcriptAgeMs: 999_999, transcriptWorking: false }),
+		"verdict: reported busy outranks an idle title",
+	).toBe("working");
+});
+it("claudeVerdict: a reported waiting session is blocked", () => {
+	expect(
+		verdict({ reported: "blocked", titleWorking: false, transcriptAgeMs: 999_999, transcriptWorking: false }),
+		"verdict: reported waiting is blocked",
+	).toBe("blocked");
+});
+it("claudeVerdict: reported idle is waiting; an owing transcript cannot override it", () => {
+	expect(
+		verdict({ reported: "waiting", titleWorking: null, transcriptWorking: true, transcriptAgeMs: 0 }),
+		"verdict: reported idle outranks an owing transcript",
+	).toBe("waiting");
+});
+it("claudeVerdict: reported idle with a live background shell is working", () => {
+	expect(
+		verdict({ reported: "waiting", shellBusy: true, titleWorking: false, transcriptAgeMs: 999_999 }),
+		"verdict: shell still running outranks reported idle",
+	).toBe("working");
+});
+it("claudeVerdict: a reported unknown status falls through to the signals and is never blocked", () => {
+	expect(
+		verdict({ reported: "unknown", titleWorking: true, transcriptAgeMs: null }),
+		"verdict: unknown status falls back to signals",
+	).toBe("working");
+	expect(
+		verdict({ reported: "unknown", titleWorking: false, transcriptWorking: false, transcriptAgeMs: 300_000 }),
+	).toBe("waiting");
+});
+it("projectClaudeState folds a reported blocked into waiting even under a working title", () => {
+	expect(
+		legacy({ present: true, reported: "blocked", titleWorking: true, transcriptAgeMs: 0 }),
+		"legacy fold: blocked reads waiting even under a working title",
+	).toBe("waiting");
+});
+it("projectClaudeState: reported busy outranks the static star title", () => {
+	expect(
+		legacy({ present: true, reported: "working", titleWorking: false, transcriptAgeMs: 300_000, transcriptWorking: false }),
+		"legacy: reported busy outranks the static ✳",
+	).toBe("working");
 });

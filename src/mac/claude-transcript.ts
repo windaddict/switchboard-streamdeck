@@ -1,4 +1,7 @@
 /**
+ * FALLBACK signal behind `claude agents --json` (claude-agents.ts): used only
+ * for a session the CLI did not report.
+ *
  * Freshness of a project's newest Claude Code transcript. Sessions append to
  * ~/.claude/projects/<slug>/<session>.jsonl while working; the newest file's
  * mtime goes stale within seconds of the session going idle (verified live).
@@ -13,6 +16,22 @@ import { join } from "node:path";
 import { projectSlug } from "./claude-project.js";
 
 const BATCH = 64;
+
+const LOCAL_COMMAND_PREFIXES = [
+	"<local-command-caveat>",
+	"<command-name>",
+	"<command-message>",
+	"<local-command-stdout>",
+];
+
+/** A user record written by a local slash command (no assistant reply follows). */
+function isLocalCommandRecord(entry: { isMeta?: unknown; message?: { content?: unknown } }): boolean {
+	if (entry.isMeta === true) return true;
+	const content = entry.message?.content;
+	if (typeof content !== "string") return false;
+	const head = content.trimStart();
+	return LOCAL_COMMAND_PREFIXES.some((p) => head.startsWith(p));
+}
 
 /**
  * Does the transcript tail show Claude OWING the next assistant turn — i.e.
@@ -49,8 +68,16 @@ export function transcriptOwesResponse(lines: string[]): boolean {
 	for (const line of lines) {
 		if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
 		try {
-			const entry = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
+			const entry = JSON.parse(line) as {
+				type?: string;
+				isMeta?: unknown;
+				message?: { content?: unknown };
+			};
 			if (entry.type !== "user" && entry.type !== "assistant") continue;
+			// A local slash command (/login, measured 2026-11-10) appends user
+			// records that no assistant turn ever answers; counting them would
+			// read the session as working forever.
+			if (entry.type === "user" && isLocalCommandRecord(entry)) continue;
 			const uses: string[] = [];
 			const content = entry.message?.content;
 			if (Array.isArray(content)) {

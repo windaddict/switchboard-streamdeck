@@ -103,7 +103,7 @@ describe("How trustworthy a blocked verdict can be", () => {
 	 * knowable without a terminal at all. */
 	it("treats codex as authoritative on every host", () => {
 		for (const host of HOSTS) {
-			expect(blockedEvidenceFor("codex", host)).toBe("authoritative");
+			expect(blockedEvidenceFor("codex", host, false)).toBe("authoritative");
 		}
 	});
 
@@ -111,10 +111,10 @@ describe("How trustworthy a blocked verdict can be", () => {
 	 * only readable terminal is a tmux pane. */
 	it("needs a tmux pane for claude and cursor, and admits it has nothing otherwise", () => {
 		for (const kind of ["claude", "cursor"] as const) {
-			expect(blockedEvidenceFor(kind, "tmux")).toBe("terminal");
-			expect(blockedEvidenceFor(kind, "iterm")).toBe("unavailable");
-			expect(blockedEvidenceFor(kind, "terminal")).toBe("unavailable");
-			expect(blockedEvidenceFor(kind, "")).toBe("unavailable");
+			expect(blockedEvidenceFor(kind, "tmux", false)).toBe("terminal");
+			expect(blockedEvidenceFor(kind, "iterm", false)).toBe("unavailable");
+			expect(blockedEvidenceFor(kind, "terminal", false)).toBe("unavailable");
+			expect(blockedEvidenceFor(kind, "", false)).toBe("unavailable");
 		}
 	});
 });
@@ -128,13 +128,13 @@ describe("How trustworthy a blocked verdict can be", () => {
 describe("What a missing pane means for a blocked-probe verdict", () => {
 	it("is clear when both list-panes and list-clients failed — indistinguishable from no tmux server", () => {
 		for (const kind of KINDS) {
-			expect(blockedProbeForMissingPane(kind, false, false)).toBe("clear");
+			expect(blockedProbeForMissingPane(kind, false, false, false)).toBe("clear");
 		}
 	});
 
 	it("is clear when the panes probe simply succeeded with no match", () => {
 		for (const kind of KINDS) {
-			expect(blockedProbeForMissingPane(kind, true, true)).toBe("clear");
+			expect(blockedProbeForMissingPane(kind, true, true, false)).toBe("clear");
 		}
 	});
 
@@ -143,15 +143,15 @@ describe("What a missing pane means for a blocked-probe verdict", () => {
 	 * scrape, "no pane" here is unanswered, not a clean negative. */
 	it("is failed for claude and cursor when panes broke but clients answered", () => {
 		for (const kind of ["claude", "cursor"] as const) {
-			expect(blockedProbeForMissingPane(kind, false, true)).toBe("failed");
+			expect(blockedProbeForMissingPane(kind, false, true, false)).toBe("failed");
 		}
 	});
 
 	/** Codex's blocked verdict never depends on a pane at all, so a broken
 	 * pane listing changes nothing for it. */
 	it("stays clear for codex regardless of which probe failed", () => {
-		expect(blockedProbeForMissingPane("codex", false, true)).toBe("clear");
-		expect(blockedProbeForMissingPane("codex", false, false)).toBe("clear");
+		expect(blockedProbeForMissingPane("codex", false, true, false)).toBe("clear");
+		expect(blockedProbeForMissingPane("codex", false, false, false)).toBe("clear");
 	});
 });
 
@@ -945,4 +945,40 @@ describe("Whether a refresh pass should throw away what it computed for a key", 
 		expect(commitIsStale({ stillVisible: false, genAtRead: 3, genNow: 3 })).toBe(true);
 		expect(commitIsStale({ stillVisible: false, genAtRead: 3, genNow: 9 })).toBe(true);
 	});
+});
+
+// The `reported` argument is new; it is passed through loose casts so the
+// assertions, not the type checker, decide the outcome before it exists.
+const evidence = blockedEvidenceFor as unknown as (k: AgentKind, h: AgentHost, reported: boolean) => string;
+const missingPane = blockedProbeForMissingPane as unknown as (
+	k: AgentKind, panesOk: boolean, clientsOk: boolean, reported: boolean,
+) => string;
+
+it("a Claude that reports its own state is authoritative on any host", () => {
+	expect(evidence("claude", "iterm", true), "evidence: reported Claude is authoritative").toBe("authoritative");
+	expect(evidence("claude", "terminal", true)).toBe("authoritative");
+	expect(evidence("claude", "tmux", true)).toBe("authoritative");
+});
+
+it("a missing pane is clear for a reported Claude even when the pane listing failed", () => {
+	expect(missingPane("claude", false, true, true), "missing pane: reported Claude is clear").toBe("clear");
+});
+
+it("an unreported Claude still needs the terminal", () => {
+	expect(blockedEvidenceFor("claude", "tmux", false)).toBe("terminal");
+	expect(blockedEvidenceFor("claude", "iterm", false)).toBe("unavailable");
+});
+
+it("decideAgentFace passes a reported blocked Claude through with a clear probe", () => {
+	expect(
+		decideAgentFace({
+			kind: "claude",
+			hasTarget: true,
+			matchCount: 1,
+			instanceState: "blocked",
+			scanStatus: "ok",
+			hasCapturedId: false,
+			blockedProbe: "clear",
+		}),
+	).toBe("blocked");
 });

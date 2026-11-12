@@ -31,11 +31,16 @@ src/
   mac/cursor-*.ts           # Cursor CLI detection: cursor-scan (pgrep -f the installed
                             #   versions path -> ps -o pid=,ppid=,tty=,args= -> lsof), cursor-project
                             #   (identity + turn_ended state + approval-prompt scrape + key face)
-  mac/claude-*.ts           # Claude Code detection: claude-scan (ps→batched lsof +
-                            #   shell-snapshot busy children = "N shells still running"; pgrep
-                            #   misses ancestors), claude-state (title marker: braille=working,
-                            #   ✳=waiting; tmux pane-tty map), claude-transcript (~/.claude/
-                            #   projects freshness), claude-project (state decision + key face)
+  mac/claude-*.ts           # Claude Code detection: claude-agents (PRIMARY state source:
+                            #   `claude agents --json` parse + binary lookup in four fixed
+                            #   places), claude-scan (ps→batched lsof + shell-snapshot busy
+                            #   children = "N shells still running"; pgrep misses ancestors;
+                            #   merges the CLI report by pid), claude-state (title marker, now
+                            #   a FALLBACK: static ✳ under tmux since 2.1.236; tmux pane-tty
+                            #   map), claude-transcript (~/.claude/projects freshness, also
+                            #   fallback), claude-project (state decision + key face)
+  mac/blocked-probe.ts      # pure "is this agent waiting on you, and must the pane be read?"
+                            #   (a Claude that reported itself is never scraped)
   mac/{coalesce,serialize,press-gate}.ts  # shared async plumbing (all unit-tested)
   mac/pasteboard-stash.ts    # Paste Snippet's clipboard save/restore: copies the
                             #   WHOLE pasteboard (every item, every type) into a
@@ -103,7 +108,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1047 tests today
+npm test              # vitest (pure modules) — 1083 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -195,7 +200,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   week; found only by tracing the plugin's raw stdout). ALL subprocess runners
   must pass `env: UTF8_ENV` (exported from `tmux-runner.ts`). When on-device
   behavior contradicts an out-of-process probe, suspect the ENVIRONMENT first
-  and dump the plugin's raw bytes.
+  and dump the plugin's raw bytes. The title markers no longer carry state under
+  tmux at all (see the Claude title gotcha below); `claude agents --json` is
+  spawned with `UTF8_ENV` and an absolute path for the same environment reasons.
 - **Polling actions must repaint through `CoalescedRunner`** (`src/mac/coalesce.ts`).
   A bare `if (refreshing) return` guard silently DROPPED the explicit repaint after
   hold-to-capture whenever it collided with an in-flight poll tick — shipped as a
@@ -210,7 +217,8 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   chat store open — measured: zero handles under `~/.cursor/chats`). Conflating
   them let `capture()` store an empty binding that afterwards adopted whichever
   sole session sat in the folder. `bindsBySession(kind)` is the discriminator:
-  Codex and Cursor have conversation ids, Claude does not.
+  Codex and Cursor bind by conversation id; Claude binds by folder, even
+  though `claude agents --json` reports a `sessionId` (binding by it is in TODO.md).
 - **"Present but unidentifiable" is NOT "the probe failed" — for Cursor.** An
   unprompted Cursor session is a normal state and is returned with an empty
   sessionId under `status: "ok"`; flagging it as a failure grayed out every
@@ -219,9 +227,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   `codex exec`), which is not normal, so it stays incomplete.
 - **The tmux key's spark covers all three agents, matched by TTY.** Never by
   `pane_current_command` — that is why the old Claude-only check could not see
-  Cursor, which presents as `node`. Claude keeps its own richer path in
-  `focus-tmux.ts` (✳ upgraded to working by a busy shell or an owing
-  transcript); Codex/Cursor come from `agentSparkForWindow`. A BLOCKED agent
+  Cursor, which presents as `node`. Claude now comes from `agentSparkForWindow`
+  too (one `scanAgents(["claude","codex","cursor"])` per tick in `focus-tmux.ts`,
+  using only kinds whose probe answered). A BLOCKED agent
   reports `waiting` there: that key has no amber to spend, and amber belongs to
   AI Project, which knows whose approval is wanted.
 - **ONE colour language across the keys: blue = working, amber = waiting on YOU,
@@ -267,16 +275,40 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   first cursor-scan tests silently read the OPERATOR'S REAL `~/.cursor/projects`
   and passed/failed on live data; `scanCursorSnapshot(exec, projectsBase)` takes the
   root so fixtures stay hermetic. Same trap applies to any future home-dir probe.
-- **Claude Code keeps its IDLE title while BLOCKED on you.** Measured on claude
-  2.1.226: with "Do you want to proceed?" on screen the pane title still read
-  `✳ Count bytes in note.txt file` — the ✳ waiting marker, not a braille spinner.
-  So a blocked Claude arrives at the face logic as `waiting`, NOT `working`. Any
-  "upgrade to blocked" rule copied from `decideCursorFace` (which gates on
-  `working`, correct for Cursor) is therefore UNREACHABLE for Claude and the
-  feature silently never fires. `decideAgentFace` upgrades from either state.
-  An independent review caught this before it shipped; every listed test would
-  still have passed.
-- **Claude's approval prompt is not one string.** Bash approval reads
+- **Claude Code's title carries NO state under tmux.** Since 2.1.236 it pins a
+  static ✳ (`tengu_static_title_under_mux`); its working spinner elsewhere is
+  ◐◑◒◓, not braille. State comes from `claude agents --json` (`status`
+  busy/waiting/idle; `waitingFor`). Older measurement (2.1.226): a blocked Claude
+  kept its idle ✳ title, so it reached the face logic as `waiting`, not
+  `working`; the upgrade-from-`waiting` rule in `decideAgentFace` is still needed
+  for the fallback scrape, and every test of a copy of `decideCursorFace`'s
+  `working`-only gate would have passed while it never fired.
+- **`claude agents --json` is the state source, not `~/.claude/sessions/*.json`.**
+  Those files carry a `tmux` field the JSON lacks, but they are undocumented; map
+  pid → tty via `ps` instead. Background entries carry `state`, interactive ones
+  `status`; never read one as the other. The docs also list `pid`/`status` for a live
+  background entry, but none measured had them, and the parser ignores background
+  entries (measuring an attached one is in TODO.md). `parseClaudeAgents` treats an interactive
+  entry with a pid but no string `status` as incompatible output (source
+  unavailable, one log line), so a renamed `status` falls back, logs once and never shows amber. A renamed
+  `kind` or `pid` drops every entry; a listing that keeps no session after dropping a
+  non-`background` entry is also unavailable ("no usable interactive entry"), so it logs once
+  too. A listing that keeps one valid session drops the others with no log.
+  A local slash command (`/login`) appends `type:"user"` records with no assistant
+  reply; the transcript fallback skips `isMeta` and `<command-name>`-style records.
+- **Where `claude` is looked for, and what that costs.** `findClaudePath` checks
+  exactly four places: `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`,
+  `~/.claude/local/claude`, `~/.local/bin/claude`. Any other install gets source
+  `unavailable` ("no claude binary") and the fallback; finding it from a detected
+  process's executable path is in TODO.md. PID reuse inside one scan is an
+  accepted limit: pgrep and the CLI listing merge by pid alone, so a pid reused
+  within the milliseconds between the two probes could take the wrong report for
+  one tick. Focus tmux passes no `claudeState` selector, so with the CLI
+  unavailable every unreported Claude reads its transcript; measured 2026-11-11
+  with `claudePath: null` and a fresh scan: about 150 ms for 7 detected
+  instances, under the 250 ms limit the plan set. With the CLI available, a
+  reported instance never reads a transcript.
+- **Claude's approval prompt is not one string (FALLBACK scrape only).** Bash approval reads
   "This command requires approval" + "Do you want to proceed?"; an EDIT approval
   reads "Do you want to make this edit to <file>?". A matcher keyed on the first
   misses every file edit. Both carry a numbered `1. Yes` list, which is the
@@ -284,8 +316,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   The folder-trust prompt ("Quick safety check: Is this a project you created…")
   deliberately does NOT match.
 - **Three agents, three different notions of "blocked".** Codex records it in its
-  own rollout log (authoritative, works in any terminal); Claude and Cursor only
-  ever show it on screen (tmux-only scrape). `blockedEvidenceFor(kind, host)`
+  own rollout log and a CLI-listed Claude reports it through `claude agents --json`
+  (both authoritative, any terminal); Cursor and an unlisted Claude only ever show
+  it on screen (tmux-only scrape). `blockedEvidenceFor(kind, host, reported)`
   encodes exactly that, and the docs must not imply one uniform guarantee.
 - **RETIREMENT COMMITMENT (do not lose this).** Claude/Codex/Cursor Project are
   superseded by AI Project and are kept ONLY so nobody's configured key is
@@ -294,7 +327,8 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   sites, `ui/lib/deprecated.js`, the three PIs, and the three legacy key-face
   BUILDERS (`build{Claude,Codex,Cursor}ProjectKeyImage`) only. The MODULES
   themselves stay: `claude-scan`/`codex-scan`/`cursor-scan` do the detection AI
-  Project relies on, `claude-project` still supplies `projectClaudeState` and the
+  Project relies on, `claude-agents` supplies the CLI report they all use,
+  `claude-project` still supplies `projectClaudeState` and the
   ps/lsof parsers, and `codex-project` still supplies `normalizeProjectPath` and
   `parseLsofEntries`. Deleting a whole file because its NAME matches a retired
   action would break the unified key — check the imports first.
@@ -449,7 +483,8 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   result of one that started later" — it does NOT mean the cache holds the
   single latest possible observation of the world, since a long scan that
   started later still wins even if a faster, earlier one finishes after it.
-  Claude's cwd memo (`CWD_TTL_MS`, separate from the 2s world-cache TTL) is a
+  The `claude agents --json` call sits inside `doScan`, so a `fresh` scan
+  re-asks it. Claude's cwd memo (`CWD_TTL_MS`, separate from the 2s world-cache TTL) is a
   second cache `fresh` has to bypass too — an earlier cut of this that only
   cleared the world cache left a "fresh" press acting on a cwd observed up to
   60s ago.

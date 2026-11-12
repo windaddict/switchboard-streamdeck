@@ -14,15 +14,19 @@
  *
  * Two asymmetries are real and are handled explicitly rather than papered over:
  *
- *   - **Claude's state is not derivable from process facts alone.** Codex and
- *     Cursor each write a log their scanner reads, so their scanner returns a
- *     finished verdict. Claude's depends on its terminal title, its transcript,
- *     and whether a shell tool is still running — so this module needs the
- *     caller to hand it the tmux pane titles it cannot see for itself.
- *   - **Only Codex reports being blocked.** Claude and Cursor reveal an
- *     approval prompt on screen and nowhere else, so a "blocked" verdict for
- *     those two is added by the caller from a terminal scrape, and is
- *     unavailable outside tmux. See `blockedEvidenceFor` in `agent-project`.
+ *   - **Claude's state comes from the CLI when it answers.** Codex and Cursor
+ *     each write a log their scanner reads. Claude reports its own state
+ *     through `claude agents --json` (read inside `claude-scan`); an instance
+ *     the CLI listed carries `reported: true` and never reads a transcript.
+ *     Only when the CLI is unavailable, or has not yet listed a new pid, does
+ *     Claude's state depend on its terminal title, its transcript and whether
+ *     a shell tool is still running, so the caller should still hand this
+ *     module the tmux pane titles for that fallback.
+ *   - **Blocked is reported by Codex AND by a CLI-listed Claude.** An
+ *     unreported Claude and Cursor reveal an approval prompt on screen and
+ *     nowhere else, so a "blocked" verdict for those is added by the caller
+ *     from a terminal scrape, and is unavailable outside tmux. See
+ *     `blockedEvidenceFor` in `agent-project`.
  *
  * Scanning is per-kind on purpose: a key that has already captured its agent
  * asks for exactly one kind, so the steady-state cost is identical to the old
@@ -64,8 +68,9 @@ import {
 // Shared plumbing that outlives the superseded Codex action: the scanner
 // itself depends on it, so it is not going away with the key face.
 import { normalizeProjectPath } from "./codex-project.js";
-import { scanClaudeSnapshot } from "./claude-scan.js";
-import { projectClaudeState } from "./claude-project.js";
+import { type ClaudeScanSnapshot, scanClaudeSnapshot } from "./claude-scan.js";
+import { type ClaudeVerdict, claudeVerdict } from "./claude-project.js";
+import { type ClaudeReportedState, isRecognisedReport } from "./claude-agents.js";
 import { titleWorking } from "./claude-state.js";
 import { newestTranscriptState } from "./claude-transcript.js";
 import { scanCodexSnapshot } from "./codex-scan.js";
@@ -91,6 +96,8 @@ export interface AgentSnapshot {
 	 */
 	failedKinds: AgentKind[];
 	instances: AgentInstance[];
+	/** Whether `claude agents --json` answered; present when Claude was scanned. */
+	claudeAgents?: ClaudeScanSnapshot["claudeAgents"];
 }
 
 /** Did the probe for THIS key's agent actually answer? Takes anything carrying
@@ -120,6 +127,9 @@ export interface ScanAgentsOptions {
 	 * {@link newestTranscriptState}; omit to use its own default
 	 * (`~/.claude/projects`) — tests pass a fixture path instead. */
 	claudeProjectsBase?: string;
+	/** Forwarded to `scanClaudeSnapshot`: the `claude` binary to ask for its own
+	 * report. `undefined` = search the four fixed locations; `null` = none. */
+	claudePath?: string | null;
 }
 
 function normalizeTty(tty: string): string {
@@ -128,33 +138,44 @@ function normalizeTty(tty: string): string {
 }
 
 /**
- * Claude's verdict, assembled from the three signals its own action uses.
- * `titleWorking` is null when no pane title was available (a non-tmux host),
- * which `projectClaudeState` already treats as "fall back to transcript
- * freshness" rather than as evidence of idleness.
+ * Claude's verdict. When the CLI listed this pid (`reported` is working,
+ * blocked or waiting) the report decides, and the transcript is NOT read: a
+ * reported instance costs no file I/O. Otherwise the older signals decide:
+ * pane title, shell child, transcript. `titleWorking` is null when no pane
+ * title was available (a non-tmux host), which counts as "no evidence" rather
+ * than as idleness.
  *
- * Note what this deliberately CANNOT return: `blocked`. Claude keeps its idle
- * title while an approval prompt is on screen (measured), so nothing here can
- * see that — the caller supplies it from the terminal.
+ * Unlike the fallback path, a REPORTED Claude can be `blocked`: the CLI says
+ * `waiting` on you. An unreported Claude still cannot be; the caller supplies
+ * that from a terminal scrape.
  */
 async function computeClaudeState(
 	cwd: string,
 	paneTitle: string | undefined,
 	shellBusy: boolean,
+	reported: ClaudeReportedState | null,
 	projectsBase: string | undefined,
-): Promise<Exclude<AgentState, "none">> {
+): Promise<{ state: Exclude<AgentState, "none">; reported: boolean }> {
+	if (isRecognisedReport(reported)) {
+		const verdict: ClaudeVerdict = claudeVerdict({
+			reported,
+			shellBusy,
+			titleWorking: null,
+			transcriptAgeMs: null,
+		});
+		return { state: verdict, reported: true };
+	}
 	const transcript = projectsBase === undefined
 		? await newestTranscriptState(cwd)
 		: await newestTranscriptState(cwd, Date.now(), projectsBase);
-	const state = projectClaudeState({
-		present: true,
+	const state = claudeVerdict({
+		reported: null,
 		titleWorking: paneTitle === undefined ? null : titleWorking(paneTitle),
 		transcriptAgeMs: transcript.ageMs,
 		transcriptWorking: transcript.working,
 		shellBusy,
 	});
-	// `present: true` above forecloses "none"; the narrowing is for the compiler.
-	return state === "none" ? "unknown" : state;
+	return { state, reported: false };
 }
 
 /** One kind's contribution: whether ITS OWN probe failed, and the instances it
@@ -164,6 +185,7 @@ async function computeClaudeState(
 interface KindResult {
 	failed: boolean;
 	instances: AgentInstance[];
+	claudeAgents?: ClaudeScanSnapshot["claudeAgents"];
 }
 
 async function scanCodexBranch(exec: AgentExecFileLike, fresh: boolean): Promise<KindResult> {
@@ -202,8 +224,12 @@ async function scanClaudeBranch(
 	paneTitles: PaneTitles | Promise<PaneTitles>,
 	claudeState: ClaudeStateSelector,
 	claudeProjectsBase: string | undefined,
+	claudePath: string | null | undefined,
 ): Promise<KindResult> {
-	const snap = await scanClaudeSnapshot(exec as never, fresh ? { fresh: true } : undefined);
+	const snap = await scanClaudeSnapshot(exec as never, {
+		...(fresh ? { fresh: true } : {}),
+		...(claudePath === undefined ? {} : { claudePath }),
+	});
 	// Identity (kind/pid/tty/cwd) depends only on the scan, not on the pane
 	// titles, so it is kicked off immediately and resolved ALONGSIDE the
 	// titles promise below rather than waiting on it serially.
@@ -216,7 +242,7 @@ async function scanClaudeBranch(
 			// captured binding would stop matching its own session.
 			let cwd = i.cwd;
 			try { cwd = await realpath(i.cwd); } catch { /* may exit mid-scan */ }
-			return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy };
+			return { pid: i.pid, tty, cwd, rawCwd: i.cwd, shellBusy: i.shellBusy, reported: i.reported };
 		}),
 	);
 	// CONTRACT (A6): this must never reject. A caller's titles promise can
@@ -233,9 +259,9 @@ async function scanClaudeBranch(
 	const instances = await Promise.all(
 		identities.map(async (id) => {
 			const watched = claudeState === "all" || claudeState.has(normalizeProjectPath(id.cwd));
-			const state = watched
-				? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, claudeProjectsBase)
-				: ("unknown" as const);
+			const computed = watched
+				? await computeClaudeState(id.rawCwd, titles.get(id.tty), id.shellBusy, id.reported, claudeProjectsBase)
+				: { state: "unknown" as const, reported: false };
 			return {
 				kind: "claude" as const,
 				pid: id.pid,
@@ -243,11 +269,12 @@ async function scanClaudeBranch(
 				cwd: id.cwd,
 				// Claude binds by project path — it has no captured session id.
 				sessionId: "",
-				state,
+				state: computed.state,
+				reported: computed.reported,
 			};
 		}),
 	);
-	return { failed: snap.status !== "ok", instances };
+	return { failed: snap.status !== "ok", instances, claudeAgents: snap.claudeAgents };
 }
 
 /**
@@ -277,7 +304,7 @@ export async function scanAgents(
 		wanted.has("codex") ? scanCodexBranch(exec, fresh) : null,
 		wanted.has("cursor") ? scanCursorBranch(exec, fresh) : null,
 		wanted.has("claude")
-			? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase)
+			? scanClaudeBranch(exec, fresh, paneTitles, claudeState, options.claudeProjectsBase, options.claudePath)
 			: null,
 	]);
 
@@ -295,7 +322,12 @@ export async function scanAgents(
 		instances.push(...result.instances);
 	}
 
-	return { status: failedKinds.length > 0 ? "unknown" : "ok", failedKinds, instances };
+	return {
+		status: failedKinds.length > 0 ? "unknown" : "ok",
+		failedKinds,
+		instances,
+		...(claudeResult?.claudeAgents === undefined ? {} : { claudeAgents: claudeResult.claudeAgents }),
+	};
 }
 
 /** The kinds a key must scan: just its captured one, or all three while it is
