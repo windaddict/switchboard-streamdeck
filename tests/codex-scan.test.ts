@@ -56,6 +56,30 @@ describe("Codex scan", () => {
 		expect(await scanCodexSnapshot(exec as unknown as CodexExecFileLike)).toEqual({ status: "unknown", instances: [] });
 	});
 
+	it("pgrep exit 1 with no output is a clean 'none running', not a failed probe", async () => {
+		// With no Codex running, pgrep exits 1. Reading that as unknown made every
+		// AI Project capture refuse, since a capture needs all three kinds to answer.
+		const pgrepOnly = (err: Record<string, unknown> | null, out = "") =>
+			vi.fn((file: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+				if (file === "/usr/bin/pgrep") cb(err === null ? null : Object.assign(new Error("pgrep"), err), out, "");
+			});
+		expect(
+			await scanCodexSnapshot(pgrepOnly({ code: 1 }) as unknown as CodexExecFileLike, { fresh: true }),
+			"codex-scan: no codex running is ok",
+		).toEqual({ status: "ok", instances: [] });
+		// Look-alikes that are NOT a clean no-match stay unknown.
+		for (const [err, out] of [
+			[{ code: 2 }, ""], // pgrep's own error exit
+			[{ code: 1 }, "42\n"], // exit 1 but it printed a pid
+			[{ code: 1, killed: true, signal: "SIGTERM" }, ""], // cut short by the timeout
+		] as const) {
+			expect(await scanCodexSnapshot(pgrepOnly({ ...err }, out) as unknown as CodexExecFileLike, { fresh: true })).toEqual({
+				status: "unknown",
+				instances: [],
+			});
+		}
+	});
+
 	describe("fresh scans (press path)", () => {
 		const empty = (props: Record<string, unknown> = { code: 1 }) =>
 			vi.fn((_f: string, _a: readonly string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) =>
@@ -87,11 +111,11 @@ describe("Codex scan", () => {
 		});
 
 		/** A2/A7 mirrored from claude-scan: driven by controlling COMPLETION
-		 * order, not merely asserting both scans happened. codex-scan treats
-		 * ANY pgrep failure as "unknown" (unlike claude/cursor, it draws no
-		 * "exit 1 = nothing matched" distinction), so a failed pgrep vs. a
-		 * successful-but-empty one gives two cleanly distinguishable results
-		 * to prove which one actually got cached. */
+		 * order, not merely asserting both scans happened. A pgrep failure
+		 * with no exit code reads as "unknown" (only exit 1 with no output means
+		 * "nothing matched"), so a failed pgrep vs. a successful-but-empty one
+		 * gives two cleanly distinguishable results to prove which one
+		 * actually got cached. */
 		it("a scan that started earlier cannot publish over one that started later", async () => {
 			let release: (() => void) | null = null;
 			const gate = new Promise<void>((r) => { release = r; });

@@ -9907,7 +9907,7 @@ function run$2(file, args, exec) {
  * trustworthy answer. Any other non-zero exit (or a signal/timeout, which is
  * normalised to a non-numeric code above) means the probe itself failed, and
  * must NOT be reported as "no Claude sessions are running". */
-function pgrepFoundNothing$1(result) {
+function pgrepFoundNothing$2(result) {
     return !result.ok && result.exitCode === 1 && result.stdout.trim() === "";
 }
 /** Discovery is pgrep-based: pgrep walks the process table at ~zero CPU
@@ -10079,7 +10079,7 @@ async function askClaudeAgents(claudePath, exec) {
 async function doScan$2(exec, mySeq, fresh, claudePathOption) {
     const now = Date.now();
     const pgrep = await run$2("/usr/bin/pgrep", PGREP_CLAUDE_ARGS, exec);
-    if (pgrepFoundNothing$1(pgrep)) {
+    if (pgrepFoundNothing$2(pgrep)) {
         return remember$2(now, mySeq, { status: "ok", instances: [], claudeAgents: UNASKED });
     }
     if (!pgrep.ok)
@@ -11371,8 +11371,23 @@ let seq$1 = 0;
 let publishedSeq$1 = 0;
 function run$1(file, args, exec) {
     return new Promise((resolve) => {
-        exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
+        exec(file, args, { timeout: TIMEOUT_MS$1, env: UTF8_ENV }, (error, stdout) => {
+            const e = error;
+            // A process cut short by the timeout is NOT reporting an exit status,
+            // even though Node may still surface a numeric `code`.
+            const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
+            const code = terminated ? null : e?.code;
+            resolve({ ok: error === null, stdout: String(stdout ?? ""), exitCode: typeof code === "number" ? code : null });
+        });
     });
+}
+/** pgrep's documented contract: exit 1 means "nothing matched", a definite
+ * answer (the same rule as claude-scan and cursor-scan). Any other non-zero
+ * exit, or a timeout, means the probe failed and stays unknown. Without this,
+ * a machine with no Codex running read as a failed Codex probe, and every AI
+ * Project capture refused, because a capture needs all three kinds to answer. */
+function pgrepFoundNothing$1(result) {
+    return !result.ok && result.exitCode === 1 && result.stdout.trim() === "";
 }
 function codexPsArgs(pids) {
     return ["-o", "pid=,tty=,comm=,args=", "-p", pids.join(",")];
@@ -11424,6 +11439,8 @@ function scanCodexSnapshot(exec = execFile, options = {}) {
 async function doScan$1(exec, mySeq) {
     const now = Date.now();
     const pgrep = await run$1("/usr/bin/pgrep", ["-x", "codex"], exec);
+    if (pgrepFoundNothing$1(pgrep))
+        return remember$1(now, mySeq, { status: "ok", instances: [] });
     if (!pgrep.ok)
         return rememberUnknown$1(now, mySeq);
     const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
@@ -13800,7 +13817,16 @@ let AiProject = (() => {
             // `fresh: true` asks the machine now rather than acting on a snapshot
             // up to a poll old.
             const snap = await this.snapshot(kindsToScan(undefined), { fresh: true });
-            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
+            // Every refusal logs its reason: the alert alone cannot say which kind
+            // failed, and a hold that silently does nothing is undiagnosable.
+            // A gesture, not a loop, so one line per refusal needs no rate limit.
+            if (snap.scanStatus !== "ok") {
+                streamDeck.logger.warn(`AI Project: refusing capture — the ${snap.failedKinds.join(", ")} scan did not answer.`);
+                await key.showAlert();
+                return;
+            }
+            if (snap.focusedTty === "") {
+                streamDeck.logger.warn(`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${snap.frontBundle || "unknown"}).`);
                 await key.showAlert();
                 return;
             }
@@ -13815,6 +13841,7 @@ let AiProject = (() => {
             }
             const instance = this.resolveCapture(snap);
             if (instance === null) {
+                streamDeck.logger.warn("AI Project: refusing capture — no agent found in the focused terminal.");
                 await key.showAlert();
                 return;
             }

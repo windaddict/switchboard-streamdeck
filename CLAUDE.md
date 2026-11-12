@@ -108,7 +108,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1083 tests today
+npm test              # vitest (pure modules) — 1087 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -219,6 +219,12 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   sole session sat in the folder. `bindsBySession(kind)` is the discriminator:
   Codex and Cursor bind by conversation id; Claude binds by folder, even
   though `claude agents --json` reports a `sessionId` (binding by it is in TODO.md).
+- **`pgrep` exit 1 means "nothing matched", not "the probe failed".** Every
+  scanner must test it with its `pgrepFoundNothing` (exit 1 AND empty output
+  AND not timed out). `codex-scan.ts` lacked it until 2026-11-12, so with no
+  Codex running the Codex probe read as failed, and AI Project refused every
+  hold-to-capture (a capture needs all three kinds to answer). Capture
+  refusals now each log one line naming the reason.
 - **"Present but unidentifiable" is NOT "the probe failed" — for Cursor.** An
   unprompted Cursor session is a normal state and is returned with an empty
   sessionId under `status: "ok"`; flagging it as a failure grayed out every

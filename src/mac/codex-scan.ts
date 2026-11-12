@@ -61,10 +61,26 @@ let inFlight: Promise<CodexScanSnapshot> | null = null;
 let seq = 0;
 let publishedSeq = 0;
 
-function run(file: string, args: readonly string[], exec: CodexExecFileLike): Promise<{ ok: boolean; stdout: string }> {
+function run(file: string, args: readonly string[], exec: CodexExecFileLike): Promise<{ ok: boolean; stdout: string; exitCode: number | null }> {
 	return new Promise((resolve) => {
-		exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => resolve({ ok: error === null, stdout: String(stdout ?? "") }));
+		exec(file, args, { timeout: TIMEOUT_MS, env: UTF8_ENV }, (error, stdout) => {
+			const e = error as { code?: unknown; killed?: unknown; signal?: unknown } | null;
+			// A process cut short by the timeout is NOT reporting an exit status,
+			// even though Node may still surface a numeric `code`.
+			const terminated = e !== null && (e.killed === true || typeof e.signal === "string");
+			const code = terminated ? null : e?.code;
+			resolve({ ok: error === null, stdout: String(stdout ?? ""), exitCode: typeof code === "number" ? code : null });
+		});
 	});
+}
+
+/** pgrep's documented contract: exit 1 means "nothing matched", a definite
+ * answer (the same rule as claude-scan and cursor-scan). Any other non-zero
+ * exit, or a timeout, means the probe failed and stays unknown. Without this,
+ * a machine with no Codex running read as a failed Codex probe, and every AI
+ * Project capture refused, because a capture needs all three kinds to answer. */
+function pgrepFoundNothing(result: { ok: boolean; stdout: string; exitCode: number | null }): boolean {
+	return !result.ok && result.exitCode === 1 && result.stdout.trim() === "";
 }
 
 export function codexPsArgs(pids: number[]): string[] {
@@ -133,6 +149,7 @@ export function scanCodexSnapshot(
 async function doScan(exec: CodexExecFileLike, mySeq: number): Promise<CodexScanSnapshot> {
 	const now = Date.now();
 	const pgrep = await run("/usr/bin/pgrep", ["-x", "codex"], exec);
+	if (pgrepFoundNothing(pgrep)) return remember(now, mySeq, { status: "ok", instances: [] });
 	if (!pgrep.ok) return rememberUnknown(now, mySeq);
 	const pids = pgrep.stdout.split("\n").map((s) => Number.parseInt(s.trim(), 10)).filter(Number.isFinite);
 	if (pids.length === 0) return remember(now, mySeq, { status: "ok", instances: [] });

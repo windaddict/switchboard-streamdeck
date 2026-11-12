@@ -525,7 +525,21 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		// `fresh: true` asks the machine now rather than acting on a snapshot
 		// up to a poll old.
 		const snap = await this.snapshot(kindsToScan(undefined), { fresh: true });
-		if (snap.scanStatus !== "ok" || snap.focusedTty === "") { await key.showAlert(); return; }
+		// Every refusal logs its reason: the alert alone cannot say which kind
+		// failed, and a hold that silently does nothing is undiagnosable.
+		// A gesture, not a loop, so one line per refusal needs no rate limit.
+		if (snap.scanStatus !== "ok") {
+			streamDeck.logger.warn(`AI Project: refusing capture — the ${snap.failedKinds.join(", ")} scan did not answer.`);
+			await key.showAlert();
+			return;
+		}
+		if (snap.focusedTty === "") {
+			streamDeck.logger.warn(
+				`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${snap.frontBundle || "unknown"}).`,
+			);
+			await key.showAlert();
+			return;
+		}
 		// tmux is clearly alive (it listed panes) but would not list its clients,
 		// so the client->pane translation below cannot run. Falling back to the
 		// raw tty would reintroduce exactly the miscapture that translation
@@ -536,7 +550,11 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			return;
 		}
 		const instance = this.resolveCapture(snap);
-		if (instance === null) { await key.showAlert(); return; }
+		if (instance === null) {
+			streamDeck.logger.warn("AI Project: refusing capture — no agent found in the focused terminal.");
+			await key.showAlert();
+			return;
+		}
 		// Refuse a capture that would not survive its own first refresh. Claude
 		// has no session id, so two Claude sessions in one folder are
 		// indistinguishable afterwards: storing the binding would flash "ok" and
