@@ -16,6 +16,9 @@ const h = vi.hoisted(() => ({
 	front: "com.googlecode.iterm2",
 	focusedTty: "/dev/ttys009",
 	clients: "",
+	panes: "",
+	panesOk: true,
+	focusOk: true,
 }));
 
 vi.mock("@elgato/streamdeck", () => ({
@@ -30,10 +33,13 @@ vi.mock("../src/mac/agent-scan.js", async (importOriginal) => ({
 vi.mock("../src/mac/tmux-runner.js", () => ({
 	findTmuxPath: () => "/opt/homebrew/bin/tmux",
 	LIST_CLIENTS_ARGS: ["list-clients"],
-	runTmux: vi.fn(async (args: readonly string[]) => ({ ok: true, stdout: args[0] === "list-clients" ? h.clients : "", stderr: "" })),
+	runTmux: vi.fn(async (args: readonly string[]) =>
+		args[0] === "list-clients" ? { ok: true, stdout: h.clients, stderr: "" }
+			: args[0] === "list-panes" ? { ok: h.panesOk, stdout: h.panesOk ? h.panes : "", stderr: h.panesOk ? "" : "boom" }
+				: { ok: true, stdout: "", stderr: "" }),
 }));
 vi.mock("../src/applescript/runner.js", () => ({
-	runAppleScript: vi.fn(async () => ({ ok: true, stdout: h.focusedTty, stderr: "" })),
+	runAppleScript: vi.fn(async () => (h.focusOk ? { ok: true, stdout: h.focusedTty, stderr: "" } : { ok: false, stdout: "", stderr: "-1743" })),
 	runJxa: vi.fn(async () => ({ ok: true, stdout: h.front, stderr: "" })),
 }));
 
@@ -63,7 +69,14 @@ beforeEach(() => {
 	h.front = "com.googlecode.iterm2";
 	h.focusedTty = "/dev/ttys009";
 	h.clients = "";
+	h.panes = "";
+	h.panesOk = true;
+	h.focusOk = true;
 });
+
+/** One `list-panes` line in LIST_AGENT_PANES_ARGS's format; active pane in the
+ * active window. */
+const paneLine = (tty: string, session: string) => [tty, session, "@1", "%1", "1", "1", "title"].join("\u001f") + "\n";
 
 const agentOn = (tty: string, pid: number) => ({ kind: "codex", pid, tty, cwd: "/tmp/p", sessionId: `s${pid}` });
 
@@ -120,6 +133,62 @@ describe("AI Project capture refusals", () => {
 			[`AI Project: refusing capture — ${reason}`],
 		]);
 		expect(key.setSettings).not.toHaveBeenCalled();
+	});
+
+	it("a failed focused-tty AppleScript is logged as a failure, not as no session", async () => {
+		h.scan = scan();
+		h.focusOk = false;
+		const key = fakeKey();
+		await capture(key);
+		expect(key.showAlert).toHaveBeenCalledTimes(1);
+		expect(h.log.warn.mock.calls).toEqual([
+			["AI Project: refusing capture — could not read the focused session's tty from com.googlecode.iterm2 (AppleScript failed)."],
+		]);
+	});
+
+	it("a failed pane listing is logged as a failure, not as no active pane", async () => {
+		h.scan = scan({ instances: [agentOn("/dev/ttys009", 1)] });
+		h.clients = "/dev/ttys009|main\n";
+		h.panesOk = false;
+		await capture(fakeKey());
+		expect(h.log.warn.mock.calls).toEqual([["AI Project: refusing capture — tmux listed its clients but not its panes."]]);
+	});
+
+	// The tmux branch translates the client's tty into the active pane's tty.
+	// An agent on the CLIENT tty (suspended before `tmux attach`) must not be
+	// the one captured.
+	describe("tmux client -> active pane", () => {
+		beforeEach(() => {
+			h.clients = "/dev/ttys009|main\n";
+			h.panes = paneLine("/dev/ttys020", "main");
+		});
+
+		it("binds the agent in the active pane, not the one on the client tty", async () => {
+			h.scan = scan({ instances: [agentOn("/dev/ttys009", 1), agentOn("/dev/ttys020", 2)] });
+			const key = fakeKey();
+			await capture(key);
+			expect(h.log.warn.mock.calls).toEqual([]);
+			expect(key.setSettings).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", sessionId: "s2" }));
+		});
+
+		it.each([
+			["no agent in the pane", () => [agentOn("/dev/ttys009", 1)], "no agent found in the focused terminal."],
+			["two agents in the pane", () => [agentOn("/dev/ttys020", 1), agentOn("/dev/ttys020", 2)], "two or more agents share the focused terminal."],
+		])("%s is refused with its reason", async (_name, instances, reason) => {
+			h.scan = scan({ instances: instances() });
+			const key = fakeKey();
+			await capture(key);
+			expect(h.log.warn.mock.calls).toEqual([[`AI Project: refusing capture — ${reason}`]]);
+			expect(key.setSettings).not.toHaveBeenCalled();
+		});
+	});
+
+	it.each(["\u2028", "\u2029", "\u0085", "\u007f", "\r"])("logSafe escapes %j in a logged bundle id", async (c) => {
+		h.scan = scan();
+		h.front = `com.evil${c}forged`;
+		await capture(fakeKey());
+		expect(h.log.warn.mock.calls).toHaveLength(1);
+		expect(h.log.warn.mock.calls[0][0]).not.toContain(c);
 	});
 
 	it("a cwd carrying a newline is escaped in the indistinguishable-session line", async () => {

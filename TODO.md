@@ -22,6 +22,15 @@ plugin is shippable as-is.
       codex cache-order test feeds `cb(null, "", "")` as its clean empty scan and
       would move to a real exit-1 fixture. Found by the Impasse review of
       `2703367` (2026-11-12); not in that commit's scope.
+- [ ] **AI Project capture trusts the raw tty when BOTH tmux listings fail.**
+      `capture` refuses only when `list-clients` fails while `list-panes`
+      answered. If both fail with tmux running (a timeout, say), the client map
+      is empty and the capture falls through to the focused tty, which can bind
+      an agent suspended on the client's tty instead of the one in the active
+      pane. Refusing whenever both fail would also refuse every capture on a
+      machine with no tmux server, so the fix needs to tell "no server running"
+      apart from a failed probe. Found by the Impasse re-review of `b802517`
+      (2026-11-12); the guard dates from `36f2d01`.
 
 ## Refactors / cleanup (deferred, deliberate)
 

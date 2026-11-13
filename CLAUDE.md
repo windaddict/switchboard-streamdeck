@@ -108,7 +108,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1093 tests today
+npm test              # vitest (pure modules) — 1103 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -225,9 +225,12 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   Codex running the Codex probe read as failed, and AI Project refused every
   hold-to-capture (a capture needs all three kinds to answer). Capture
   refusals now each log one line naming the reason: which kinds' scans failed,
-  no focused terminal, no agent, two or more agents on one tty, or no active
-  tmux pane. External text in those lines (a bundle id, a cwd) goes through
-  `logSafe`, so a newline in it cannot forge a second line.
+  the focused-tty AppleScript failed, no focused terminal, tmux listed panes
+  but not clients (or clients but not panes), no active tmux pane, no agent,
+  two or more agents on one tty, or two sessions in one folder that a Claude
+  binding cannot tell apart. External text in those lines (a bundle id, a
+  cwd) goes through `logSafe`, so a newline in it cannot forge a second line
+  in Stream Deck's LF-delimited log.
 - **"Present but unidentifiable" is NOT "the probe failed" — for Cursor.** An
   unprompted Cursor session is a normal state and is returned with an empty
   sessionId under `status: "ok"`; flagging it as a failure grayed out every

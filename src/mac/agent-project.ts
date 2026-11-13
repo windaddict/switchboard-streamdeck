@@ -270,7 +270,7 @@ export function agentForFocusedTty(
 
 /** Why a capture found no single agent to bind. Each reason is a different
  * thing for the operator to fix, so the capture's log line names it. */
-export type CaptureRefusal = "no agent" | "two or more agents" | "no active tmux pane";
+export type CaptureRefusal = "no agent" | "two or more agents" | "no active tmux pane" | "tmux pane listing failed";
 
 /** `agentForFocusedTty` with its two null cases told apart, for the capture
  * gesture's refusal log. Same rule: exactly one match or no instance. */
@@ -290,15 +290,21 @@ export function captureRefusalLine(refusal: CaptureRefusal): string {
 		case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
 		case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
 		case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
+		case "tmux pane listing failed": return "AI Project: refusing capture — tmux listed its clients but not its panes.";
 	}
 }
 
 /** Text from outside the plugin (an app's bundle id, a process's cwd) made
- * safe to put in a log line: JSON string escaping turns a newline or other
- * control character into a visible escape, so the text cannot start a forged
- * log line. Quotes and backslashes are escaped too; nothing is removed. */
+ * safe to put in a log line. JSON string escaping turns U+0000-U+001F (LF and
+ * CR included) into visible escapes; DEL, NEL and the Unicode line and
+ * paragraph separators (U+007F, U+0085, U+2028, U+2029) are escaped on top,
+ * since some log viewers break lines on them. Stream Deck's file log ends a
+ * record at LF, so the text cannot start a forged record there. Quotes and
+ * backslashes are escaped too; nothing is removed. */
 export function logSafe(text: string): string {
-	return JSON.stringify(text).slice(1, -1);
+	return JSON.stringify(text)
+		.slice(1, -1)
+		.replace(/[\u007f\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 /**

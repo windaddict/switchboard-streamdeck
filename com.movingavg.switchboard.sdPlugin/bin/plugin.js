@@ -12022,14 +12022,20 @@ function captureRefusalLine(refusal) {
         case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
         case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
         case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
+        case "tmux pane listing failed": return "AI Project: refusing capture — tmux listed its clients but not its panes.";
     }
 }
 /** Text from outside the plugin (an app's bundle id, a process's cwd) made
- * safe to put in a log line: JSON string escaping turns a newline or other
- * control character into a visible escape, so the text cannot start a forged
- * log line. Quotes and backslashes are escaped too; nothing is removed. */
+ * safe to put in a log line. JSON string escaping turns U+0000-U+001F (LF and
+ * CR included) into visible escapes; DEL, NEL and the Unicode line and
+ * paragraph separators (U+007F, U+0085, U+2028, U+2029) are escaped on top,
+ * since some log viewers break lines on them. Stream Deck's file log ends a
+ * record at LF, so the text cannot start a forged record there. Quotes and
+ * backslashes are escaped too; nothing is removed. */
 function logSafe(text) {
-    return JSON.stringify(text).slice(1, -1);
+    return JSON.stringify(text)
+        .slice(1, -1)
+        .replace(/[\u007f\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 /**
  * Should the AI Project key's poller stay at full cadence this tick, or is it
@@ -13516,13 +13522,14 @@ let AiProject = (() => {
             const agentsP = scanAgents(kinds, titlesP, undefined, { fresh: opts.fresh, claudeState: opts.claudeState });
             const focusedTtyP = frontP.then(async (front) => {
                 const frontBundle = front.ok ? front.stdout.trim() : "";
-                if (frontBundle === ITERM_BUNDLE_ID)
-                    return (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-                if (frontBundle === TERMINAL_BUNDLE_ID)
-                    return (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
-                return "";
+                const script = frontBundle === ITERM_BUNDLE_ID ? ITERM_FOCUSED_TTY_SCRIPT
+                    : frontBundle === TERMINAL_BUNDLE_ID ? TERMINAL_FOCUSED_TTY_SCRIPT : null;
+                if (script === null)
+                    return { tty: "", ok: true };
+                const r = await runAppleScript(script);
+                return { tty: r.stdout.trim(), ok: r.ok };
             });
-            const [panesResult, clientsResult, front, focusedTty, agents] = await Promise.all([
+            const [panesResult, clientsResult, front, focused, agents] = await Promise.all([
                 panesP, clientsP, frontP, focusedTtyP, agentsP,
             ]);
             const panes = panesResult.ok ? parseAgentPanes(panesResult.stdout) : [];
@@ -13532,7 +13539,8 @@ let AiProject = (() => {
                 panes,
                 clientTtys: parseClientTtys(clientsResult.stdout),
                 frontBundle,
-                focusedTty,
+                focusedTty: focused.tty,
+                focusedTtyOk: focused.ok,
                 scanStatus: agents.status,
                 failedKinds: agents.failedKinds,
                 clientsOk: clientsResult.ok,
@@ -13811,6 +13819,9 @@ let AiProject = (() => {
             for (const [session, clientTtys] of snap.clientTtys) {
                 if (!clientTtys.includes(snap.focusedTty))
                     continue;
+                // A failed pane listing is not an inactive pane: say which it was.
+                if (!snap.panesOk)
+                    return { refusal: "tmux pane listing failed" };
                 const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
                 return pane === undefined ? { refusal: "no active tmux pane" } : matchFocusedTty(snap.instances, pane.tty);
             }
@@ -13833,6 +13844,11 @@ let AiProject = (() => {
             // A gesture, not a loop, so one line per refusal needs no rate limit.
             if (snap.scanStatus !== "ok") {
                 streamDeck.logger.warn(`AI Project: refusing capture — the ${snap.failedKinds.join(", ")} scan did not answer.`);
+                await key.showAlert();
+                return;
+            }
+            if (!snap.focusedTtyOk) {
+                streamDeck.logger.warn(`AI Project: refusing capture — could not read the focused session's tty from ${logSafe(snap.frontBundle)} (AppleScript failed).`);
                 await key.showAlert();
                 return;
             }
