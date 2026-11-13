@@ -14,7 +14,10 @@ import { runAppleScript, runJxa } from "../applescript/runner.js";
 import { FRONT_APP_BUNDLE_JXA } from "../mac/app-windows.js";
 import {
 	agentBindingKey,
-	agentForFocusedTty,
+	type CaptureRefusal,
+	captureRefusalLine,
+	logSafe,
+	matchFocusedTty,
 	agentTickInteresting,
 	type AgentHost,
 	type AgentInstance,
@@ -500,7 +503,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 	 * tty, not the agent's, so it is translated through the attached session to
 	 * whichever pane would receive keystrokes.
 	 */
-	private resolveCapture(snap: Snapshot): AgentInstance | null {
+	private resolveCapture(snap: Snapshot): { instance: AgentInstance } | { refusal: CaptureRefusal } {
 		// tmux FIRST. A client's tty is the terminal's own, so an agent that was
 		// started in that terminal and then suspended (Ctrl-Z, then `tmux
 		// attach`) still owns the tty — and would otherwise be captured in
@@ -508,13 +511,13 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		for (const [session, clientTtys] of snap.clientTtys) {
 			if (!clientTtys.includes(snap.focusedTty)) continue;
 			const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
-			return pane === undefined ? null : agentForFocusedTty(snap.instances, pane.tty);
+			return pane === undefined ? { refusal: "no active tmux pane" } : matchFocusedTty(snap.instances, pane.tty);
 		}
 		// Not a tmux client: the frontmost terminal hosts the agent directly. A
 		// tty CAN still host two agents — one launched from inside another's
 		// terminal inherits it — so more than one match is ambiguous, not a
 		// choice to make on the operator's behalf.
-		return agentForFocusedTty(snap.instances, snap.focusedTty);
+		return matchFocusedTty(snap.instances, snap.focusedTty);
 	}
 
 	private async capture(key: KeyAction<AiProjectSettings>): Promise<void> {
@@ -535,7 +538,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		}
 		if (snap.focusedTty === "") {
 			streamDeck.logger.warn(
-				`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${snap.frontBundle || "unknown"}).`,
+				`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${logSafe(snap.frontBundle) || "unknown"}).`,
 			);
 			await key.showAlert();
 			return;
@@ -549,12 +552,13 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 			await key.showAlert();
 			return;
 		}
-		const instance = this.resolveCapture(snap);
-		if (instance === null) {
-			streamDeck.logger.warn("AI Project: refusing capture — no agent found in the focused terminal.");
+		const resolved = this.resolveCapture(snap);
+		if ("refusal" in resolved) {
+			streamDeck.logger.warn(captureRefusalLine(resolved.refusal));
 			await key.showAlert();
 			return;
 		}
+		const instance = resolved.instance;
 		// Refuse a capture that would not survive its own first refresh. Claude
 		// has no session id, so two Claude sessions in one folder are
 		// indistinguishable afterwards: storing the binding would flash "ok" and
@@ -565,7 +569,7 @@ export class AiProject extends SingletonAction<AiProjectSettings> {
 		const project = await this.canonicalProject(instance.cwd);
 		if (selectAgentInstance(snap.instances, instance.kind, project, instance.sessionId) === null) {
 			streamDeck.logger.warn(
-				`AI Project: refusing capture — ${instance.kind} in ${instance.cwd} cannot be told apart from another session there.`,
+				`AI Project: refusing capture — ${instance.kind} in ${logSafe(instance.cwd)} cannot be told apart from another session there.`,
 			);
 			await key.showAlert();
 			return;

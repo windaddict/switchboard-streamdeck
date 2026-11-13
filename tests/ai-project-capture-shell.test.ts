@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
 	scan: undefined as unknown,
 	front: "com.googlecode.iterm2",
 	focusedTty: "/dev/ttys009",
+	clients: "",
 }));
 
 vi.mock("@elgato/streamdeck", () => ({
@@ -29,7 +30,7 @@ vi.mock("../src/mac/agent-scan.js", async (importOriginal) => ({
 vi.mock("../src/mac/tmux-runner.js", () => ({
 	findTmuxPath: () => "/opt/homebrew/bin/tmux",
 	LIST_CLIENTS_ARGS: ["list-clients"],
-	runTmux: vi.fn(async () => ({ ok: true, stdout: "", stderr: "" })),
+	runTmux: vi.fn(async (args: readonly string[]) => ({ ok: true, stdout: args[0] === "list-clients" ? h.clients : "", stderr: "" })),
 }));
 vi.mock("../src/applescript/runner.js", () => ({
 	runAppleScript: vi.fn(async () => ({ ok: true, stdout: h.focusedTty, stderr: "" })),
@@ -61,40 +62,76 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	h.front = "com.googlecode.iterm2";
 	h.focusedTty = "/dev/ttys009";
+	h.clients = "";
 });
 
+const agentOn = (tty: string, pid: number) => ({ kind: "codex", pid, tty, cwd: "/tmp/p", sessionId: `s${pid}` });
+
 describe("AI Project capture refusals", () => {
-	it("every kind whose scan failed is named in the log", async () => {
-		// Two kinds, so a message naming only the first (or a fixed one) fails.
-		h.scan = scan({ status: "unknown", failedKinds: ["codex", "cursor"] });
+	// Each case varies the input the message is built from, so a warning that
+	// hard-codes one fixture's value fails the other case.
+	it.each([
+		[["codex", "cursor"], "codex, cursor"],
+		[["claude"], "claude"],
+	])("every kind whose scan failed is named in the log (%j)", async (failedKinds, named) => {
+		h.scan = scan({ status: "unknown", failedKinds });
 		const key = fakeKey();
 		await capture(key);
 		expect(key.showAlert).toHaveBeenCalledTimes(1);
 		expect(h.log.warn.mock.calls, "ai-project capture: failed scan is logged").toEqual([
-			["AI Project: refusing capture — the codex, cursor scan did not answer."],
+			[`AI Project: refusing capture — the ${named} scan did not answer.`],
 		]);
 		expect(key.setSettings).not.toHaveBeenCalled();
 	});
 
-	it("no focused terminal is logged", async () => {
+	it.each(["com.apple.finder", "com.example.app"])("no focused terminal is logged (%s)", async (front) => {
 		h.scan = scan();
-		h.front = "com.apple.finder";
+		h.front = front;
 		const key = fakeKey();
 		await capture(key);
 		expect(key.showAlert).toHaveBeenCalledTimes(1);
 		expect(h.log.warn.mock.calls, "ai-project capture: no focused terminal is logged").toEqual([
-			["AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: com.apple.finder)."],
+			[`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${front}).`],
 		]);
 	});
 
-	it("no agent in the focused terminal is logged", async () => {
+	it("a frontmost bundle id carrying a newline cannot forge a second log line", async () => {
 		h.scan = scan();
+		h.front = "com.evil\nAI Project: forged";
+		await capture(fakeKey());
+		expect(h.log.warn.mock.calls).toHaveLength(1);
+		expect(h.log.warn.mock.calls[0][0], "ai-project capture: bundle id is escaped").not.toContain("\n");
+		expect(h.log.warn.mock.calls[0][0]).toContain("com.evil\\nAI Project: forged");
+	});
+
+	// The agent on ANOTHER tty matters: a warning gated on "no instances at
+	// all" would pass the empty case and stay silent here.
+	it.each([
+		["no agent", () => [agentOn("/dev/ttys001", 1)], "", "no agent found in the focused terminal."],
+		["two agents on one tty", () => [agentOn("/dev/ttys009", 1), agentOn("/dev/ttys009", 2)], "", "two or more agents share the focused terminal."],
+		["a tmux client with no active pane", () => [agentOn("/dev/ttys009", 1)], "/dev/ttys009|main\n", "the focused tmux session has no active pane."],
+	])("%s is logged with its own reason", async (_name, instances, clients, reason) => {
+		h.scan = scan({ instances: instances() });
+		h.clients = clients;
 		const key = fakeKey();
 		await capture(key);
 		expect(key.showAlert).toHaveBeenCalledTimes(1);
-		expect(h.log.warn.mock.calls, "ai-project capture: no agent found is logged").toEqual([
-			["AI Project: refusing capture — no agent found in the focused terminal."],
+		expect(h.log.warn.mock.calls, "ai-project capture: refusal names its reason").toEqual([
+			[`AI Project: refusing capture — ${reason}`],
 		]);
 		expect(key.setSettings).not.toHaveBeenCalled();
+	});
+
+	it("a cwd carrying a newline is escaped in the indistinguishable-session line", async () => {
+		// Two Claude sessions in one folder: Claude binds by folder, so the
+		// capture refuses and names the folder.
+		const cwd = "/tmp/p\nAI Project: forged";
+		const claude = (tty: string, pid: number) => ({ kind: "claude", pid, tty, cwd, sessionId: "" });
+		h.scan = scan({ instances: [claude("/dev/ttys009", 1), claude("/dev/ttys001", 2)] });
+		await capture(fakeKey());
+		expect(h.log.warn.mock.calls).toHaveLength(1);
+		expect(h.log.warn.mock.calls[0][0], "ai-project capture: cwd is escaped").toBe(
+			"AI Project: refusing capture — claude in /tmp/p\\nAI Project: forged cannot be told apart from another session there.",
+		);
 	});
 });

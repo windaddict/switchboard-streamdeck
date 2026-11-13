@@ -72,6 +72,11 @@ describe("Codex scan", () => {
 			[{ code: 2 }, ""], // pgrep's own error exit
 			[{ code: 1 }, "42\n"], // exit 1 but it printed a pid
 			[{ code: 1, killed: true, signal: "SIGTERM" }, ""], // cut short by the timeout
+			// Each half of the timeout guard alone: a child that handles the
+			// timeout's SIGTERM and exits 1 reports killed with no signal, and a
+			// child signalled from outside reports a signal without killed.
+			[{ code: 1, killed: true, signal: null }, ""],
+			[{ code: 1, killed: false, signal: "SIGTERM" }, ""],
 		] as const) {
 			expect(await scanCodexSnapshot(pgrepOnly({ ...err }, out) as unknown as CodexExecFileLike, { fresh: true })).toEqual({
 				status: "unknown",

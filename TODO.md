@@ -15,6 +15,13 @@ plugin is shippable as-is.
       whose title changes (browser page, edited-doc dot) won't re-match. Options:
       normalize volatile titles, or add a native `CGWindowID` helper for stable
       identity.
+- [ ] **pgrep exit 0 with no pid lines reads as "none running".** `codex-scan.ts`
+      and `cursor-scan.ts` return `status: "ok"` with no instances when pgrep
+      succeeds but prints nothing parseable. Exit 0 means pgrep matched
+      something, so that output is inconsistent and should read as unknown. The
+      codex cache-order test feeds `cb(null, "", "")` as its clean empty scan and
+      would move to a real exit-1 fixture. Found by the Impasse review of
+      `2703367` (2026-11-12); not in that commit's scope.
 
 ## Refactors / cleanup (deferred, deliberate)
 

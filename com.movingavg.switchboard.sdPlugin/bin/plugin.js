@@ -12007,18 +12007,29 @@ function paneShowsAgentPrompt(kind, paneText) {
             return paneText.includes("Run this command?") && paneText.includes("Run (once)");
     }
 }
-/**
- * The agent instance owning the terminal the operator is looking at, or null.
- *
- * Returns null on zero matches AND on two or more — never picks. Two can
- * genuinely match: an agent launched from inside another agent's terminal
- * inherits that terminal's tty, so both processes legitimately report it.
- * Choosing between them would be a guess, and the caller's honest answer to a
- * guess is to show nothing rather than act on the wrong session.
- */
-function agentForFocusedTty(instances, focusedTty) {
+/** `agentForFocusedTty` with its two null cases told apart, for the capture
+ * gesture's refusal log. Same rule: exactly one match or no instance. */
+function matchFocusedTty(instances, focusedTty) {
     const matches = instances.filter((i) => i.tty === focusedTty);
-    return matches.length === 1 ? matches[0] : null;
+    if (matches.length === 1)
+        return { instance: matches[0] };
+    return { refusal: matches.length === 0 ? "no agent" : "two or more agents" };
+}
+/** The capture refusal's log line for a reason from `matchFocusedTty` or the
+ * tmux branch of capture. */
+function captureRefusalLine(refusal) {
+    switch (refusal) {
+        case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
+        case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
+        case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
+    }
+}
+/** Text from outside the plugin (an app's bundle id, a process's cwd) made
+ * safe to put in a log line: JSON string escaping turns a newline or other
+ * control character into a visible escape, so the text cannot start a forged
+ * log line. Quotes and backslashes are escaped too; nothing is removed. */
+function logSafe(text) {
+    return JSON.stringify(text).slice(1, -1);
 }
 /**
  * Should the AI Project key's poller stay at full cadence this tick, or is it
@@ -13801,13 +13812,13 @@ let AiProject = (() => {
                 if (!clientTtys.includes(snap.focusedTty))
                     continue;
                 const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
-                return pane === undefined ? null : agentForFocusedTty(snap.instances, pane.tty);
+                return pane === undefined ? { refusal: "no active tmux pane" } : matchFocusedTty(snap.instances, pane.tty);
             }
             // Not a tmux client: the frontmost terminal hosts the agent directly. A
             // tty CAN still host two agents — one launched from inside another's
             // terminal inherits it — so more than one match is ambiguous, not a
             // choice to make on the operator's behalf.
-            return agentForFocusedTty(snap.instances, snap.focusedTty);
+            return matchFocusedTty(snap.instances, snap.focusedTty);
         }
         async capture(key) {
             // Capture must consider every kind — this is the one gesture that does
@@ -13826,7 +13837,7 @@ let AiProject = (() => {
                 return;
             }
             if (snap.focusedTty === "") {
-                streamDeck.logger.warn(`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${snap.frontBundle || "unknown"}).`);
+                streamDeck.logger.warn(`AI Project: refusing capture — no focused iTerm2 or Terminal session (frontmost: ${logSafe(snap.frontBundle) || "unknown"}).`);
                 await key.showAlert();
                 return;
             }
@@ -13839,12 +13850,13 @@ let AiProject = (() => {
                 await key.showAlert();
                 return;
             }
-            const instance = this.resolveCapture(snap);
-            if (instance === null) {
-                streamDeck.logger.warn("AI Project: refusing capture — no agent found in the focused terminal.");
+            const resolved = this.resolveCapture(snap);
+            if ("refusal" in resolved) {
+                streamDeck.logger.warn(captureRefusalLine(resolved.refusal));
                 await key.showAlert();
                 return;
             }
+            const instance = resolved.instance;
             // Refuse a capture that would not survive its own first refresh. Claude
             // has no session id, so two Claude sessions in one folder are
             // indistinguishable afterwards: storing the binding would flash "ok" and
@@ -13854,7 +13866,7 @@ let AiProject = (() => {
             // tests an identity the key never actually looks up.
             const project = await this.canonicalProject(instance.cwd);
             if (selectAgentInstance(snap.instances, instance.kind, project, instance.sessionId) === null) {
-                streamDeck.logger.warn(`AI Project: refusing capture — ${instance.kind} in ${instance.cwd} cannot be told apart from another session there.`);
+                streamDeck.logger.warn(`AI Project: refusing capture — ${instance.kind} in ${logSafe(instance.cwd)} cannot be told apart from another session there.`);
                 await key.showAlert();
                 return;
             }

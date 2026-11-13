@@ -264,8 +264,41 @@ export function agentForFocusedTty(
 	instances: readonly AgentInstance[],
 	focusedTty: string,
 ): AgentInstance | null {
+	const match = matchFocusedTty(instances, focusedTty);
+	return "instance" in match ? match.instance : null;
+}
+
+/** Why a capture found no single agent to bind. Each reason is a different
+ * thing for the operator to fix, so the capture's log line names it. */
+export type CaptureRefusal = "no agent" | "two or more agents" | "no active tmux pane";
+
+/** `agentForFocusedTty` with its two null cases told apart, for the capture
+ * gesture's refusal log. Same rule: exactly one match or no instance. */
+export function matchFocusedTty(
+	instances: readonly AgentInstance[],
+	focusedTty: string,
+): { instance: AgentInstance } | { refusal: CaptureRefusal } {
 	const matches = instances.filter((i) => i.tty === focusedTty);
-	return matches.length === 1 ? matches[0] : null;
+	if (matches.length === 1) return { instance: matches[0] };
+	return { refusal: matches.length === 0 ? "no agent" : "two or more agents" };
+}
+
+/** The capture refusal's log line for a reason from `matchFocusedTty` or the
+ * tmux branch of capture. */
+export function captureRefusalLine(refusal: CaptureRefusal): string {
+	switch (refusal) {
+		case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
+		case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
+		case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
+	}
+}
+
+/** Text from outside the plugin (an app's bundle id, a process's cwd) made
+ * safe to put in a log line: JSON string escaping turns a newline or other
+ * control character into a visible escape, so the text cannot start a forged
+ * log line. Quotes and backslashes are escaped too; nothing is removed. */
+export function logSafe(text: string): string {
+	return JSON.stringify(text).slice(1, -1);
 }
 
 /**
