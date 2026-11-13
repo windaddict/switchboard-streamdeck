@@ -141,3 +141,8 @@ plugin is shippable as-is.
       tty-bearing process that `claude-scan` detects? Only if both hold, merge
       background entries with an integer `pid` and string `status` in
       `parseClaudeAgents` (today they are ignored and fall back).
+- [ ] The folder-trust prompt never shows amber: `claude agents --json` does not
+      list a session while that prompt is up (measured on 2.1.311, 2026-11-12).
+      Decide whether a pane scrape for it is worth adding.
+- [ ] Run the `agents-json-live` checks in Terminal.app; only tmux and bare
+      iTerm2 were run live (2026-11-12).

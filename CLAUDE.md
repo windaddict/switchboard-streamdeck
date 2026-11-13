@@ -308,6 +308,15 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   too. A listing that keeps one valid session drops the others with no log.
   A local slash command (`/login`) appends `type:"user"` records with no assistant
   reply; the transcript fallback skips `isMeta` and `<command-name>`-style records.
+  Live check (`agents-json-live`) passed on 2026-11-12 on Claude Code 2.1.311,
+  under tmux and in a bare iTerm2 tab: Bash and Edit approvals reported
+  `waitingFor:"permission prompt"`, AskUserQuestion `"input needed"`, and the key
+  went amber, blue, then white. `/login` showed amber while its menu was open
+  (accepted) and idle after the cancel. No new claude process appeared over 60 s,
+  and plugin CPU stayed at 0.0-1.8 %. Terminal.app and "CLI unavailable" were not
+  run live; the second rests on unit tests. While the folder-trust prompt is up,
+  `claude agents --json` does not list the session, so that prompt never shows
+  amber.
 - **Where `claude` is looked for, and what that costs.** `findClaudePath` checks
   exactly four places: `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`,
   `~/.claude/local/claude`, `~/.local/bin/claude`. Any other install gets source
