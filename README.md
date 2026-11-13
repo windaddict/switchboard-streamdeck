@@ -129,6 +129,15 @@ brew install --cask windaddict/switchboard/switchboard
 
 (Requires the published cask; see [`packaging/homebrew/switchboard.rb`](packaging/homebrew/switchboard.rb).)
 
+To upgrade, name the cask in full:
+
+```bash
+brew upgrade --cask windaddict/switchboard/switchboard
+```
+
+Homebrew now loads a cask from a non-official tap only once it is trusted. Naming
+the cask in full trusts it, but a plain `brew upgrade` can skip it as untrusted.
+
 ### 3. Finder — drag the folder
 
 For folks who'd rather use Finder than the Terminal:
