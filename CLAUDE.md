@@ -230,7 +230,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   two or more agents on one tty, or two sessions in one folder that a Claude
   binding cannot tell apart. External text in those lines (a bundle id, a
   cwd) goes through `logSafe`, so a newline in it cannot forge a second line
-  in Stream Deck's LF-delimited log.
+  in Stream Deck's LF-delimited log. Live check passed on 2026-11-13 on the
+  v1.6.0 code: with no Codex running, holding an AI Project key captured a
+  Claude session (operator-run on the deck; terminal setup not recorded).
 - **"Present but unidentifiable" is NOT "the probe failed" — for Cursor.** An
   unprompted Cursor session is a normal state and is returned with an empty
   sessionId under `status: "ok"`; flagging it as a failure grayed out every
