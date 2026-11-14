@@ -287,7 +287,7 @@
 			"UUID": "com.movingavg.switchboard.aiproject",
 			"SupportedInMultiActions": false,
 			"Icon": "imgs/actions/aiproject/icon",
-			"Tooltip": "Replaces the separate Claude/Codex/Cursor Project keys. Live face for a Claude Code, Codex, or Cursor CLI session (cursor-agent in the terminal, not the Cursor editor) \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane. A red edge stripe marks a turn that finished while you were looking elsewhere; going to that session clears it.",
+			"Tooltip": "Live face for a Claude Code, Codex, or Cursor CLI session (cursor-agent in the terminal, not the Cursor editor) \u2014 hold while one is frontmost and it works out which. Press to raise its terminal and exact tmux pane. A red edge stripe marks a turn that finished while you were looking elsewhere; going to that session clears it.",
 			"PropertyInspectorPath": "ui/ai-project.html",
 			"Controllers": [
 				"Keypad"
@@ -295,60 +295,6 @@
 			"States": [
 				{
 					"Image": "imgs/actions/aiproject/key",
-					"ShowTitle": false
-				}
-			],
-			"UserTitleEnabled": false
-		},
-		{
-			"Name": "Claude Project (legacy)",
-			"UUID": "com.movingavg.switchboard.claudeproject",
-			"SupportedInMultiActions": false,
-			"Icon": "imgs/actions/claudeproject/icon",
-			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for a Claude Code project; press to raise its window, hold to capture the frontmost session. Will be removed in a future release.",
-			"PropertyInspectorPath": "ui/claude-project.html",
-			"Controllers": [
-				"Keypad"
-			],
-			"States": [
-				{
-					"Image": "imgs/actions/claudeproject/key",
-					"ShowTitle": false
-				}
-			],
-			"UserTitleEnabled": false
-		},
-		{
-			"Name": "Codex Project (legacy)",
-			"UUID": "com.movingavg.switchboard.codexproject",
-			"SupportedInMultiActions": false,
-			"Icon": "imgs/actions/codexproject/icon",
-			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Codex CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
-			"PropertyInspectorPath": "ui/codex-project.html",
-			"Controllers": [
-				"Keypad"
-			],
-			"States": [
-				{
-					"Image": "imgs/actions/codexproject/key",
-					"ShowTitle": false
-				}
-			],
-			"UserTitleEnabled": false
-		},
-		{
-			"Name": "Cursor Project (legacy)",
-			"UUID": "com.movingavg.switchboard.cursorproject",
-			"SupportedInMultiActions": false,
-			"Icon": "imgs/actions/cursorproject/icon",
-			"Tooltip": "Superseded by AI Project, which auto-detects the agent. Live face for an interactive Cursor CLI session; press to raise its terminal and exact tmux pane. Will be removed in a future release.",
-			"PropertyInspectorPath": "ui/cursor-project.html",
-			"Controllers": [
-				"Keypad"
-			],
-			"States": [
-				{
-					"Image": "imgs/actions/cursorproject/key",
 					"ShowTitle": false
 				}
 			],

@@ -1,13 +1,13 @@
 /**
- * WHAT IT'S FOR: the single place the five focus actions (AI Project, the three
- * superseded per-agent keys, and Focus tmux Window) take the shared raise key,
+ * WHAT IT'S FOR: the single place the two focus actions (AI Project and Focus
+ * tmux Window) take the shared raise key,
  * so a press that does not raise a window says so — on the deck and in the log —
  * instead of vanishing.
  *
- * Why it exists: the key is one literal string shared by all five actions, and
+ * Why it exists: the key is one literal string shared by both actions, and
  * `runExclusive` used to return `T | undefined`. Every focus handler returns
  * void, so a dropped press was indistinguishable from a successful one; no
- * caller alerted and no caller logged. When a holder wedged, all five keys went
+ * caller alerted and no caller logged. When a holder wedged, every focus key went
  * dead in silence and the only cure was restarting the plugin.
  *
  * A thin shell by design: what to say is decided by the pure, tested
@@ -43,7 +43,7 @@ async function perform(report: FocusReport, key: Pick<KeyAction, "showAlert">): 
 
 /**
  * Run one action's raise under {@link FOCUS_KEY}, reporting every way it can
- * fail to happen. `label` names the action in the log — there are five, and
+ * fail to happen. `label` names the action in the log — there are two, and
  * knowing which one wedged is the point of logging it.
  *
  * A raise that THROWS is reported and then rethrown, not swallowed: the caller's

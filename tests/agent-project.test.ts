@@ -1,6 +1,6 @@
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { deprecationBadge } from "../src/mac/deprecation.js";
 import {
 	type AgentHost,
 	type AgentInstance,
@@ -532,15 +532,30 @@ describe("Agent key face", () => {
 			expect(idle.size).toBe(1);
 		}
 	});
+});
 
-	/** This unified face replaces the three per-agent keys; it deliberately
-	 * carries no deprecation badge of its own. */
-	it("carries no deprecation badge", () => {
+/** The deprecation badge existed only for the three per-agent keys AI Project
+ * replaced; it was deleted with them in v2.0.0. Executing the import (rather
+ * than grepping for the file) is what proves no module can still load it. */
+describe("retired deprecation badge", () => {
+	it("src/mac/deprecation.ts must be gone", async () => {
+		// The file check rules out a restored file that merely fails to load; the
+		// import check proves no module path can still resolve it.
+		expect(existsSync(new URL("../src/mac/deprecation.ts", import.meta.url)), "src/mac/deprecation.ts must be gone").toBe(false);
+		await expect(import("../src/mac/deprecation.js"), "src/mac/deprecation.ts must not import").rejects.toThrow();
+	});
+
+	// The AI Project face never carried the badge. This pins its geometry, copied
+	// from the deleted deprecationBadge() (git history before v2.0.0), so a
+	// badge pasted back into the face is caught; it matches the path's `d`
+	// only, so a change of stroke colour alone would slip past it.
+	it("no AI Project face draws the retired badge's arrow", () => {
+		const BADGE_PATH = 'd="M2.6 12h4.4M4.9 9.8L7.1 12l-2.2 2.2"';
+		const base = { project: "/Users/j/code/switchboard", host: "tmux" as const, hot: false };
 		for (const kind of KINDS) {
-			const svg = buildAgentProjectKeyImage({ ...args, kind });
-				// Assert against the ACTUAL fragment: the badge is a bare SVG path,
-			// so text-based assertions pass whether or not it is present.
-			expect(svg).not.toContain(deprecationBadge());
+			for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
+				expect(buildAgentProjectKeyImage({ ...base, kind, state }), `${kind}/${state} must not draw the retired badge`).not.toContain(BADGE_PATH);
+			}
 		}
 	});
 });

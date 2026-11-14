@@ -14,8 +14,8 @@ import { cwd } from 'node:process';
 import fs, { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
 import { readdir, stat, open, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 
 /**!
  * @author Elgato
@@ -8893,99 +8893,119 @@ let CycleAppWindows = (() => {
 })();
 
 /**
- * Overlap-safe job coalescing for the polling actions. A poll tick and an
- * explicit "state just changed, repaint now" request can collide; the naive
- * `if (running) return` guard silently DROPS the explicit request, leaving a
- * freshly captured/raised key painting its old state for a full extra poll
- * cycle. This runner never overlaps the job and never loses a request: a
- * request during a run queues exactly one rerun (multiple requests coalesce
- * into that one), which starts as soon as the current run finishes — with the
- * job then reading the post-change state.
+ * WHAT IT'S FOR: the pure Codex CLI parsing layer that AI Project and Focus
+ * tmux rely on (through codex-scan.ts and agent-scan.ts): process identity,
+ * rollout-log state, lsof parsing, and `normalizeProjectPath`, which every
+ * agent module uses to compare folders. It began as the logic of the
+ * per-agent Codex Project key, which v2.0.0 retired.
+ *
+ * Test-only exports: `codexInstancesForProject`, `selectCodexInstance`,
+ * `LIST_CODEX_PANES_ARGS`, `parseCodexPanes` and `codexTmuxFocusArgs` lost
+ * their last production caller with that key (cursor-project.ts re-exports
+ * some of them under Cursor names). They stay, covered by tests, until the
+ * cleanup listed in TODO.md.
  */
-class CoalescedRunner {
-    job;
-    running = false;
-    pending = false;
-    constructor(job) {
-        this.job = job;
+/** Parse targeted `ps -o pid=,tty=,comm=,args=` output. */
+function parseCodexProcesses(output) {
+    const result = [];
+    for (const raw of output.split("\n")) {
+        const m = raw.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+        if (m === null)
+            continue;
+        const pid = Number.parseInt(m[1], 10);
+        if (!Number.isFinite(pid))
+            continue;
+        result.push({ pid, tty: m[2], comm: m[3], args: m[4] });
     }
-    /**
-     * Run the job, or — if it is already running — schedule one rerun after it
-     * finishes. Resolves when the run this call participated in has finished
-     * (for a queued rerun: immediately; the rerun still executes). A throwing
-     * job never wedges the runner.
-     */
-    async request() {
-        if (this.running) {
-            this.pending = true;
-            return;
+    return result;
+}
+function basename(path) {
+    return path.slice(path.lastIndexOf("/") + 1);
+}
+/** Cheap candidate gate. The rollout's `originator` is the authoritative
+ * interactive-vs-exec discriminator: rendered ps argv cannot distinguish the
+ * subcommand `review` from an initial prompt beginning with the word review. */
+function isInteractiveCodex(p) {
+    if (p.tty === "??" || basename(p.comm) !== "codex")
+        return false;
+    const words = p.args.trim().split(/\s+/);
+    return words.length > 0 && basename(words[0]) === "codex";
+}
+/** Parse lsof field output (`-Fpcfn`) without ever retaining file contents. */
+function parseLsofEntries(output) {
+    const entries = [];
+    let pid = null;
+    let fd = "";
+    for (const line of output.split("\n")) {
+        if (line.startsWith("p")) {
+            const n = Number.parseInt(line.slice(1), 10);
+            pid = Number.isFinite(n) ? n : null;
+            fd = "";
         }
-        this.running = true;
+        else if (line.startsWith("f")) {
+            fd = line.slice(1);
+        }
+        else if (line.startsWith("n") && pid !== null) {
+            entries.push({ pid, fd, name: line.slice(1) });
+        }
+    }
+    return entries;
+}
+function isRolloutPath(path) {
+    return /\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[^/]+\.jsonl$/.test(path);
+}
+/** Session UUID is the final UUID-like component before `.jsonl`. */
+function rolloutSessionId(path) {
+    return path.match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)?.[1] ?? "";
+}
+const BLOCKED_EVENTS = new Set([
+    "approval_request", "approval_requested", "request_user_input", "user_input_requested",
+    "elicitation_request",
+]);
+const UNKNOWN_TERMINALS = new Set([
+    "task_error", "task_failed", "task_aborted", "task_interrupted", "stream_error",
+]);
+/** Last relevant complete rollout record decides state. Unknown is deliberate. */
+function codexStateFromRolloutLines(lines) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line.includes('"type"'))
+            continue;
         try {
-            do {
-                this.pending = false;
-                try {
-                    await this.job();
-                }
-                catch {
-                    // The job owns its error reporting; a throw must not stop a
-                    // queued rerun or permanently wedge the runner.
-                }
-            } while (this.pending);
+            const row = JSON.parse(line);
+            if (row.type !== "event_msg")
+                continue;
+            const event = row.payload?.type ?? "";
+            if (event === "task_complete")
+                return "waiting";
+            if (BLOCKED_EVENTS.has(event))
+                return "blocked";
+            if (UNKNOWN_TERMINALS.has(event))
+                return "unknown";
+            if (event === "task_started")
+                return "working";
         }
-        finally {
-            this.running = false;
+        catch {
+            // A concurrent append or bounded partial record is not state evidence.
         }
     }
+    return "unknown";
 }
-/**
- * Adaptive poll gate: poll every tick while things are INTERESTING (a
- * terminal is frontmost, something is hot, Claude is working), every Nth
- * tick otherwise — most of the subprocess cost of polling is spent watching
- * nothing change. Pure.
- */
-function shouldPollThisTick(tick, interesting, idleEvery = 4) {
-    return interesting || tick % idleEvery === 0;
+/** Session metadata is at the head of every observed rollout. */
+function codexRolloutOriginator(lines) {
+    for (const line of lines) {
+        try {
+            const row = JSON.parse(line);
+            if (row.type === "session_meta")
+                return row.payload?.originator ?? "";
+        }
+        catch { /* partial record */ }
+    }
+    return "";
 }
-
-/**
- * WHAT IT'S FOR: the one place that draws the "there is a newer way to do
- * this" mark on the three per-agent project keys — Claude Project, Codex
- * Project and Cursor Project — which are superseded by the single AI Project
- * action. Those three faces are built by three separate, near-duplicate SVG
- * builders; putting the mark here means they cannot drift into three slightly
- * different badges.
- *
- * The badge is PURELY COSMETIC. It changes no state, no detection, no
- * behaviour: the three actions keep working exactly as before, and the badge
- * is only a hint to the operator that the key has a replacement. The
- * corresponding words — what to do about it — live in the property inspector
- * banner (`ui/lib/deprecated.js`); a 72×72 key has no room for a sentence.
- *
- * EXPECTED LIFETIME: this module is scaffolding for one deprecation cycle.
- * When the three superseded actions are deleted, delete this file wholesale
- * along with its three call sites — there is nothing here worth keeping.
- */
-/**
- * A right-pointing chevron-arrow to overlay on a 72×72 key face, marking the
- * key as superseded. Returns an SVG fragment (not a whole document) to be
- * concatenated into a builder's `<svg>…</svg>`.
- *
- * Placement: the free top-left corner, roughly x 2..8, y 9..15 — clear of the
- * host eyebrow (text centred at x=30 y=15, whose longest label "TERMINAL"
- * starts its ink near x≈8), the state glyph (x 53..69, y 4..21), the project
- * name (centred at x=36 y=40) and the bottom bar (y 57..71). The horizontal
- * extent is deliberately kept tighter than the free box so the longest eyebrow
- * still clears it.
- *
- * Hex colour only — the Stream Deck KEY rasterizer paints `hsl()` as BLACK
- * (documented gotcha; each of the three key-face test files asserts that no
- * `hsl(` literal survives). #6A716E is the muted grey already used for a
- * dimmed project name, so the mark reads as secondary to everything else.
- */
-function deprecationBadge() {
-    return (`<path d="M2.6 12h4.4M4.9 9.8L7.1 12l-2.2 2.2" fill="none" stroke="#6A716E" ` +
-        `stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`);
+function normalizeProjectPath(path) {
+    const trimmed = path.trim();
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
 
 /** Small shared SVG helpers used by the key/touchscreen image builders. */
@@ -9392,7 +9412,7 @@ function dotsSvg(count, activeIndex, hue) {
     return out;
 }
 /** Truncate a label so it fits the 200px touch strip. */
-function truncate$5(value, max = 16) {
+function truncate$2(value, max = 16) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 /**
@@ -9415,8 +9435,8 @@ function buildBackgroundSvg(opts) {
         `<rect width="200" height="100" fill="url(#g)"/>` +
         `<path d="M14 50l-7 6 7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
         `<path d="M186 50l7 6-7 6" fill="none" stroke="hsl(${hue},45%,72%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>` +
-        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$5(session.toUpperCase(), 20))}</text>` +
-        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$5(window))}</text>` +
+        `<text x="100" y="24" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.5" fill="hsl(${hue},45%,76%)">${escapeXml(truncate$2(session.toUpperCase(), 20))}</text>` +
+        `<text x="100" y="60" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${escapeXml(truncate$2(window))}</text>` +
         dotsSvg(count, activeIndex, hue) +
         badgeSvg +
         `</svg>`);
@@ -9449,249 +9469,529 @@ function buildAllWindowsFeedback(windows, current) {
 }
 
 /**
- * Pure logic for the "Claude Project" key: find Claude Code CLI instances on
- * the machine (any host — tmux, plain iTerm2, Terminal.app), decide their
- * working/waiting state, and render the live key face. The impure scanning
- * lives in claude-scan.ts; this module only parses and decides.
+ * WHAT IT'S FOR: one shared decision layer for the "agent project" keys, so a
+ * key that has captured a Claude Code, Codex or Cursor session in a folder can
+ * answer the same four questions — is there a session, is it working, is it
+ * blocked on me, or is it just sitting idle? — with the SAME rules whichever
+ * CLI it captured. Before this module each CLI had its own copy of that logic
+ * and the copies had drifted; the drift is what this module removes.
  *
- * Identity model: a button targets a PROJECT DIRECTORY. A claude process
- * belongs to it when its cwd matches. State comes FIRST from Claude Code's own
- * report (`claude agents --json`, see claude-agents.ts). The signals below are
- * the FALLBACK when that report is unavailable or does not list the pid:
- * the tmux pane title's spinner marker when the instance is tmux-hosted
- * (always readable via the tmux server), else the freshness of the newest
- * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
- * only while a session is actively working.
+ * The three CLIs are NOT interchangeable underneath, and the differences are
+ * load-bearing rather than cosmetic. Each was measured against a live session,
+ * and the comments below say what was observed rather than what seemed likely:
  *
- * Known limits (documented, not defects introduced here):
- * - Two claude sessions in the SAME cwd share a project transcript dir; the
- *   NEWEST .jsonl is read, so an idle session can briefly borrow a busy
- *   same-project session's "working". Exact pid→session-file correlation
- *   would need a per-pid lsof of open fds (cost); deferred while the common
- *   case is one session per project.
- * - While a session STREAMS its final text response under a ✳ title (no tool
- *   coming), the transcript momentarily shows a completed assistant turn, so
- *   a tmux key can read "waiting" for the few seconds of that stream. The
- *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
- *   us to an undocumented, version-fragile format — rejected as
- *   disproportionate to a transient, self-correcting misread.
- * - The CLI report can stick on `busy` after a parked mid-flight turn
- *   (claudeissues #87131, 2.1.220): the key stays blue until the session is
- *   used again. The report's JSON format also carries no stability promise.
+ *   - Codex records "I am waiting for your approval" in its own rollout log, so
+ *     a blocked Codex session is knowable from a file, on any host, with no
+ *     terminal scraping at all. Its `state` already carries `blocked`.
+ *   - Claude Code reports its own state through `claude agents --json`
+ *     (`status:"waiting"` = waiting on you), so a Claude the CLI listed is
+ *     blocked-authoritative on any host. Only when the CLI is unavailable does
+ *     Claude fall back to the rule below, shared with Cursor.
+ *   - An UNREPORTED Claude and Cursor write nothing that distinguishes "blocked on the
+ *     operator" from "busy working". The ONLY direct evidence is the prompt
+ *     drawn on the terminal — for Claude that is EITHER a tool approval OR a
+ *     choice prompt (a question, or a plan awaiting approval), which share no
+ *     wording — and the only terminal this plugin can read is a tmux pane. Outside tmux, "blocked" is simply not observable for
+ *     those two — see {@link blockedEvidenceFor}.
+ *   - Measured (history; still needed for the fallback scrape), and the reason
+ *     {@link decideAgentFace} exists in this form: Claude Code keeps its IDLE title marker (a "✳") on screen while its
+ *     approval prompt is up, so a blocked Claude session's file-derived state
+ *     reads `waiting`, not `working`. Cursor's blocked session has no
+ *     `turn_ended` record yet and so reads `working`. A rule that only upgrades
+ *     a `working` session to `blocked` is therefore correct for Cursor and
+ *     unreachable for Claude.
+ *
+ * Vocabulary used throughout (these recur, so they are defined once here):
+ *   - "instance" — one running agent process this plugin has identified,
+ *     with the tty it owns and the folder it was started in. Identifying them
+ *     is the impure scanners' job; this module only decides.
+ *   - "face" — what the key should PAINT: the composed verdict, which is not
+ *     the same thing as an instance's own state (an incomplete scan can force
+ *     `unknown` over a perfectly confident instance).
+ *   - "hot" — this key's project is the one the operator is looking at now.
+ *   - "unseen" — a turn was observed WORKING and later observed finished while the
+ *     key was not hot, and the key has not been hot since. Its role is the deck's
+ *     unread mark: it answers "did something finish while I was looking elsewhere?",
+ *     which no single-tick face can answer. It is memory, not an observation, so it
+ *     is armed only by a transition this plugin actually watched happen — a key that
+ *     first appears next to an already-idle agent can never claim one.
  */
 /**
- * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
- * avoids `command=` (full argv extraction costs ~0.13s CPU per call across
- * all processes); the argv check needed for shell-busy detection runs as a
- * TARGETED second pass over claude children only. NOTE: enumerate with ps,
- * not pgrep — BSD pgrep silently omits its own ancestor processes.
+ * What kind of evidence a `blocked` verdict could rest on for this kind+host.
+ *
+ * Callers use it to decide whether scraping a pane is worth doing at all, and
+ * to avoid promising a "needs you" light they cannot actually deliver.
  */
-function parsePsProcs(output) {
-    const procs = [];
-    for (const rawLine of output.split("\n")) {
-        const line = rawLine.trim();
-        if (line === "")
-            continue;
-        const fields = line.split(/\s+/);
-        if (fields.length < 4)
-            continue;
-        const pid = Number.parseInt(fields[0], 10);
-        const ppid = Number.parseInt(fields[1], 10);
-        if (!Number.isFinite(pid) || !Number.isFinite(ppid))
-            continue;
-        procs.push({ pid, ppid, tty: fields[2], comm: fields.slice(3).join(" ") });
-    }
-    return procs;
-}
-/** claude CLI processes (comm basename "claude") with a controlling tty. */
-function claudesFrom(procs) {
-    return procs
-        .filter((p) => p.comm.slice(p.comm.lastIndexOf("/") + 1) === "claude" && p.tty !== "??")
-        .map((p) => ({ pid: p.pid, tty: `/dev/${p.tty}` }));
+function blockedEvidenceFor(kind, host, reported) {
+    // Codex reports blocking in its own rollout log, so it needs no terminal and
+    // works outside tmux too.
+    if (kind === "codex")
+        return "authoritative";
+    // A Claude whose state came from `claude agents --json` reports blocked
+    // itself (`status:"waiting"`), on any host, so its pane is never scraped.
+    if (kind === "claude" && reported)
+        return "authoritative";
+    // Claude and Cursor are only observable through the pane text, and the only
+    // terminal this plugin can read is a tmux pane.
+    return host === "tmux" ? "terminal" : "unavailable";
 }
 /**
- * Parse targeted `ps -o pid=,ppid=,command= -p <children>` output and return
- * the PARENT pids that have a live shell-snapshot child — Claude Code runs
- * every Bash tool (foreground or backgrounded) as a direct child via its
- * shell-snapshot mechanism, so this is true exactly while "N shells still
- * running". No shell-name assumptions: the argv marker is the invariant.
+ * What should a "blocked" probe read when there is no pane to scrape?
+ *
+ * A missing pane is ambiguous on its own: it means "no session here" just as
+ * often as it means "the pane LISTING itself failed this tick". The two must
+ * not paint the same face. `panesOk` tells them apart:
+ *
+ *   - Both `list-panes` and `list-clients` failed: indistinguishable from a
+ *     machine with no tmux server at all, which is a supported first-class
+ *     case (`runTmux` reports that failure the same way it reports "no tmux
+ *     server"). The honest answer here is `"clear"` — there was never a
+ *     question to answer.
+ *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
+ *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
+ *     any kind whose blocked verdict can ONLY come from scraping a pane
+ *     (`blockedEvidenceFor(kind, "tmux", reported) === "terminal"` — an unreported
+ *     claude, and cursor).
+ *     For those, "clear" would be a confident negative on a question that was
+ *     never actually asked; the honest answer is `"failed"`. Codex is
+ *     unaffected either way — its blocked verdict never depends on a pane.
  */
-function busyParentsFrom(confirmOutput) {
-    const busy = new Set();
-    for (const rawLine of confirmOutput.split("\n")) {
-        const line = rawLine.trim();
-        if (line === "")
-            continue;
-        const fields = line.split(/\s+/);
-        if (fields.length < 3)
-            continue;
-        const ppid = Number.parseInt(fields[1], 10);
-        if (Number.isFinite(ppid) && line.includes("shell-snapshots/snapshot-")) {
-            busy.add(ppid);
+function blockedProbeForMissingPane(kind, panesOk, clientsOk, reported) {
+    if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux", reported) === "terminal")
+        return "failed";
+    return "clear";
+}
+/** Claude Code's approval question. Two different wordings were measured —
+ * "Do you want to proceed?" for a bash approval and "Do you want to make this
+ * edit to <file>?" for an edit approval — so the matcher keys on the shared
+ * stem rather than on either full sentence. `.` does not cross newlines, so
+ * this necessarily matches WITHIN one line of pane text. */
+const CLAUDE_ASK = /Do you want to .*\?/;
+/**
+ * Claude Code's OTHER way of blocking on you: the choice prompt it draws for
+ * `AskUserQuestion` — and, on inference from the CLI binary's strings rather
+ * than any live capture, for plan approval.
+ *
+ * This is a second, disjoint shape, not a variation on the approval wording.
+ * Measured (claude 2.1.236, tmux, 2026-08-29, two independent captures): the
+ * question can read "Do you PREFER red or blue?" and the first option can be
+ * "1. Red", so {@link CLAUDE_ASK} and the "1. Yes" choice line both miss it
+ * entirely. It matters more than it sounds: under `--permission-mode auto` the
+ * tool approvals auto-accept, so a question is often the ONLY thing that still
+ * stops the operator — and it was painting the key blue (working).
+ *
+ * Both patterns are LINE-ANCHORED, and that is the point. Three bare substrings
+ * anywhere in the pane would match a README, a test log or a docs page that
+ * merely discusses the prompt; requiring the footer's two halves on ONE line and
+ * the discriminator as a NUMBERED OPTION line ties the match to the prompt's
+ * actual layout. It narrows a real false-amber path rather than only documenting
+ * it. A test pins the prose case.
+ *
+ * "Chat about this" is the discriminator: it is what separates a prompt AWAITING
+ * A DECISION from Claude's other selectable lists, where the operator is already
+ * interacting. All three of those were captured on the same day and none carries
+ * it, nor the "Enter to select" footer:
+ *
+ *   - folder-trust prompt — footer "Enter to confirm · Esc to cancel". The verb
+ *     is CONFIRM, not select. This is the sharp one: it also draws a numbered
+ *     "1. Yes" list, so it is the closest thing to a false positive on the deck.
+ *   - `--resume` session picker — footer "… Type to search · Esc to cancel".
+ *   - slash-command menu — no footer of this shape at all.
+ *
+ * FAILURE DIRECTION, deliberately chosen and unchanged from the approval matcher:
+ * if a future release rewraps the footer onto two lines or renumbers the option,
+ * these stop matching and amber stops APPEARING. They do not start lying.
+ */
+const CLAUDE_CHOICE_FOOTER = /^\s*Enter to select\b.*\bEsc to cancel\s*$/m;
+const CLAUDE_CHOICE_OPTION = /^\s*\d+\.\s+Chat about this\s*$/m;
+/**
+ * Does this terminal pane show the agent holding for the operator right now?
+ *
+ * "Holding" is broader than an approval. For Claude Code it is EITHER a tool
+ * approval OR a choice prompt — a question, or a plan awaiting approval — and
+ * the two share no wording, so each is matched separately. Under
+ * `--permission-mode auto` the approvals auto-accept and the choice prompt is
+ * the one that actually stops the operator.
+ *
+ * Matching is deliberately narrow, and the guarantee is narrow to match:
+ * unrecognised wording yields false, so a prompt phrased in a way we have not
+ * measured leaves the key on its file-derived state instead of inventing an
+ * amber light. It does NOT guarantee the reverse — this reads the pane's
+ * visible text, so recognised prompt wording appearing in ordinary output (a
+ * README being catted, a transcript being replayed) CAN produce a false
+ * `blocked`. The markers below were chosen to make that unlikely, not
+ * impossible.
+ *
+ * Callers must capture the VISIBLE screen only, never scrollback: an
+ * already-answered prompt lingers in history, and matching it would hold the
+ * key amber while the agent is busy working.
+ */
+function paneShowsAgentPrompt(kind, paneText) {
+    switch (kind) {
+        case "codex":
+            // Codex's own log already says `blocked` (see blockedEvidenceFor), so
+            // there is nothing to gain by scraping and a false positive to lose.
+            return false;
+        case "claude": {
+            // TWO disjoint shapes, because Claude blocks on you in two different
+            // ways and they share no wording. Either one is enough.
+            //
+            // (a) The TOOL APPROVAL. The question alone is too ordinary a sentence
+            // to trust; Claude renders a numbered choice list directly beneath it,
+            // and both measured wordings carry "1. Yes".
+            //
+            // NEGATIVE CASE (measured): the folder-trust prompt — "Quick safety
+            // check: Is this a project you created or one you trust?" with "1. Yes,
+            // I trust this folder" — carries the same choice line but is NOT an
+            // approval to act on, and must not turn the key amber. It is excluded by
+            // the question stem: it never says "Do you want to". A test pins this.
+            if (CLAUDE_ASK.test(paneText) && paneText.includes("1. Yes"))
+                return true;
+            // (b) The CHOICE PROMPT — a question, or (inferred) a plan awaiting
+            // approval. See {@link CLAUDE_CHOICE_FOOTER} for why both are anchored to
+            // their lines and which non-blocking pickers were measured against them.
+            return CLAUDE_CHOICE_FOOTER.test(paneText) && CLAUDE_CHOICE_OPTION.test(paneText);
         }
+        case "cursor":
+            // The inline status marker is specific enough to stand on its own.
+            // "Run this command?" is a phrase that could plausibly appear in
+            // scrolled output, so it only counts alongside Cursor's choice line.
+            if (paneText.includes("Waiting for approval"))
+                return true;
+            return paneText.includes("Run this command?") && paneText.includes("Run (once)");
     }
-    return busy;
 }
-/** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
-function parseLsofCwds(output) {
-    const cwds = new Map();
-    let pid = null;
-    for (const line of output.split("\n")) {
-        if (line.startsWith("p")) {
-            const n = Number.parseInt(line.slice(1), 10);
-            pid = Number.isFinite(n) ? n : null;
-        }
-        else if (line.startsWith("n") && pid !== null) {
-            cwds.set(pid, line.slice(1));
-        }
+/** `agentForFocusedTty` with its two null cases told apart, for the capture
+ * gesture's refusal log. Same rule: exactly one match or no instance. */
+function matchFocusedTty(instances, focusedTty) {
+    const matches = instances.filter((i) => i.tty === focusedTty);
+    if (matches.length === 1)
+        return { instance: matches[0] };
+    return { refusal: matches.length === 0 ? "no agent" : "two or more agents" };
+}
+/** The capture refusal's log line for a reason from `matchFocusedTty` or the
+ * tmux branch of capture. */
+function captureRefusalLine(refusal) {
+    switch (refusal) {
+        case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
+        case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
+        case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
+        case "tmux pane listing failed": return "AI Project: refusing capture — tmux listed its clients but not its panes.";
     }
-    return cwds;
 }
-/** ~/.claude/projects directory name for a project path: every
- * non-alphanumeric character becomes "-" (verified transform). */
-function projectSlug(projectPath) {
-    return projectPath.replace(/[^A-Za-z0-9]/g, "-");
-}
-/** Normalize a configured project path for matching (trailing slash off). */
-function normalizeProjectPath$1(p) {
-    const trimmed = p.trim();
-    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
-}
-/** The instances whose cwd is exactly the target project. */
-function instancesForProject(instances, projectPath) {
-    const target = normalizeProjectPath$1(projectPath);
-    return instances.filter((i) => normalizeProjectPath$1(i.cwd) === target);
-}
-/** A transcript younger than this is "actively working". */
-const TRANSCRIPT_FRESH_MS = 30_000;
-/**
- * Decide one Claude session's state. Claude Code's own report
- * (`claude agents --json`) outranks every inferred signal: reported working
- * is working, reported blocked is blocked, and reported idle is waiting
- * EXCEPT that a live shell-snapshot child still reads working ("Brewed … · 1
- * shell still running"). An owing transcript does NOT override reported idle:
- * that is the /login false positive. With no report (or an unrecognised
- * status) the older chain applies: title spinner, shell child, owing
- * transcript, idle title, fresh transcript mtime.
- */
-function claudeVerdict(args) {
-    if (args.reported === "working")
-        return "working";
-    if (args.reported === "blocked")
-        return "blocked";
-    if (args.reported === "waiting")
-        return args.shellBusy === true ? "working" : "waiting";
-    if (args.titleWorking === true)
-        return "working"; // braille spinner: fast-path
-    if (args.shellBusy === true)
-        return "working";
-    // The PRECISE transcript signal (Claude owes the next turn) overrides the ✳
-    // title — that is the Brewing fix. A mere fresh mtime does NOT override ✳,
-    // or every key would read "working" for ~30s after each turn completes.
-    if (args.transcriptWorking === true)
-        return "working";
-    // ✳ title with a quiet, non-owing transcript = genuinely idle at the prompt.
-    if (args.titleWorking === false)
-        return "waiting";
-    // No readable title (non-tmux host): a fresh transcript means streaming.
-    if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
-        return "working";
-    }
-    return "waiting";
+/** Text from outside the plugin (an app's bundle id, a process's cwd) made
+ * safe to put in a log line. JSON string escaping turns U+0000-U+001F (LF and
+ * CR included) into visible escapes; DEL, NEL and the Unicode line and
+ * paragraph separators (U+007F, U+0085, U+2028, U+2029) are escaped on top,
+ * since some log viewers break lines on them. Stream Deck's file log ends a
+ * record at LF, so the text cannot start a forged record there. Quotes and
+ * backslashes are escaped too; nothing is removed. */
+function logSafe(text) {
+    return JSON.stringify(text)
+        .slice(1, -1)
+        .replace(/[\u007f\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 /**
- * The legacy key's project state: {@link claudeVerdict} with `blocked` folded
- * into `waiting` (that key's `ClaudeState` has no blocked; its white means
- * "not working").
+ * Should the AI Project key's poller stay at full cadence this tick, or is it
+ * safe to drop to the idle-gate's reduced rate?
+ *
+ * MEASURED, and the reason `blockedProbes` is part of this decision and not
+ * just `instances`: Claude Code keeps its idle "✳" title marker on screen
+ * while its own approval prompt is up, so a BLOCKED Claude's `instance.state`
+ * reads `"waiting"`, never `"working"` or `"blocked"` — a version of this
+ * check that only looked at instance state would drop to a quarter of full
+ * cadence at exactly the moment the operator's approval is most time-
+ * sensitive, and the amber light could sit stale for up to 4 poll periods
+ * (~10s) instead of one (~2.5s). Folding in every kind's own blocked-probe
+ * verdict for the tick closes that gap for every kind, not just Claude.
+ * `"failed"` counts as interesting too, so a broken probe is re-tried at full
+ * speed rather than quietly left broken for several cycles.
  */
-function projectClaudeState(args) {
-    if (!args.present)
+function agentTickInteresting(args) {
+    return (args.focusedTty !== "" ||
+        args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
+        args.blockedProbes.some((p) => p !== "clear") ||
+        args.unseenActionable);
+}
+/**
+ * Compose the face a key should paint from every piece of evidence at once.
+ *
+ * Pure and tested because it is where the honesty rules live: a key must never
+ * look confident on thin evidence. Three cases are easy to get wrong and are
+ * settled here rather than in each action shell:
+ *
+ *   - A scan that could not identify every candidate process is not proof that
+ *     the ONE session it found is the only one in this folder. Without a
+ *     captured session id — the thing that would make it unambiguous — the
+ *     honest face is `unknown`, not that session's state.
+ *   - Once a key has captured a session id that id is binding. If a trustworthy
+ *     scan no longer finds it, the answer is "no target", never the neighbour
+ *     that happens to share the folder.
+ *   - A visible approval prompt outranks the file-derived state. MEASURED: a
+ *     blocked Claude Code session still shows its idle "✳" marker and so reads
+ *     `waiting`, while a blocked Cursor session reads `working`. Requiring
+ *     `working` here — as the Cursor-only predecessor did — would make the
+ *     branch unreachable for Claude and silently kill the whole feature. The
+ *     prompt on screen is direct evidence either way.
+ *
+ * `blockedOnPane` is only ever true for claude and cursor: codex carries its own
+ * `blocked` in `instanceState` and is never scraped ({@link paneShowsAgentPrompt}).
+ */
+function decideAgentFace(args) {
+    if (!args.hasTarget)
         return "none";
-    const verdict = claudeVerdict(args);
-    return verdict === "blocked" ? "waiting" : verdict;
+    if (args.instanceState === null) {
+        if (args.scanStatus !== "ok")
+            return "unknown";
+        // A trustworthy scan that did not turn up the captured session means that
+        // session has exited — "no target". Reporting `unknown` because OTHER
+        // sessions share the folder would contradict the binding-capture rule:
+        // those neighbours are not this key's.
+        if (args.hasCapturedId)
+            return "none";
+        return args.matchCount > 1 ? "unknown" : "none";
+    }
+    // `scanStatus` here is THIS kind's own probe (see kindTrusted). If it failed,
+    // nothing about this session was actually observed this tick — a captured id
+    // disambiguates WHICH session is meant, it does not make an unobserved one
+    // trustworthy. So the exemption a captured id used to buy is gone.
+    if (args.scanStatus !== "ok")
+        return "unknown";
+    // A visible prompt is direct evidence and outranks the file-derived state.
+    // It must upgrade from "waiting" as well as "working": Claude Code keeps its
+    // IDLE title marker while its approval prompt is on screen (measured), so
+    // gating this on "working" alone would make it unreachable for Claude.
+    if (args.blockedProbe === "blocked")
+        return "blocked";
+    // The probe failed, so "is it waiting on the operator?" is unanswered — and
+    // that is exactly the question this key exists to answer. Say so.
+    if (args.blockedProbe === "failed")
+        return "unknown";
+    return args.instanceState;
 }
-const MONO$4 = "Menlo, Monaco, monospace";
-function truncate$4(value, max) {
+/**
+ * The identity a memory belongs to: the exact triple a key is bound to.
+ *
+ * Any change to it — a re-teach, a hand-typed project path, a key that has not
+ * been taught yet — produces a different string and therefore a fresh memory.
+ */
+function agentBindingKey(kind, project, sessionId) {
+    return `${kind ?? "-"}|${project}|${sessionId}`;
+}
+/** A memory that has observed nothing yet. Cold start lives here: with
+ * `sawActivity` false there is no transition to complete, so the very first
+ * tick of a key sitting next to an already-idle agent cannot arm the mark. */
+function initialTurnMemory(binding) {
+    return { binding, instancePid: 0, sawActivity: false, unseen: false };
+}
+/**
+ * Advance the unread-mark memory by one observed tick.
+ *
+ * The exact guarantee, which the documentation must not round up: the mark says
+ * *the most recently completed turn finished while you were not looking at this
+ * session, and you have not looked since*. It does NOT say the session has
+ * unread output in any general sense, and it does not survive a new turn —
+ * starting more work supersedes the previous result (an operator decision;
+ * the cost is that a turn started by someone the plugin cannot see, such as a
+ * second tmux client over ssh, silently discards the earlier mark).
+ *
+ * The other limit, which the user-facing text also has to state: this is a
+ * SAMPLED signal. A turn that starts and finishes between two polls is never
+ * observed working, so it leaves no mark. The mark reports turns the plugin
+ * watched run, not every turn that happened.
+ *
+ * Order matters in one place: `hot` is applied LAST, so being at the terminal
+ * dismisses the mark whatever this tick's face turned out to be — including an
+ * `unknown` face, where the honest reading is that we could not check but the
+ * operator is demonstrably right there.
+ */
+function trackAgentTurn(prev, obs) {
+    // A commit for a different target is not this memory's business. This is
+    // also the whole concurrency story: a refresh that started before a capture
+    // changed the key arrives carrying the OLD binding and resets instead of
+    // merging, so no lock is needed between the poll and the press paths.
+    const rebound = prev.binding === obs.binding ? prev : initialTurnMemory(obs.binding);
+    // A pid of 0 means "nothing was selected this tick", which is silence, not a
+    // change — the memory must survive a tick that could not see the session.
+    // A DIFFERENT pid is a different process, and its predecessor's turn is not
+    // its own however identical the binding looks.
+    const base = obs.pid !== 0 && rebound.instancePid !== 0 && rebound.instancePid !== obs.pid
+        ? initialTurnMemory(obs.binding)
+        : rebound;
+    const pid = obs.pid !== 0 ? obs.pid : base.instancePid;
+    let next;
+    switch (obs.face) {
+        case "working":
+            // The only edge that proves a turn ran.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: true, unseen: false };
+            break;
+        case "blocked":
+            // Preserves the evidence, never creates it (see `sawActivity`), and
+            // clears the mark because reaching an approval prompt means a turn is
+            // in flight again.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: base.sawActivity, unseen: false };
+            break;
+        case "waiting":
+            // The turn ended. Arm only if we actually watched it run, and spend
+            // the evidence so a second idle tick cannot re-arm from the same turn.
+            next = { binding: obs.binding, instancePid: pid, sawActivity: false, unseen: base.unseen || base.sawActivity };
+            break;
+        case "none":
+            // The session is gone. A mark on a dead session could never be
+            // dismissed — pressing the key raises nothing — so it must not exist.
+            next = initialTurnMemory(obs.binding);
+            break;
+        case "unknown":
+            // Transparent for "could not look", reset for "no longer know which
+            // session this is" — the distinction F002 of the plan review turned on.
+            next = obs.ambiguous ? initialTurnMemory(obs.binding) : { ...base, binding: obs.binding, instancePid: pid };
+            break;
+    }
+    return obs.hot ? { ...next, unseen: false } : next;
+}
+/**
+ * Is this tick's `unknown` face caused by not knowing WHICH session the key
+ * watches, rather than by a probe that could not answer?
+ *
+ * Mirrors the `matchCount > 1` branch of {@link decideAgentFace} exactly: a
+ * trustworthy scan, no captured session id to disambiguate with, nothing
+ * selected, and more than one live session in the folder. That is reachable in
+ * normal use — Claude Code exposes no session id, so two Claude sessions in one
+ * project produce it — and it is the one `unknown` that must forget history.
+ */
+function agentUnknownIsAmbiguity(args) {
+    return args.scanStatus === "ok" && !args.hasCapturedId && !args.instanceSelected && args.matchCount > 1;
+}
+/**
+ * Should a refresh pass throw away what it computed for one key?
+ *
+ * A pass reads each key's settings, spends several hundred milliseconds on
+ * probes, and only then commits. Two things can happen in that window and both
+ * make the result worthless rather than merely late:
+ *
+ *   - the key disappeared (a page switch), so committing would leave state
+ *     behind for a key nobody can see; or
+ *   - the operator pressed it — a capture changed what the key means, or a
+ *     successful raise means they are now AT the session and have answered the
+ *     very question the unread mark was asking.
+ *
+ * The generation must be sampled before that key's settings are read, not
+ * after: sampling it later lets a press that lands between the two go
+ * undetected, because it is already counted in the generation while the
+ * settings still describe the world before it.
+ */
+function commitIsStale(args) {
+    return !args.stillVisible || args.genAtRead !== args.genNow;
+}
+/**
+ * Does a key's unread mark deserve the full poll cadence this tick?
+ *
+ * Only when the mark is BOTH armed and dismissible: the face is `waiting`, so
+ * the session is really there and going to it would clear the mark. A mark
+ * carried across an `unknown` face is remembered history on a target we cannot
+ * currently see, and letting that hold the poller at 2.5s would mean one broken
+ * probe pins every visible key at full rate for as long as it stays broken.
+ */
+function unseenIsActionable(memory, face) {
+    return memory.unseen && face === "waiting";
+}
+function projectBasename(path) {
+    const p = normalizeProjectPath(path);
+    return p.slice(p.lastIndexOf("/") + 1) || "?";
+}
+function truncate$1(value, max) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-/** Last path segment as the display name ("" -> "?"). */
-function projectBasename$3(projectPath) {
-    const normalized = normalizeProjectPath$1(projectPath);
-    const base = normalized.slice(normalized.lastIndexOf("/") + 1);
-    return base || "?";
+const MONO$1 = "Menlo, Monaco, monospace";
+/** The unread mark's red. Not a state colour — see {@link buildAgentProjectKeyImage}. */
+const UNREAD_RED = "#FF4A4A";
+/** Twelve positions around the state glyph. The glyphs are close to
+ * rotationally symmetric at key size, so spinning them collapses to a wobble
+ * you cannot see; an orbiting dot gives 12 genuinely distinct frames. */
+const ORBIT$1 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
+/** The top-right state glyph, one shape per kind, so a crowded deck says at a
+ * glance WHICH agent a key captured and not merely that it captured one. */
+function stateGlyph(kind, color) {
+    switch (kind) {
+        case "claude":
+            // Claude's coral spark/asterisk.
+            return `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none"/>`;
+        case "codex":
+            // Codex's nested square.
+            return `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
+        case "cursor":
+            // Cursor's arrow pointer.
+            return `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+    }
 }
-/** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
-const ORBIT$4 = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
+/** The small mark at the bar's left end — the same shape as the state glyph,
+ * so the key still identifies its agent when there is nothing to report. */
+function footMark(kind, color) {
+    switch (kind) {
+        case "claude":
+            return `<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" stroke="${color}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
+        case "codex":
+            return `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${color}" stroke-width="1.2"/>`;
+        case "cursor":
+            return `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${color}" stroke-width="1.1" stroke-linejoin="round"/>`;
+    }
+}
 /**
- * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
- * project name in mono (hue seeded per project, so each project wears a
- * stable colour), host as the eyebrow, the status bar lit when keystrokes
- * would land in that session, and the Claude spark (amber turning = working,
- * white still = waiting). No claude process → dashed bar, no spark. Hex
- * colours only — the key rasterizer paints hsl() black.
+ * The unified live key face, 72x72, on the shared ink ground.
+ *
+ * Hex colours ONLY — the KEY rasterizer paints `hsl()` as solid black (the
+ * touchscreen pixmap pipeline renders it fine), so every hue goes through
+ * {@link hslToHex}; a unit test asserts no `hsl(` literal survives for any
+ * kind/state/hot/unseen combination. The project name is XML-escaped and
+ * truncated to what fits the key.
+ *
+ * The unread mark is a stripe down the LEFT EDGE rather than a change of ground
+ * or state colour, and that is a deliberate constraint, not a style preference:
+ * the deck runs one colour language — blue working, amber waiting on you, white
+ * idle — and amber is the loudest thing on it because a blocked agent needs you
+ * now. An unread finished turn is less urgent than that, so it gets its own
+ * layer instead of a fourth state colour, and the face underneath keeps saying
+ * what the session is doing. Measured at 216px through inkscape: 4px clears
+ * both the longest project name and the foot bar, and a corner dot does not —
+ * it collides with the "TERMINAL" eyebrow.
  */
-function buildClaudeProjectKeyImage(args) {
-    const name = truncate$4(projectBasename$3(args.project), 9);
-    const hue = sessionHue(projectBasename$3(args.project));
-    const spin = args.spin ?? 0;
-    let bar;
-    let nameFill;
-    let eyebrowFill = "";
-    if (args.claude === "none") {
-        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
-        nameFill = "#6A716E";
-    }
-    else if (args.hot) {
-        bar =
-            `<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
-                `<stop offset="0" stop-color="${hslToHex(hue, 62, 46)}"/>` +
-                `<stop offset="1" stop-color="${hslToHex(hue, 66, 36)}"/>` +
-                `</linearGradient></defs>` +
-                `<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
-                `<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
-        nameFill = "#FFFFFF";
-        eyebrowFill = hslToHex(hue, 55, 72);
-    }
-    else {
-        bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-        nameFill = "#A6ADA9";
-        eyebrowFill = hslToHex(hue, 50, 70);
-    }
-    // Anchored at x=30, not center: the longest host label ("TERMINAL") must
-    // clear the Claude spark in the top-right corner.
+function buildAgentProjectKeyImage(args) {
+    const base = projectBasename(args.project);
+    const name = truncate$1(base, 9);
+    const hue = sessionHue(base);
+    const active = args.state !== "none";
+    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
+    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
+    const bar = !active
+        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
+        : args.hot
+            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
+            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
+    // Anchored at x=30, not centre: the longest host label ("TERMINAL") must
+    // clear the state glyph in the top-right corner.
     const eyebrow = args.host
-        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$4}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate$4(args.host.toUpperCase(), 8))}</text>`
+        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>`
         : "";
-    let spark = "";
-    if (args.claude !== "none") {
-        const color = args.claude === "working" ? "#F0A63C" : "#F2FFF6";
-        const angle = args.claude === "working" ? (spin % 12) * 30 : 0;
-        spark =
-            `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
-                `stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
-                `transform="rotate(${angle} 61 12)"/>`;
-        if (args.claude === "working") {
-            // The star is 6-fold symmetric, so its rotation collapses to a
-            // two-frame wobble — motion you cannot see at key size. The orbiting
-            // dot gives 12 genuinely distinct frames per revolution.
-            const [ox, oy] = ORBIT$4[spin % 12];
-            spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
+    let glyph = "";
+    if (active) {
+        glyph = stateGlyph(args.kind, color);
+        if (args.state === "working") {
+            const [x, y] = ORBIT$1[(args.spin ?? 0) % ORBIT$1.length];
+            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
+        }
+        // The hollow-outline glyphs get an amber core when blocked. Claude's spark
+        // is skipped: its three strokes already cross at exactly this point, so a
+        // dot there would only thicken the join. Its whole spark is amber instead.
+        if (args.state === "blocked" && args.kind !== "claude") {
+            glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
         }
     }
-    // tmux identity mark's sibling: a small spark outline at the bar's left
-    // end marks this as a Claude key even when idle.
-    const mark = `<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" ` +
-        `stroke="${args.claude === "none" ? "#8B9490" : args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70)}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
-    return (`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
-        `<rect width="72" height="72" fill="#0F1211"/>` +
-        // Deprecation marker — superseded by AI Project; remove with this action.
-        deprecationBadge() +
-        eyebrow +
-        spark +
-        `<text x="36" y="40" text-anchor="middle" font-family="${MONO$4}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
-        bar +
-        mark +
-        `</svg>`);
+    const mark = footMark(args.kind, active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490");
+    // Painted last so nothing can overdraw it, and stopped at y=57 so it never
+    // touches the foot bar, whose one meaning is "your keystrokes reach this
+    // session" — the exact condition under which this mark cannot be showing.
+    const unread = args.unseen ? `<rect x="0" y="0" width="4" height="57" fill="${UNREAD_RED}"/>` : "";
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}${unread}</svg>`;
 }
 
 /**
@@ -9814,8 +10114,8 @@ function reportedState(status) {
     }
 }
 /** True for a state the CLI actually decided. Such an instance needs no
- * fallback signal, so no transcript is read for it (agent-scan.ts and the
- * legacy Claude Project key both gate their transcript read on this). */
+ * fallback signal, so no transcript is read for it (agent-scan.ts gates its
+ * transcript read on this). */
 function isRecognisedReport(r) {
     return r === "working" || r === "blocked" || r === "waiting";
 }
@@ -9841,6 +10141,155 @@ function agentsSourceLogLine(prev, next, reason) {
         return { level: "info", message: "Claude state: claude agents --json available again" };
     }
     return null;
+}
+
+/**
+ * WHAT IT'S FOR: the pure Claude Code parsing and state layer that AI Project
+ * and Focus tmux rely on (through claude-scan.ts and agent-scan.ts): it parses
+ * the ps/lsof output that finds Claude Code CLI instances on any host (tmux,
+ * plain iTerm2, Terminal.app) and decides each one's state
+ * ({@link claudeVerdict}). The impure scanning lives in claude-scan.ts; this
+ * module only parses and decides. It began as the logic of the per-agent
+ * Claude Project key, which v2.0.0 retired.
+ *
+ * Test-only exports: `projectClaudeState`, `instancesForProject` and
+ * `projectBasename` lost their last production caller with that key. They
+ * stay, covered by tests, until the cleanup listed in TODO.md.
+ *
+ * Identity model: a button targets a PROJECT DIRECTORY. A claude process
+ * belongs to it when its cwd matches. State comes FIRST from Claude Code's own
+ * report (`claude agents --json`, see claude-agents.ts). The signals below are
+ * the FALLBACK when that report is unavailable or does not list the pid:
+ * the tmux pane title's spinner marker when the instance is tmux-hosted
+ * (always readable via the tmux server), else the freshness of the newest
+ * transcript .jsonl under ~/.claude/projects/<slug>/ — verified to advance
+ * only while a session is actively working.
+ *
+ * Known limits (documented, not defects introduced here):
+ * - Two claude sessions in the SAME cwd share a project transcript dir; the
+ *   NEWEST .jsonl is read, so an idle session can briefly borrow a busy
+ *   same-project session's "working". Exact pid→session-file correlation
+ *   would need a per-pid lsof of open fds (cost); deferred while the common
+ *   case is one session per project.
+ * - While a session STREAMS its final text response under a ✳ title (no tool
+ *   coming), the transcript momentarily shows a completed assistant turn, so
+ *   a tmux key can read "waiting" for the few seconds of that stream. The
+ *   robust fix (parse Claude Code's stop_reason/message-id internals) couples
+ *   us to an undocumented, version-fragile format — rejected as
+ *   disproportionate to a transient, self-correcting misread.
+ * - The CLI report can stick on `busy` after a parked mid-flight turn
+ *   (claudeissues #87131, 2.1.220): the key stays blue until the session is
+ *   used again. The report's JSON format also carries no stability promise.
+ */
+/**
+ * Parse cheap `ps -axo pid=,ppid=,tty=,comm=` output. This deliberately
+ * avoids `command=` (full argv extraction costs ~0.13s CPU per call across
+ * all processes); the argv check needed for shell-busy detection runs as a
+ * TARGETED second pass over claude children only. NOTE: enumerate with ps,
+ * not pgrep — BSD pgrep silently omits its own ancestor processes.
+ */
+function parsePsProcs(output) {
+    const procs = [];
+    for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split(/\s+/);
+        if (fields.length < 4)
+            continue;
+        const pid = Number.parseInt(fields[0], 10);
+        const ppid = Number.parseInt(fields[1], 10);
+        if (!Number.isFinite(pid) || !Number.isFinite(ppid))
+            continue;
+        procs.push({ pid, ppid, tty: fields[2], comm: fields.slice(3).join(" ") });
+    }
+    return procs;
+}
+/** claude CLI processes (comm basename "claude") with a controlling tty. */
+function claudesFrom(procs) {
+    return procs
+        .filter((p) => p.comm.slice(p.comm.lastIndexOf("/") + 1) === "claude" && p.tty !== "??")
+        .map((p) => ({ pid: p.pid, tty: `/dev/${p.tty}` }));
+}
+/**
+ * Parse targeted `ps -o pid=,ppid=,command= -p <children>` output and return
+ * the PARENT pids that have a live shell-snapshot child — Claude Code runs
+ * every Bash tool (foreground or backgrounded) as a direct child via its
+ * shell-snapshot mechanism, so this is true exactly while "N shells still
+ * running". No shell-name assumptions: the argv marker is the invariant.
+ */
+function busyParentsFrom(confirmOutput) {
+    const busy = new Set();
+    for (const rawLine of confirmOutput.split("\n")) {
+        const line = rawLine.trim();
+        if (line === "")
+            continue;
+        const fields = line.split(/\s+/);
+        if (fields.length < 3)
+            continue;
+        const ppid = Number.parseInt(fields[1], 10);
+        if (Number.isFinite(ppid) && line.includes("shell-snapshots/snapshot-")) {
+            busy.add(ppid);
+        }
+    }
+    return busy;
+}
+/** Parse batched `lsof -a -p <csv> -d cwd -Fpn` output into pid → cwd. */
+function parseLsofCwds(output) {
+    const cwds = new Map();
+    let pid = null;
+    for (const line of output.split("\n")) {
+        if (line.startsWith("p")) {
+            const n = Number.parseInt(line.slice(1), 10);
+            pid = Number.isFinite(n) ? n : null;
+        }
+        else if (line.startsWith("n") && pid !== null) {
+            cwds.set(pid, line.slice(1));
+        }
+    }
+    return cwds;
+}
+/** ~/.claude/projects directory name for a project path: every
+ * non-alphanumeric character becomes "-" (verified transform). */
+function projectSlug(projectPath) {
+    return projectPath.replace(/[^A-Za-z0-9]/g, "-");
+}
+/** A transcript younger than this is "actively working". */
+const TRANSCRIPT_FRESH_MS = 30_000;
+/**
+ * Decide one Claude session's state. Claude Code's own report
+ * (`claude agents --json`) outranks every inferred signal: reported working
+ * is working, reported blocked is blocked, and reported idle is waiting
+ * EXCEPT that a live shell-snapshot child still reads working ("Brewed … · 1
+ * shell still running"). An owing transcript does NOT override reported idle:
+ * that is the /login false positive. With no report (or an unrecognised
+ * status) the older chain applies: title spinner, shell child, owing
+ * transcript, idle title, fresh transcript mtime.
+ */
+function claudeVerdict(args) {
+    if (args.reported === "working")
+        return "working";
+    if (args.reported === "blocked")
+        return "blocked";
+    if (args.reported === "waiting")
+        return args.shellBusy === true ? "working" : "waiting";
+    if (args.titleWorking === true)
+        return "working"; // braille spinner: fast-path
+    if (args.shellBusy === true)
+        return "working";
+    // The PRECISE transcript signal (Claude owes the next turn) overrides the ✳
+    // title — that is the Brewing fix. A mere fresh mtime does NOT override ✳,
+    // or every key would read "working" for ~30s after each turn completes.
+    if (args.transcriptWorking === true)
+        return "working";
+    // ✳ title with a quiet, non-owing transcript = genuinely idle at the prompt.
+    if (args.titleWorking === false)
+        return "waiting";
+    // No readable title (non-tmux host): a fresh transcript means streaming.
+    if (args.transcriptAgeMs !== null && args.transcriptAgeMs < TRANSCRIPT_FRESH_MS) {
+        return "working";
+    }
+    return "waiting";
 }
 
 /**
@@ -10395,954 +10844,6 @@ async function newestTranscriptState(projectPath, now = Date.now(), base = join(
     }
 }
 
-/** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
-function escapeForAppleScript(value) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/** iTerm2's bundle identifier (for frontmost-app checks). */
-const ITERM_BUNDLE_ID = "com.googlecode.iterm2";
-/**
- * AppleScript returning the tty of iTerm's FOCUSED session — current session
- * of the current tab of the current (front) window — or "" when there is no
- * window. Only run this when iTerm is already frontmost: merely addressing an
- * app via AppleScript launches it.
- */
-const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
-	try
-		return tty of current session of current tab of current window
-	on error
-		return ""
-	end try
-end tell`;
-/** Parse the structured final line emitted by {@link buildITermRaiseScript}. */
-function parseITermFocusResult(output) {
-    const line = output.trim().split("\n").at(-1) ?? "";
-    const [status, windowId = "", tty = ""] = line.split("|");
-    if (status === "ok" || status === "notfound" || status === "timeout" || status === "error") {
-        return { status, windowId, tty };
-    }
-    return { status: "error", windowId, tty };
-}
-/**
- * Build AppleScript that activates iTerm and selects the window+tab+session
- * whose `tty` equals the given tty. Selection is verified by stable window id
- * plus focused tty, with a bounded retry for cross-window/Space activation.
- *
- * The tty is escaped via {@link escapeForAppleScript} before interpolation so
- * that quotes/backslashes in the value cannot break out of the AppleScript
- * string literal.
- *
- * iTerm2's AppleScript application name is "iTerm". Each iTerm2 session exposes
- * a `tty` property (e.g. "/dev/ttys000").
- *
- * @param tty - The tty device path to match (e.g. "/dev/ttys000").
- * @returns The AppleScript source, or "" when `tty` is empty/whitespace-only
- *          (the caller treats "" as nothing-to-do).
- */
-function buildITermRaiseScript(tty) {
-    if (tty.trim() === "") {
-        return "";
-    }
-    const escapedTty = escapeForAppleScript(tty);
-    return `set targetTty to "${escapedTty}"
-set targetWindowId to ""
-
-tell application "iTerm"
-	-- Capture a stable window identity before activation changes window order.
-	repeat with w in windows
-		repeat with t in tabs of w
-			repeat with s in sessions of t
-				if (tty of s) is targetTty then
-					set targetWindowId to id of w
-					exit repeat
-				end if
-			end repeat
-			if targetWindowId is not "" then exit repeat
-		end repeat
-		if targetWindowId is not "" then exit repeat
-	end repeat
-
-	if targetWindowId is "" then return "notfound||"
-
-	activate
-	set observedWindowId to ""
-	set observedTty to ""
-	set cleanAttempts to 0
-	set lastErrorNumber to ""
-
-	-- Window activation is asynchronous across iTerm windows and Spaces.
-	-- Re-resolve by stable id on every attempt, wait for that window to become
-	-- current, then make tab/session selection the final write.
-	repeat with attempt from 1 to 30
-		try
-			set targetWindow to first window whose id is targetWindowId
-			try
-				if miniaturized of targetWindow then set miniaturized of targetWindow to false
-			end try
-			select targetWindow
-			delay 0.05
-			set observedWindowId to id of current window
-			if observedWindowId is targetWindowId then
-				set selectedTarget to false
-				set targetWindow to first window whose id is targetWindowId
-				repeat with t in tabs of targetWindow
-					repeat with s in sessions of t
-						if (tty of s) is targetTty then
-							tell t to select
-							tell s to select
-							set selectedTarget to true
-							exit repeat
-						end if
-					end repeat
-					if selectedTarget then exit repeat
-				end repeat
-				delay 0.05
-				set observedWindowId to id of current window
-				set observedTty to tty of current session of current tab of current window
-				if observedWindowId is targetWindowId and observedTty is targetTty and frontmost then
-					return "ok|" & observedWindowId & "|" & observedTty
-				end if
-			end if
-			set cleanAttempts to cleanAttempts + 1
-		on error errMsg number errNum
-			set lastErrorNumber to errNum as text
-			-- A window/session can disappear during the transition. The next
-			-- bounded attempt re-resolves it; final readback remains diagnostic.
-		end try
-	end repeat
-end tell
-if cleanAttempts is 0 and lastErrorNumber is not "" then return "error|" & lastErrorNumber & "|"
-return "timeout|" & observedWindowId & "|" & observedTty`;
-}
-
-/**
- * Long-press detection for Keypad actions, factored out of Window Ring's
- * proven pattern: the hold callback fires AT the threshold (immediate haptic
- * of "something happened", no waiting for release), and a release before the
- * threshold is reported as a short press for the caller to act on in onKeyUp.
- * Pure timers, no SDK — unit-tested with fake timers.
- */
-/** Press held this long (ms) registers as a long press. */
-const LONG_PRESS_MS$1 = 500;
-class PressGate {
-    holdMs;
-    timers = new Map();
-    constructor(holdMs = LONG_PRESS_MS$1) {
-        this.holdMs = holdMs;
-    }
-    /** Key went down: arm the hold callback. A second down re-arms. */
-    down(id, onHold) {
-        this.cancel(id);
-        const t = setTimeout(() => {
-            this.timers.delete(id);
-            onHold();
-        }, this.holdMs);
-        this.timers.set(id, t);
-    }
-    /**
-     * Key came up. Returns true for a short press (released before the
-     * threshold — the caller should run the normal action); false when the
-     * hold callback already fired or nothing was armed.
-     */
-    up(id) {
-        const t = this.timers.get(id);
-        if (t === undefined)
-            return false;
-        clearTimeout(t);
-        this.timers.delete(id);
-        return true;
-    }
-    /** Disarm without firing (e.g. the key disappeared mid-press). */
-    cancel(id) {
-        const t = this.timers.get(id);
-        if (t !== undefined)
-            clearTimeout(t);
-        this.timers.delete(id);
-    }
-}
-
-/**
- * WHAT IT'S FOR: writes ONE log line when Switchboard loses or regains
- * `claude agents --json` (Claude Code's own state report), so a silent switch
- * to the older title/transcript signals leaves evidence. It prints only what
- * the pure `agentsSourceLogLine` returns, so the decision is tested there.
- *
- * Process-wide memory (`last`) makes this fire once per transition, never per
- * poll tick, even though AI Project, Focus tmux and the legacy Claude Project
- * key all report every tick. The limit: scans are logged in the order they
- * FINISH. Non-fresh callers share one in-flight scan, but a `fresh` scan (an
- * AI Project press) runs alongside a poll, so if the CLI changes availability
- * between two overlapping scans, the older one can finish last and add one
- * extra lost/regained pair of lines.
- * The reason is one of claude-scan's fixed strings and never carries CLI
- * output, so no session data reaches the log.
- */
-let last;
-function noteClaudeAgentsSource(src) {
-    if (src === undefined)
-        return;
-    const line = agentsSourceLogLine(last, src.source, src.reason);
-    if (line !== null)
-        streamDeck.logger[line.level](line.message);
-    // `unasked` (nothing was running) neither loses nor regains the source.
-    if (src.source !== "unasked")
-        last = src.source;
-}
-
-/**
- * WHAT IT'S FOR: decides what the deck and the log should say when a focus
- * press does something other than raise a window. It is pure so those decisions
- * can be tested — the module that performs them talks to the Stream Deck SDK
- * and this repo has no harness for action shells, so any logic left there is
- * verified by reading it.
- *
- * The three events it describes are the three ways a press departs from the
- * golden path, and every one of them used to be invisible: a dropped press
- * returned `undefined` that no caller could tell from success, a taken-over key
- * was reported only if the replacement finished, and a raise that threw was
- * swallowed by the absent error branch.
- */
-/**
- * A press that never ran because another raise holds the shared key.
- *
- * `warn`, not `error`: two presses inside one raise is ordinary contention, not
- * a fault. It alerts because the alternative — a key that silently ignores you —
- * is the symptom that made the original wedge impossible to notice.
- */
-function describeDroppedPress(label, key, heldForMs) {
-    return {
-        level: "warn",
-        message: `${label}: press ignored — another raise has held "${key}" for ${Math.round(heldForMs)}ms.`,
-        alert: true,
-    };
-}
-/**
- * A press that took the shared key from a holder stuck past the threshold.
- *
- * `error`, and deliberately loud: reaching this means every focus key on the
- * deck had been dead since that holder stalled. No alert — this press is going
- * on to do its work, so flashing would tell the operator it failed.
- */
-function describeTakeover(label, key, heldForMs) {
-    return {
-        level: "error",
-        message: `${label}: took "${key}" from a raise stuck for ${Math.round(heldForMs)}ms — an earlier press never completed, ` +
-            `so every focus key was dead until this one.`,
-        alert: false,
-    };
-}
-/**
- * A press whose raise threw. Named separately because the shell rethrows after
- * reporting: the operator gets the alert, and the error still propagates rather
- * than being swallowed here.
- */
-function describeFailedPress(label, error) {
-    return {
-        level: "error",
-        message: `${label}: raise failed — ${error instanceof Error ? error.message : String(error)}`,
-        alert: true,
-    };
-}
-
-/**
- * Per-key async mutex: chains tasks for the same key so read-modify-write
- * handlers (dial rotations that persist a cursor, run a subprocess, then
- * render) can't interleave. Stream Deck delivers events serially, but async
- * handlers overlap at their await points — two rotations could both read the
- * same settings index and both write index+1. Tasks for DIFFERENT keys run
- * concurrently; a rejected task never breaks the chain.
- *
- * The map is self-cleaning: when a key's chain fully settles it removes its
- * own entry (only if it is still the tail). There is deliberately no external
- * "release" — deleting a live chain would let a new event run concurrently
- * with an in-flight task, recreating the exact race this exists to prevent.
- */
-const chains = new Map();
-/**
- * The age at which a holder's claim on an exclusive key may be TAKEN by a new
- * request.
- *
- * Read what this is and is not. It is NOT a proof that a legitimate hold
- * finishes sooner: the locked focus path awaits Stream Deck SDK round-trips
- * (`getSettings`, `showOk`) that have no timeout at all, so no finite upper
- * bound on a healthy hold can be derived from that code. It is a chosen
- * recovery policy, and the tradeoff it makes is explicit in both directions:
- * a healthy press slower than this can be taken from (see the overlap note on
- * {@link runExclusive}), and a genuinely wedged key stays dead until this much
- * time has passed AND another press arrives.
- *
- * The number is anchored to what IS bounded: the path's subprocesses cap at
- * roughly 39s (three osascript at 8s, three tmux at 5s) if every one times
- * out, so a value below that would take from a press whose slowness is fully
- * explained by bounded work. 45s clears it with a small margin. A press that
- * exceeds 45s is, by construction, one whose extra time came from something
- * unbounded — which is the condition this exists to recover from.
- */
-const MAX_HOLD_MS = 45_000;
-/**
- * The live holder of each exclusive key. `token` is the identity, not `at`:
- * two acquisitions can land in the same millisecond, and a displaced holder must
- * never delete the entry belonging to the request that took the key from it.
- * Same rule the `chains` map above follows — only clean up if still yours.
- */
-const holders = new Map();
-let holderSeq = 0;
-/**
- * Run at most one task for a key. A second request while the first is live is
- * dropped rather than queued: focus presses describe "go there now", so a stale
- * press must not fire seconds later after a slow cross-Space raise.
- *
- * REQUEST-TRIGGERED LEASE TAKEOVER, which is a weaker thing than a timeout and
- * must not be described as one. There is no timer and no autonomous expiry: a
- * holder that never settles stays recorded indefinitely, and the key only
- * changes hands when a LATER REQUEST arrives finding the claim older than
- * {@link MAX_HOLD_MS}. So the deck does not heal on its own — it heals on the
- * next press after the threshold, and a press before it is still dropped.
- *
- * Why it exists: every subprocess in the focus path is bounded (osascript 8s,
- * tmux 5s), but the SDK round-trips around them are not — `getSettings()` waits
- * for a `didReceiveSettings` reply that a dropped websocket message never
- * delivers. A holder stuck on one of those held the key for the life of the
- * process, and because the key is the literal string "iterm-focus" shared by all
- * five focus actions, one lost reply silently killed every one of them until the
- * plugin was restarted.
- *
- * THE COST, stated at full strength because an earlier draft of this comment
- * called it a brief overlap and that was wrong: taking the key does NOT cancel
- * the displaced task, and nothing bounds how long it may still run. If it later
- * resumes it will carry out its own side effects — raising ITS iTerm window,
- * switching the tmux client to ITS target — after the newer press has already
- * done so. The user-visible result is being pulled to the older destination
- * some time after arriving at the newer one. Nothing here prevents that; the
- * only real defence would be an ownership check immediately before each
- * focus-changing side effect, which this does not implement. The tradeoff taken
- * is that a rare wrong-window raise during recovery beats five permanently dead
- * keys, not that the race was eliminated.
- *
- * The caller is told which happened. This module is pure and cannot log, and a
- * dropped press and a taken key are both departures from the golden path that
- * must leave a trace at the call site.
- */
-async function runExclusive(key, task, opts = {}) {
-    const now = opts.now ?? monotonicNow;
-    const held = holders.get(key);
-    const at = now();
-    let stoleAfterMs;
-    if (held !== undefined) {
-        const heldForMs = at - held.at;
-        // A young claim is a real press in flight: honour it and drop this one.
-        if (heldForMs < MAX_HOLD_MS)
-            return { ran: false, heldForMs };
-        stoleAfterMs = heldForMs;
-        opts.onSteal?.(heldForMs);
-    }
-    const token = ++holderSeq;
-    holders.set(key, { token, at });
-    try {
-        const value = await task();
-        return stoleAfterMs === undefined ? { ran: true, value } : { ran: true, value, stoleAfterMs };
-    }
-    finally {
-        // Only clean up if the key is still ours: a request that took the key
-        // from us owns it now, and releasing it here would let two presses run.
-        if (holders.get(key)?.token === token)
-            holders.delete(key);
-    }
-}
-/** Monotonic elapsed-time source — immune to wall-clock adjustment in BOTH
- * directions, which `Date.now()` is not. */
-const monotonicNow = () => performance.now();
-function serialize(key, task) {
-    const prev = chains.get(key) ?? Promise.resolve();
-    const next = prev.then(task, task);
-    let entry;
-    entry = next.then(() => {
-        if (chains.get(key) === entry)
-            chains.delete(key);
-    }, () => {
-        if (chains.get(key) === entry)
-            chains.delete(key);
-    });
-    chains.set(key, entry);
-    return next;
-}
-
-/**
- * WHAT IT'S FOR: the single place the five focus actions (AI Project, the three
- * superseded per-agent keys, and Focus tmux Window) take the shared raise key,
- * so a press that does not raise a window says so — on the deck and in the log —
- * instead of vanishing.
- *
- * Why it exists: the key is one literal string shared by all five actions, and
- * `runExclusive` used to return `T | undefined`. Every focus handler returns
- * void, so a dropped press was indistinguishable from a successful one; no
- * caller alerted and no caller logged. When a holder wedged, all five keys went
- * dead in silence and the only cure was restarting the plugin.
- *
- * A thin shell by design: what to say is decided by the pure, tested
- * {@link FocusReport} builders in `mac/focus-outcome.ts`; this only performs it.
- */
-/** The one key every raise serialises on — raising two iTerm windows at once
- * would fight over which ends up frontmost. */
-const FOCUS_KEY = "iterm-focus";
-async function perform(report, key) {
-    if (report.level === "warn")
-        streamDeck.logger.warn(report.message);
-    else
-        streamDeck.logger.error(report.message);
-    if (!report.alert)
-        return;
-    // Deck feedback is cosmetic; failing to flash must not replace the real
-    // error with a second one, so it is reported and swallowed here.
-    try {
-        await key.showAlert();
-    }
-    catch (err) {
-        streamDeck.logger.warn(`Focus press: showAlert failed: ${String(err)}`);
-    }
-}
-/**
- * Run one action's raise under {@link FOCUS_KEY}, reporting every way it can
- * fail to happen. `label` names the action in the log — there are five, and
- * knowing which one wedged is the point of logging it.
- *
- * A raise that THROWS is reported and then rethrown, not swallowed: the caller's
- * error handling is unchanged by this wrapper, it merely stops being silent.
- */
-async function runFocusPress(label, key, task) {
-    let outcome;
-    try {
-        outcome = await runExclusive(FOCUS_KEY, task, {
-            // Reported at the moment of takeover, not after: a replacement that
-            // also wedges would otherwise never report it at all.
-            onSteal: (heldForMs) => {
-                const report = describeTakeover(label, FOCUS_KEY, heldForMs);
-                streamDeck.logger.error(report.message);
-            },
-        });
-    }
-    catch (err) {
-        await perform(describeFailedPress(label, err), key);
-        throw err;
-    }
-    if (!outcome.ran)
-        await perform(describeDroppedPress(label, FOCUS_KEY, outcome.heldForMs), key);
-}
-
-/**
- * Terminal.app scripting for the Claude Project key: read the focused tab's
- * tty and raise the window+tab hosting a given tty. Verified against the
- * Terminal sdef: tabs expose read-only `tty`, windows a settable
- * `selected tab` / `frontmost`. Only address Terminal when it is RUNNING —
- * `tell application "Terminal"` would launch it.
- */
-const TERMINAL_BUNDLE_ID = "com.apple.Terminal";
-/** Process name for the running check (pgrep -x). */
-const TERMINAL_PROCESS_NAME = "Terminal";
-/** AppleScript returning the tty of Terminal's focused tab, or "". */
-const TERMINAL_FOCUSED_TTY_SCRIPT = `tell application "Terminal"
-	try
-		if (count of windows) is 0 then return ""
-		return tty of selected tab of front window
-	on error
-		return ""
-	end try
-end tell`;
-/**
- * AppleScript that selects the Terminal window+tab whose tty matches, raises
- * it, and activates Terminal. Returns "ok" or "notfound".
- */
-function buildTerminalRaiseScript(tty) {
-    if (tty.trim() === "") {
-        return "";
-    }
-    const escapedTty = escapeForAppleScript(tty);
-    return `tell application "Terminal"
-	repeat with w in windows
-		repeat with t in tabs of w
-			if (tty of t) is "${escapedTty}" then
-				set selected tab of w to t
-				set frontmost of w to true
-				activate
-				return "ok"
-			end if
-		end repeat
-	end repeat
-end tell
-return "notfound"`;
-}
-
-/** How often the key faces re-check the live state. */
-const POLL_MS$6 = 2500;
-/**
- * Live key face for a Claude Code PROJECT, host-independent: works whether
- * the session runs under tmux, plain iTerm2, or Terminal.app. The face shows
- * the project name, whether keystrokes would land in that session (status
- * bar), and the Claude spark (amber turning = working, white still = waiting;
- * dashed bar = no claude running there). Press raises the hosting window —
- * tmux-hosted instances sit on tmux pane ttys that iTerm/Terminal have never
- * heard of, so those route through the tmux raise machinery. Hold to capture
- * the frontmost session's project ("teach the button").
- */
-let ClaudeProject = (() => {
-    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.claudeproject" })];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    let _classSuper = SingletonAction;
-    (class extends _classSuper {
-        static { _classThis = this; }
-        static {
-            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
-            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-            _classThis = _classDescriptor.value;
-            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-            __runInitializers(_classThis, _classExtraInitializers);
-        }
-        gate = new PressGate();
-        visible = new Map();
-        timer;
-        refresher = new CoalescedRunner(() => this.doRefreshAll());
-        spin = 0;
-        tick = 0;
-        /** Last tick saw a frontmost terminal / hot key / working Claude. */
-        interesting = true;
-        lastImage = new Map();
-        async onWillAppear(ev) {
-            if (!ev.action.isKey())
-                return;
-            this.visible.set(ev.action.id, ev.action);
-            if (this.timer === undefined) {
-                this.timer = setInterval(() => {
-                    if (shouldPollThisTick(this.tick++, this.interesting))
-                        void this.refreshAll();
-                }, POLL_MS$6);
-            }
-            await this.refreshAll();
-        }
-        onWillDisappear(ev) {
-            this.gate.cancel(ev.action.id);
-            this.visible.delete(ev.action.id);
-            this.lastImage.delete(ev.action.id);
-            if (this.visible.size === 0 && this.timer !== undefined) {
-                clearInterval(this.timer);
-                this.timer = undefined;
-            }
-        }
-        onKeyDown(ev) {
-            this.gate.down(ev.action.id, () => {
-                void this.capture(ev.action).catch((err) => streamDeck.logger.error(`Claude Project capture failed: ${String(err)}`));
-            });
-        }
-        async onKeyUp(ev) {
-            if (!this.gate.up(ev.action.id))
-                return; // long press already captured
-            await runFocusPress("Claude Project", ev.action, () => this.focus(ev.action));
-        }
-        /** One query set per tick: process scan, tmux pane/client maps, frontmost
-         * app + its focused tty. Transcript freshness is checked per project. */
-        async snapshot() {
-            const tmux = findTmuxPath();
-            const [instances, panesRes, clientsRes, front] = await Promise.all([
-                // The snapshot (not the bare instance list) so a deck with only this
-                // key still logs losing `claude agents --json`, once per transition.
-                scanClaudeSnapshot().then((snap) => {
-                    noteClaudeAgentsSource(snap.claudeAgents);
-                    return snap.instances;
-                }),
-                runTmux(LIST_PANE_TTYS_ARGS, tmux),
-                runTmux(LIST_CLIENTS_ARGS, tmux),
-                runJxa(FRONT_APP_BUNDLE_JXA),
-            ]);
-            const frontBundle = front.ok ? front.stdout.trim() : "";
-            // Only address a terminal app that is FRONTMOST (addressing via
-            // AppleScript would launch it; frontmost implies running).
-            let focusedTty = "";
-            if (frontBundle === ITERM_BUNDLE_ID) {
-                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            }
-            else if (frontBundle === TERMINAL_BUNDLE_ID) {
-                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            }
-            return {
-                instances,
-                panes: panesRes.ok ? parsePaneTtys(panesRes.stdout) : [],
-                clientTtys: parseClientTtys(clientsRes.stdout),
-                frontBundle,
-                focusedTty,
-            };
-        }
-        /** Coalesced — see focus-tmux: explicit repaints must never be dropped. */
-        refreshAll() {
-            return this.refresher.request();
-        }
-        async doRefreshAll() {
-            if (this.visible.size === 0)
-                return;
-            {
-                const snap = await this.snapshot();
-                this.spin++;
-                this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.shellBusy);
-                for (const key of this.visible.values()) {
-                    const settings = await key.getSettings();
-                    const project = (settings.project ?? "").trim();
-                    const image = await this.renderKey(project, snap);
-                    if (this.lastImage.get(key.id) === image)
-                        continue;
-                    try {
-                        await key.setImage(image);
-                        this.lastImage.set(key.id, image);
-                    }
-                    catch (err) {
-                        streamDeck.logger.debug(`Claude Project image skipped: ${String(err)}`);
-                    }
-                }
-            }
-        }
-        async renderKey(project, snap) {
-            const mine = project ? instancesForProject(snap.instances, project) : [];
-            const pane = this.paneFor(mine, snap.panes);
-            const instance = pane.instance ?? mine[0];
-            let host = "";
-            let hot = false;
-            let title = null;
-            if (instance !== undefined) {
-                if (pane.pane !== undefined) {
-                    host = "tmux";
-                    title = titleWorking(pane.pane.title);
-                    // Keystrokes land there when the pane would receive its session's
-                    // keys AND that session's client is the focused iTerm session.
-                    hot =
-                        pane.pane.receivesKeys &&
-                            snap.focusedTty !== "" &&
-                            (snap.clientTtys.get(pane.pane.session) ?? []).includes(snap.focusedTty);
-                }
-                else {
-                    hot = snap.focusedTty !== "" && instance.tty === snap.focusedTty;
-                    if (hot) {
-                        host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
-                    }
-                }
-            }
-            const transcript = instance !== undefined && !isRecognisedReport(instance.reported)
-                ? await newestTranscriptState(project)
-                : { ageMs: null, working: false };
-            const claude = projectClaudeState({
-                present: instance !== undefined,
-                titleWorking: title,
-                transcriptAgeMs: transcript.ageMs,
-                transcriptWorking: transcript.working,
-                shellBusy: instance?.shellBusy === true,
-                reported: instance?.reported ?? null,
-            });
-            return svgToDataUri(buildClaudeProjectKeyImage({
-                project: project || "no target",
-                host,
-                hot,
-                claude,
-                spin: this.spin,
-            }));
-        }
-        /** The project's tmux-hosted instance and its pane, if any. */
-        paneFor(mine, panes) {
-            for (const instance of mine) {
-                const pane = panes.find((p) => p.tty === instance.tty);
-                if (pane !== undefined)
-                    return { instance, pane };
-            }
-            return { instance: mine[0] };
-        }
-        /** Short press: raise whatever window hosts the project's session. */
-        async focus(key) {
-            const settings = await key.getSettings();
-            const project = (settings.project ?? "").trim();
-            if (!project) {
-                streamDeck.logger.warn("Claude Project pressed with no project configured.");
-                await key.showAlert();
-                return;
-            }
-            // Resolve FRESH at press time — never from the poll cache.
-            const snap = await this.snapshot();
-            const mine = instancesForProject(snap.instances, project);
-            if (mine.length === 0) {
-                streamDeck.logger.warn(`Claude Project: no claude running in ${project}.`);
-                await key.showAlert();
-                return;
-            }
-            const { instance, pane } = this.paneFor(mine, snap.panes);
-            const target = instance ?? mine[0];
-            if (pane !== undefined) {
-                // tmux-hosted: raise and verify the hosting iTerm window+tab first,
-                // then switch that exact client to the requested tmux window.
-                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
-                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
-                if (clientTty === null) {
-                    streamDeck.logger.warn(`Claude Project: tmux session ${pane.session} has no attached client.`);
-                    await key.showAlert();
-                    return;
-                }
-                if (clientTtys.length > 1)
-                    streamDeck.logger.debug(`Claude Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
-                const raise = await runAppleScript(buildITermRaiseScript(clientTty));
-                const focus = raise.ok ? parseITermFocusResult(raise.stdout) : { status: "error", windowId: "", tty: "" };
-                if (!raise.ok || focus.status !== "ok") {
-                    streamDeck.logger.error(`Claude Project iTerm focus failed (${raise.code}/${focus.status}): window=${focus.windowId || "?"} tty=${focus.tty || "?"} ${raise.stderr}`);
-                    await key.showAlert();
-                    return;
-                }
-                const tmux = findTmuxPath();
-                const selected = await runTmux(switchClientToWindowArgs(pane.session, pane.windowIndex, clientTty), tmux);
-                if (!selected.ok) {
-                    streamDeck.logger.error(`Claude Project select-window failed: ${selected.stderr}`);
-                    await key.showAlert();
-                    return;
-                }
-                await key.showOk();
-                setTimeout(() => void this.refreshAll(), 450); // frontmost settle
-                return;
-            }
-            // Plain terminal: try the running hosts by tty. Only address apps that
-            // are RUNNING — AppleScript launches the ones that aren't.
-            if (await processRunning("iTerm2")) {
-                const raise = await runAppleScript(buildITermRaiseScript(target.tty));
-                if (raise.ok && parseITermFocusResult(raise.stdout).status === "ok") {
-                    await key.showOk();
-                    return;
-                }
-            }
-            if (await processRunning(TERMINAL_PROCESS_NAME)) {
-                const raise = await runAppleScript(buildTerminalRaiseScript(target.tty));
-                if (raise.ok && raise.stdout.includes("ok")) {
-                    await key.showOk();
-                    return;
-                }
-            }
-            streamDeck.logger.warn(`Claude Project: no window found hosting ${target.tty}.`);
-            await key.showAlert();
-        }
-        /** Long press: capture the frontmost session's project into this button. */
-        async capture(key) {
-            const snap = await this.snapshot();
-            if (snap.focusedTty === "") {
-                streamDeck.logger.warn("Claude Project capture: no terminal is frontmost.");
-                await key.showAlert();
-                return;
-            }
-            // Direct hit: the focused tab/session IS a claude tty (plain host).
-            let cwd = snap.instances.find((i) => i.tty === snap.focusedTty)?.cwd;
-            // tmux: the focused tty is a CLIENT tty; find the session it shows, then
-            // the pane that would receive keys, then the claude on that pane tty.
-            if (cwd === undefined) {
-                for (const [session, clientTtys] of snap.clientTtys) {
-                    if (!clientTtys.includes(snap.focusedTty))
-                        continue;
-                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
-                    if (pane !== undefined) {
-                        cwd = snap.instances.find((i) => i.tty === pane.tty)?.cwd;
-                    }
-                    break;
-                }
-            }
-            if (cwd === undefined || cwd === "") {
-                streamDeck.logger.warn("Claude Project capture: focused terminal is not running claude.");
-                await key.showAlert();
-                return;
-            }
-            const settings = await key.getSettings();
-            await key.setSettings({ ...settings, project: cwd });
-            streamDeck.logger.info(`Claude Project captured ${cwd}.`);
-            await key.showOk();
-            await this.refreshAll();
-        }
-    });
-    return _classThis;
-})();
-
-/** Pure identity, rollout-state, tmux-target, and key-face logic for Codex Project. */
-/** Parse targeted `ps -o pid=,tty=,comm=,args=` output. */
-function parseCodexProcesses(output) {
-    const result = [];
-    for (const raw of output.split("\n")) {
-        const m = raw.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
-        if (m === null)
-            continue;
-        const pid = Number.parseInt(m[1], 10);
-        if (!Number.isFinite(pid))
-            continue;
-        result.push({ pid, tty: m[2], comm: m[3], args: m[4] });
-    }
-    return result;
-}
-function basename(path) {
-    return path.slice(path.lastIndexOf("/") + 1);
-}
-/** Cheap candidate gate. The rollout's `originator` is the authoritative
- * interactive-vs-exec discriminator: rendered ps argv cannot distinguish the
- * subcommand `review` from an initial prompt beginning with the word review. */
-function isInteractiveCodex(p) {
-    if (p.tty === "??" || basename(p.comm) !== "codex")
-        return false;
-    const words = p.args.trim().split(/\s+/);
-    return words.length > 0 && basename(words[0]) === "codex";
-}
-/** Parse lsof field output (`-Fpcfn`) without ever retaining file contents. */
-function parseLsofEntries(output) {
-    const entries = [];
-    let pid = null;
-    let fd = "";
-    for (const line of output.split("\n")) {
-        if (line.startsWith("p")) {
-            const n = Number.parseInt(line.slice(1), 10);
-            pid = Number.isFinite(n) ? n : null;
-            fd = "";
-        }
-        else if (line.startsWith("f")) {
-            fd = line.slice(1);
-        }
-        else if (line.startsWith("n") && pid !== null) {
-            entries.push({ pid, fd, name: line.slice(1) });
-        }
-    }
-    return entries;
-}
-function isRolloutPath(path) {
-    return /\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[^/]+\.jsonl$/.test(path);
-}
-/** Session UUID is the final UUID-like component before `.jsonl`. */
-function rolloutSessionId(path) {
-    return path.match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)?.[1] ?? "";
-}
-const BLOCKED_EVENTS = new Set([
-    "approval_request", "approval_requested", "request_user_input", "user_input_requested",
-    "elicitation_request",
-]);
-const UNKNOWN_TERMINALS = new Set([
-    "task_error", "task_failed", "task_aborted", "task_interrupted", "stream_error",
-]);
-/** Last relevant complete rollout record decides state. Unknown is deliberate. */
-function codexStateFromRolloutLines(lines) {
-    for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (!line.includes('"type"'))
-            continue;
-        try {
-            const row = JSON.parse(line);
-            if (row.type !== "event_msg")
-                continue;
-            const event = row.payload?.type ?? "";
-            if (event === "task_complete")
-                return "waiting";
-            if (BLOCKED_EVENTS.has(event))
-                return "blocked";
-            if (UNKNOWN_TERMINALS.has(event))
-                return "unknown";
-            if (event === "task_started")
-                return "working";
-        }
-        catch {
-            // A concurrent append or bounded partial record is not state evidence.
-        }
-    }
-    return "unknown";
-}
-/** Session metadata is at the head of every observed rollout. */
-function codexRolloutOriginator(lines) {
-    for (const line of lines) {
-        try {
-            const row = JSON.parse(line);
-            if (row.type === "session_meta")
-                return row.payload?.originator ?? "";
-        }
-        catch { /* partial record */ }
-    }
-    return "";
-}
-function normalizeProjectPath(path) {
-    const trimmed = path.trim();
-    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
-}
-function codexInstancesForProject(instances, project) {
-    const target = normalizeProjectPath(project);
-    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
-}
-/** Prefer the captured identity. Never guess when several sessions share a cwd. */
-function selectCodexInstance(instances, project, sessionId) {
-    const mine = codexInstancesForProject(instances, project);
-    const captured = mine.find((i) => sessionId !== "" && i.sessionId === sessionId);
-    if (captured !== undefined)
-        return captured;
-    return mine.length === 1 ? mine[0] : null;
-}
-const LIST_CODEX_PANES_ARGS = [
-    "list-panes", "-a", "-F",
-    "#{pane_tty}|#{session_name}|#{window_id}|#{pane_id}|#{pane_active}|#{window_active}",
-];
-function parseCodexPanes(output) {
-    const result = [];
-    for (const raw of output.split("\n")) {
-        const f = raw.trim().split("|");
-        if (f.length < 6)
-            continue;
-        const tail = f.length - 4;
-        const windowId = f[tail];
-        const paneId = f[tail + 1];
-        if (!windowId.startsWith("@") || !paneId.startsWith("%"))
-            continue;
-        result.push({
-            tty: f[0],
-            session: f.slice(1, tail).join("|"),
-            windowId,
-            paneId,
-            receivesKeys: f[tail + 2] === "1" && f[tail + 3] === "1",
-        });
-    }
-    return result;
-}
-function codexTmuxFocusArgs(pane, clientTty) {
-    const commands = [];
-    if (clientTty !== "")
-        commands.push(["switch-client", "-c", clientTty, "-t", pane.session]);
-    commands.push(["select-window", "-t", pane.windowId]);
-    commands.push(["select-pane", "-t", pane.paneId]);
-    return commands;
-}
-function projectBasename$2(path) {
-    const p = normalizeProjectPath(path);
-    return p.slice(p.lastIndexOf("/") + 1) || "?";
-}
-function truncate$3(value, max) {
-    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-const MONO$3 = "Menlo, Monaco, monospace";
-const ORBIT$3 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
-/** Codex sibling of the Claude live face. Hex colors only for key rasterizing. */
-function buildCodexProjectKeyImage(args) {
-    const name = truncate$3(projectBasename$2(args.project), 9);
-    const hue = sessionHue(projectBasename$2(args.project));
-    const active = args.state !== "none";
-    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
-    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
-    const bar = !active
-        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
-        : args.hot
-            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
-            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$3}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
-    let glyph = "";
-    if (active) {
-        const spin = args.spin ?? 0;
-        glyph = `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
-        if (args.state === "working") {
-            const [x, y] = ORBIT$3[spin % ORBIT$3.length];
-            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
-        }
-    }
-    const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
-    // Deprecation marker — superseded by AI Project; remove with this action.
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$3}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
-}
-
 /**
  * Bounded, cached scan of interactive Codex CLI sessions.
  *
@@ -11512,839 +11013,17 @@ function rememberUnknown$1(at, mySeq) {
 }
 
 /**
- * Pure logic for the "Open File" action: glob matching, picking a file from a
- * directory listing by a strategy, and building `open` arguments. The actual
- * filesystem read and process launch live in the action; everything here is
- * pure and unit-testable.
- */
-/**
- * Expand a leading `~` to the home directory. Node's fs does not understand
- * `~` (it's a shell convenience), so a directory like "~/Downloads" must be
- * resolved before use. Non-tilde paths are returned unchanged.
- */
-function expandHome(p, home) {
-    if (p === "~")
-        return home;
-    if (p.startsWith("~/"))
-        return `${home}${p.slice(1)}`;
-    return p;
-}
-/**
- * Convert a filename glob (`*` = any run, `?` = one char) into an anchored,
- * case-insensitive RegExp. All other regex metacharacters are matched literally.
- */
-function globToRegExp(glob) {
-    const specials = /[.+^${}()|[\]\\]/;
-    let body = "";
-    for (const ch of glob) {
-        if (ch === "*")
-            body += ".*";
-        else if (ch === "?")
-            body += ".";
-        else
-            body += specials.test(ch) ? `\\${ch}` : ch;
-    }
-    return new RegExp(`^${body}$`, "i");
-}
-/**
- * Pick one file from `entries` matching `pattern`, by `mode`:
- *   - "modified": most recently modified (mtime)
- *   - "created":  most recently created (birthtime)
- *   - "name":     last in descending name order (handy for date-named files)
- * Returns null when nothing matches.
- */
-function selectFile(entries, pattern, mode) {
-    const re = globToRegExp(pattern.trim() || "*");
-    const matches = entries.filter((e) => re.test(e.name));
-    if (matches.length === 0)
-        return null;
-    const compare = mode === "created"
-        ? (a, b) => b.birthtimeMs - a.birthtimeMs
-        : mode === "name"
-            ? (a, b) => b.name.localeCompare(a.name)
-            : (a, b) => b.mtimeMs - a.mtimeMs;
-    return [...matches].sort(compare)[0] ?? null;
-}
-/**
- * Build `open` CLI args for the chosen file. Default app: `open <file>`;
- * BBEdit: `open -a BBEdit <file>`; a named/path app: `open -a <app> <file>`.
- * Falls back to the default app when "app" is selected but none is provided.
- */
-function buildOpenArgs(filePath, opener, app) {
-    if (opener === "bbedit")
-        return ["-a", "BBEdit", filePath];
-    if (opener === "app" && app && app.trim() !== "")
-        return ["-a", app.trim(), filePath];
-    return [filePath];
-}
-
-const POLL_MS$5 = 2500;
-/** Live key for one interactive Codex CLI session/project. */
-let CodexProject = (() => {
-    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.codexproject" })];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    let _classSuper = SingletonAction;
-    (class extends _classSuper {
-        static { _classThis = this; }
-        static {
-            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
-            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-            _classThis = _classDescriptor.value;
-            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-            __runInitializers(_classThis, _classExtraInitializers);
-        }
-        gate = new PressGate();
-        visible = new Map();
-        lastImage = new Map();
-        /** Identity used for the currently painted face; press must revalidate it. */
-        paintedSession = new Map();
-        refresher = new CoalescedRunner(() => this.doRefreshAll());
-        timer;
-        spin = 0;
-        tick = 0;
-        interesting = true;
-        async onWillAppear(ev) {
-            if (!ev.action.isKey())
-                return;
-            this.visible.set(ev.action.id, ev.action);
-            if (this.timer === undefined) {
-                this.timer = setInterval(() => {
-                    if (shouldPollThisTick(this.tick++, this.interesting))
-                        void this.refreshAll();
-                }, POLL_MS$5);
-            }
-            await this.refreshAll();
-        }
-        onWillDisappear(ev) {
-            this.gate.cancel(ev.action.id);
-            this.visible.delete(ev.action.id);
-            this.lastImage.delete(ev.action.id);
-            this.paintedSession.delete(ev.action.id);
-            if (this.visible.size === 0 && this.timer !== undefined) {
-                clearInterval(this.timer);
-                this.timer = undefined;
-            }
-        }
-        onKeyDown(ev) {
-            this.gate.down(ev.action.id, () => {
-                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Codex Project capture failed: ${String(error)}`));
-            });
-        }
-        async onKeyUp(ev) {
-            if (!this.gate.up(ev.action.id))
-                return;
-            await runFocusPress("Codex Project", ev.action, () => this.focus(ev.action));
-        }
-        async snapshot() {
-            const tmux = findTmuxPath();
-            const [codex, panesResult, clientsResult, front] = await Promise.all([
-                scanCodexSnapshot(),
-                runTmux(LIST_CODEX_PANES_ARGS, tmux),
-                runTmux(LIST_CLIENTS_ARGS, tmux),
-                runJxa(FRONT_APP_BUNDLE_JXA),
-            ]);
-            const frontBundle = front.ok ? front.stdout.trim() : "";
-            let focusedTty = "";
-            if (frontBundle === ITERM_BUNDLE_ID)
-                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            else if (frontBundle === TERMINAL_BUNDLE_ID)
-                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            return {
-                instances: codex.instances,
-                panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
-                clientTtys: parseClientTtys(clientsResult.stdout),
-                frontBundle,
-                focusedTty,
-                scanStatus: codex.status,
-            };
-        }
-        refreshAll() { return this.refresher.request(); }
-        async canonicalProject(project) {
-            const normalized = normalizeProjectPath(expandHome(project, homedir()));
-            try {
-                return await realpath(normalized);
-            }
-            catch {
-                return normalized;
-            }
-        }
-        async doRefreshAll() {
-            if (this.visible.size === 0)
-                return;
-            const snap = await this.snapshot();
-            this.spin++;
-            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working" || i.state === "blocked");
-            for (const key of this.visible.values()) {
-                const settings = await key.getSettings();
-                const project = await this.canonicalProject((settings.project ?? "").trim());
-                const mine = project ? codexInstancesForProject(snap.instances, project) : [];
-                const instance = selectCodexInstance(mine, project, (settings.sessionId ?? "").trim());
-                if (instance === null)
-                    this.paintedSession.delete(key.id);
-                else
-                    this.paintedSession.set(key.id, instance.sessionId);
-                const pane = instance === null ? undefined : snap.panes.find((p) => p.tty === instance.tty);
-                let host = "";
-                let hot = false;
-                if (instance !== null && pane !== undefined) {
-                    host = "tmux";
-                    hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
-                }
-                else if (instance !== null && instance.tty === snap.focusedTty) {
-                    hot = true;
-                    host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
-                }
-                const state = mine.length > 1 && instance === null
-                    ? "unknown"
-                    : instance?.state ?? (project !== "" && snap.scanStatus === "unknown" ? "unknown" : "none");
-                const image = svgToDataUri(buildCodexProjectKeyImage({ project: project || "no target", host, hot, state, spin: this.spin }));
-                if (this.lastImage.get(key.id) === image)
-                    continue;
-                try {
-                    await key.setImage(image);
-                    this.lastImage.set(key.id, image);
-                }
-                catch (error) {
-                    streamDeck.logger.debug(`Codex Project image skipped: ${String(error)}`);
-                }
-            }
-        }
-        async raiseTty(tty) {
-            if (await processRunning("iTerm2")) {
-                const result = await runAppleScript(buildITermRaiseScript(tty));
-                if (result.ok) {
-                    const focus = parseITermFocusResult(result.stdout);
-                    if (focus.status === "ok")
-                        return true;
-                    if (focus.status === "timeout") {
-                        streamDeck.logger.warn(`Codex Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
-                        return false;
-                    }
-                }
-            }
-            if (await processRunning(TERMINAL_PROCESS_NAME)) {
-                const result = await runAppleScript(buildTerminalRaiseScript(tty));
-                if (result.ok && result.stdout.includes("ok"))
-                    return true;
-            }
-            return false;
-        }
-        async focus(key) {
-            const settings = await key.getSettings();
-            const project = await this.canonicalProject((settings.project ?? "").trim());
-            if (project === "") {
-                await key.showAlert();
-                return;
-            }
-            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
-            const snap = await this.snapshot();
-            if (snap.scanStatus !== "ok") {
-                streamDeck.logger.warn("Codex Project: process scan unavailable; refusing stale focus.");
-                await key.showAlert();
-                return;
-            }
-            const instance = selectCodexInstance(snap.instances, project, expected);
-            if (instance === null || (expected !== "" && instance.sessionId !== expected)) {
-                streamDeck.logger.warn(`Codex Project: target missing or ambiguous for ${project}.`);
-                await key.showAlert();
-                return;
-            }
-            const pane = snap.panes.find((p) => p.tty === instance.tty);
-            if (pane !== undefined) {
-                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
-                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
-                if (clientTty === null) {
-                    streamDeck.logger.warn(`Codex Project: tmux session ${pane.session} has no attached client.`);
-                    await key.showAlert();
-                    return;
-                }
-                if (clientTtys.length > 1)
-                    streamDeck.logger.debug(`Codex Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
-                if (!(await this.raiseTty(clientTty))) {
-                    await key.showAlert();
-                    return;
-                }
-                const tmux = findTmuxPath();
-                for (const args of codexTmuxFocusArgs(pane, clientTty)) {
-                    const result = await runTmux(args, tmux);
-                    if (!result.ok) {
-                        streamDeck.logger.error(`Codex Project tmux ${args[0]} failed: ${result.stderr}`);
-                        await key.showAlert();
-                        return;
-                    }
-                }
-            }
-            else if (!(await this.raiseTty(instance.tty))) {
-                await key.showAlert();
-                return;
-            }
-            await key.showOk();
-            setTimeout(() => void this.refreshAll(), 450);
-        }
-        async capture(key) {
-            const snap = await this.snapshot();
-            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
-                await key.showAlert();
-                return;
-            }
-            let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
-            if (instance === undefined) {
-                for (const [session, clientTtys] of snap.clientTtys) {
-                    if (!clientTtys.includes(snap.focusedTty))
-                        continue;
-                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
-                    if (pane !== undefined)
-                        instance = snap.instances.find((i) => i.tty === pane.tty);
-                    break;
-                }
-            }
-            if (instance === undefined) {
-                await key.showAlert();
-                return;
-            }
-            const settings = await key.getSettings();
-            await key.setSettings({ ...settings, project: instance.cwd, sessionId: instance.sessionId });
-            this.paintedSession.set(key.id, instance.sessionId);
-            await key.showOk();
-            await this.refreshAll();
-        }
-    });
-    return _classThis;
-})();
-
-/**
- * WHAT IT'S FOR: one shared decision layer for the "agent project" keys, so a
- * key that has captured a Claude Code, Codex or Cursor session in a folder can
- * answer the same four questions — is there a session, is it working, is it
- * blocked on me, or is it just sitting idle? — with the SAME rules whichever
- * CLI it captured. Before this module each CLI had its own copy of that logic
- * and the copies had drifted; the drift is what this module removes.
+ * WHAT IT'S FOR: the pure Cursor CLI parsing and state layer that AI Project
+ * and Focus tmux rely on (through cursor-scan.ts and agent-scan.ts): it
+ * identifies cursor-agent processes, names their chat, and reads a turn's
+ * state from the transcript tail. It began as the decision layer of the
+ * per-agent Cursor Project key, which v2.0.0 retired.
  *
- * The three CLIs are NOT interchangeable underneath, and the differences are
- * load-bearing rather than cosmetic. Each was measured against a live session,
- * and the comments below say what was observed rather than what seemed likely:
- *
- *   - Codex records "I am waiting for your approval" in its own rollout log, so
- *     a blocked Codex session is knowable from a file, on any host, with no
- *     terminal scraping at all. Its `state` already carries `blocked`.
- *   - Claude Code reports its own state through `claude agents --json`
- *     (`status:"waiting"` = waiting on you), so a Claude the CLI listed is
- *     blocked-authoritative on any host. Only when the CLI is unavailable does
- *     Claude fall back to the rule below, shared with Cursor.
- *   - An UNREPORTED Claude and Cursor write nothing that distinguishes "blocked on the
- *     operator" from "busy working". The ONLY direct evidence is the prompt
- *     drawn on the terminal — for Claude that is EITHER a tool approval OR a
- *     choice prompt (a question, or a plan awaiting approval), which share no
- *     wording — and the only terminal this plugin can read is a tmux pane. Outside tmux, "blocked" is simply not observable for
- *     those two — see {@link blockedEvidenceFor}.
- *   - Measured (history; still needed for the fallback scrape), and the reason
- *     {@link decideAgentFace} exists in this form: Claude Code keeps its IDLE title marker (a "✳") on screen while its
- *     approval prompt is up, so a blocked Claude session's file-derived state
- *     reads `waiting`, not `working`. Cursor's blocked session has no
- *     `turn_ended` record yet and so reads `working`. A rule that only upgrades
- *     a `working` session to `blocked` is therefore correct for Cursor and
- *     unreachable for Claude.
- *
- * Vocabulary used throughout (these recur, so they are defined once here):
- *   - "instance" — one running agent process this plugin has identified,
- *     with the tty it owns and the folder it was started in. Identifying them
- *     is the impure scanners' job; this module only decides.
- *   - "face" — what the key should PAINT: the composed verdict, which is not
- *     the same thing as an instance's own state (an incomplete scan can force
- *     `unknown` over a perfectly confident instance).
- *   - "hot" — this key's project is the one the operator is looking at now.
- *   - "unseen" — a turn was observed WORKING and later observed finished while the
- *     key was not hot, and the key has not been hot since. Its role is the deck's
- *     unread mark: it answers "did something finish while I was looking elsewhere?",
- *     which no single-tick face can answer. It is memory, not an observation, so it
- *     is armed only by a transition this plugin actually watched happen — a key that
- *     first appears next to an already-idle agent can never claim one.
- */
-/**
- * What kind of evidence a `blocked` verdict could rest on for this kind+host.
- *
- * Callers use it to decide whether scraping a pane is worth doing at all, and
- * to avoid promising a "needs you" light they cannot actually deliver.
- */
-function blockedEvidenceFor(kind, host, reported) {
-    // Codex reports blocking in its own rollout log, so it needs no terminal and
-    // works outside tmux too.
-    if (kind === "codex")
-        return "authoritative";
-    // A Claude whose state came from `claude agents --json` reports blocked
-    // itself (`status:"waiting"`), on any host, so its pane is never scraped.
-    if (kind === "claude" && reported)
-        return "authoritative";
-    // Claude and Cursor are only observable through the pane text, and the only
-    // terminal this plugin can read is a tmux pane.
-    return host === "tmux" ? "terminal" : "unavailable";
-}
-/**
- * What should a "blocked" probe read when there is no pane to scrape?
- *
- * A missing pane is ambiguous on its own: it means "no session here" just as
- * often as it means "the pane LISTING itself failed this tick". The two must
- * not paint the same face. `panesOk` tells them apart:
- *
- *   - Both `list-panes` and `list-clients` failed: indistinguishable from a
- *     machine with no tmux server at all, which is a supported first-class
- *     case (`runTmux` reports that failure the same way it reports "no tmux
- *     server"). The honest answer here is `"clear"` — there was never a
- *     question to answer.
- *   - `list-clients` succeeded but `list-panes` specifically did not: tmux is
- *     demonstrably alive, so a hidden approval prompt cannot be ruled out for
- *     any kind whose blocked verdict can ONLY come from scraping a pane
- *     (`blockedEvidenceFor(kind, "tmux", reported) === "terminal"` — an unreported
- *     claude, and cursor).
- *     For those, "clear" would be a confident negative on a question that was
- *     never actually asked; the honest answer is `"failed"`. Codex is
- *     unaffected either way — its blocked verdict never depends on a pane.
- */
-function blockedProbeForMissingPane(kind, panesOk, clientsOk, reported) {
-    if (!panesOk && clientsOk && blockedEvidenceFor(kind, "tmux", reported) === "terminal")
-        return "failed";
-    return "clear";
-}
-/** Claude Code's approval question. Two different wordings were measured —
- * "Do you want to proceed?" for a bash approval and "Do you want to make this
- * edit to <file>?" for an edit approval — so the matcher keys on the shared
- * stem rather than on either full sentence. `.` does not cross newlines, so
- * this necessarily matches WITHIN one line of pane text. */
-const CLAUDE_ASK = /Do you want to .*\?/;
-/**
- * Claude Code's OTHER way of blocking on you: the choice prompt it draws for
- * `AskUserQuestion` — and, on inference from the CLI binary's strings rather
- * than any live capture, for plan approval.
- *
- * This is a second, disjoint shape, not a variation on the approval wording.
- * Measured (claude 2.1.236, tmux, 2026-08-29, two independent captures): the
- * question can read "Do you PREFER red or blue?" and the first option can be
- * "1. Red", so {@link CLAUDE_ASK} and the "1. Yes" choice line both miss it
- * entirely. It matters more than it sounds: under `--permission-mode auto` the
- * tool approvals auto-accept, so a question is often the ONLY thing that still
- * stops the operator — and it was painting the key blue (working).
- *
- * Both patterns are LINE-ANCHORED, and that is the point. Three bare substrings
- * anywhere in the pane would match a README, a test log or a docs page that
- * merely discusses the prompt; requiring the footer's two halves on ONE line and
- * the discriminator as a NUMBERED OPTION line ties the match to the prompt's
- * actual layout. It narrows a real false-amber path rather than only documenting
- * it. A test pins the prose case.
- *
- * "Chat about this" is the discriminator: it is what separates a prompt AWAITING
- * A DECISION from Claude's other selectable lists, where the operator is already
- * interacting. All three of those were captured on the same day and none carries
- * it, nor the "Enter to select" footer:
- *
- *   - folder-trust prompt — footer "Enter to confirm · Esc to cancel". The verb
- *     is CONFIRM, not select. This is the sharp one: it also draws a numbered
- *     "1. Yes" list, so it is the closest thing to a false positive on the deck.
- *   - `--resume` session picker — footer "… Type to search · Esc to cancel".
- *   - slash-command menu — no footer of this shape at all.
- *
- * FAILURE DIRECTION, deliberately chosen and unchanged from the approval matcher:
- * if a future release rewraps the footer onto two lines or renumbers the option,
- * these stop matching and amber stops APPEARING. They do not start lying.
- */
-const CLAUDE_CHOICE_FOOTER = /^\s*Enter to select\b.*\bEsc to cancel\s*$/m;
-const CLAUDE_CHOICE_OPTION = /^\s*\d+\.\s+Chat about this\s*$/m;
-/**
- * Does this terminal pane show the agent holding for the operator right now?
- *
- * "Holding" is broader than an approval. For Claude Code it is EITHER a tool
- * approval OR a choice prompt — a question, or a plan awaiting approval — and
- * the two share no wording, so each is matched separately. Under
- * `--permission-mode auto` the approvals auto-accept and the choice prompt is
- * the one that actually stops the operator.
- *
- * Matching is deliberately narrow, and the guarantee is narrow to match:
- * unrecognised wording yields false, so a prompt phrased in a way we have not
- * measured leaves the key on its file-derived state instead of inventing an
- * amber light. It does NOT guarantee the reverse — this reads the pane's
- * visible text, so recognised prompt wording appearing in ordinary output (a
- * README being catted, a transcript being replayed) CAN produce a false
- * `blocked`. The markers below were chosen to make that unlikely, not
- * impossible.
- *
- * Callers must capture the VISIBLE screen only, never scrollback: an
- * already-answered prompt lingers in history, and matching it would hold the
- * key amber while the agent is busy working.
- */
-function paneShowsAgentPrompt(kind, paneText) {
-    switch (kind) {
-        case "codex":
-            // Codex's own log already says `blocked` (see blockedEvidenceFor), so
-            // there is nothing to gain by scraping and a false positive to lose.
-            return false;
-        case "claude": {
-            // TWO disjoint shapes, because Claude blocks on you in two different
-            // ways and they share no wording. Either one is enough.
-            //
-            // (a) The TOOL APPROVAL. The question alone is too ordinary a sentence
-            // to trust; Claude renders a numbered choice list directly beneath it,
-            // and both measured wordings carry "1. Yes".
-            //
-            // NEGATIVE CASE (measured): the folder-trust prompt — "Quick safety
-            // check: Is this a project you created or one you trust?" with "1. Yes,
-            // I trust this folder" — carries the same choice line but is NOT an
-            // approval to act on, and must not turn the key amber. It is excluded by
-            // the question stem: it never says "Do you want to". A test pins this.
-            if (CLAUDE_ASK.test(paneText) && paneText.includes("1. Yes"))
-                return true;
-            // (b) The CHOICE PROMPT — a question, or (inferred) a plan awaiting
-            // approval. See {@link CLAUDE_CHOICE_FOOTER} for why both are anchored to
-            // their lines and which non-blocking pickers were measured against them.
-            return CLAUDE_CHOICE_FOOTER.test(paneText) && CLAUDE_CHOICE_OPTION.test(paneText);
-        }
-        case "cursor":
-            // The inline status marker is specific enough to stand on its own.
-            // "Run this command?" is a phrase that could plausibly appear in
-            // scrolled output, so it only counts alongside Cursor's choice line.
-            if (paneText.includes("Waiting for approval"))
-                return true;
-            return paneText.includes("Run this command?") && paneText.includes("Run (once)");
-    }
-}
-/** `agentForFocusedTty` with its two null cases told apart, for the capture
- * gesture's refusal log. Same rule: exactly one match or no instance. */
-function matchFocusedTty(instances, focusedTty) {
-    const matches = instances.filter((i) => i.tty === focusedTty);
-    if (matches.length === 1)
-        return { instance: matches[0] };
-    return { refusal: matches.length === 0 ? "no agent" : "two or more agents" };
-}
-/** The capture refusal's log line for a reason from `matchFocusedTty` or the
- * tmux branch of capture. */
-function captureRefusalLine(refusal) {
-    switch (refusal) {
-        case "no agent": return "AI Project: refusing capture — no agent found in the focused terminal.";
-        case "two or more agents": return "AI Project: refusing capture — two or more agents share the focused terminal.";
-        case "no active tmux pane": return "AI Project: refusing capture — the focused tmux session has no active pane.";
-        case "tmux pane listing failed": return "AI Project: refusing capture — tmux listed its clients but not its panes.";
-    }
-}
-/** Text from outside the plugin (an app's bundle id, a process's cwd) made
- * safe to put in a log line. JSON string escaping turns U+0000-U+001F (LF and
- * CR included) into visible escapes; DEL, NEL and the Unicode line and
- * paragraph separators (U+007F, U+0085, U+2028, U+2029) are escaped on top,
- * since some log viewers break lines on them. Stream Deck's file log ends a
- * record at LF, so the text cannot start a forged record there. Quotes and
- * backslashes are escaped too; nothing is removed. */
-function logSafe(text) {
-    return JSON.stringify(text)
-        .slice(1, -1)
-        .replace(/[\u007f\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-/**
- * Should the AI Project key's poller stay at full cadence this tick, or is it
- * safe to drop to the idle-gate's reduced rate?
- *
- * MEASURED, and the reason `blockedProbes` is part of this decision and not
- * just `instances`: Claude Code keeps its idle "✳" title marker on screen
- * while its own approval prompt is up, so a BLOCKED Claude's `instance.state`
- * reads `"waiting"`, never `"working"` or `"blocked"` — a version of this
- * check that only looked at instance state would drop to a quarter of full
- * cadence at exactly the moment the operator's approval is most time-
- * sensitive, and the amber light could sit stale for up to 4 poll periods
- * (~10s) instead of one (~2.5s). Folding in every kind's own blocked-probe
- * verdict for the tick closes that gap for every kind, not just Claude.
- * `"failed"` counts as interesting too, so a broken probe is re-tried at full
- * speed rather than quietly left broken for several cycles.
- */
-function agentTickInteresting(args) {
-    return (args.focusedTty !== "" ||
-        args.instances.some((i) => i.state === "working" || i.state === "blocked") ||
-        args.blockedProbes.some((p) => p !== "clear") ||
-        args.unseenActionable);
-}
-/**
- * Compose the face a key should paint from every piece of evidence at once.
- *
- * Pure and tested because it is where the honesty rules live: a key must never
- * look confident on thin evidence. Three cases are easy to get wrong and are
- * settled here rather than in each action shell:
- *
- *   - A scan that could not identify every candidate process is not proof that
- *     the ONE session it found is the only one in this folder. Without a
- *     captured session id — the thing that would make it unambiguous — the
- *     honest face is `unknown`, not that session's state.
- *   - Once a key has captured a session id that id is binding. If a trustworthy
- *     scan no longer finds it, the answer is "no target", never the neighbour
- *     that happens to share the folder.
- *   - A visible approval prompt outranks the file-derived state. MEASURED: a
- *     blocked Claude Code session still shows its idle "✳" marker and so reads
- *     `waiting`, while a blocked Cursor session reads `working`. Requiring
- *     `working` here — as the Cursor-only predecessor did — would make the
- *     branch unreachable for Claude and silently kill the whole feature. The
- *     prompt on screen is direct evidence either way.
- *
- * `blockedOnPane` is only ever true for claude and cursor: codex carries its own
- * `blocked` in `instanceState` and is never scraped ({@link paneShowsAgentPrompt}).
- */
-function decideAgentFace(args) {
-    if (!args.hasTarget)
-        return "none";
-    if (args.instanceState === null) {
-        if (args.scanStatus !== "ok")
-            return "unknown";
-        // A trustworthy scan that did not turn up the captured session means that
-        // session has exited — "no target". Reporting `unknown` because OTHER
-        // sessions share the folder would contradict the binding-capture rule:
-        // those neighbours are not this key's.
-        if (args.hasCapturedId)
-            return "none";
-        return args.matchCount > 1 ? "unknown" : "none";
-    }
-    // `scanStatus` here is THIS kind's own probe (see kindTrusted). If it failed,
-    // nothing about this session was actually observed this tick — a captured id
-    // disambiguates WHICH session is meant, it does not make an unobserved one
-    // trustworthy. So the exemption a captured id used to buy is gone.
-    if (args.scanStatus !== "ok")
-        return "unknown";
-    // A visible prompt is direct evidence and outranks the file-derived state.
-    // It must upgrade from "waiting" as well as "working": Claude Code keeps its
-    // IDLE title marker while its approval prompt is on screen (measured), so
-    // gating this on "working" alone would make it unreachable for Claude.
-    if (args.blockedProbe === "blocked")
-        return "blocked";
-    // The probe failed, so "is it waiting on the operator?" is unanswered — and
-    // that is exactly the question this key exists to answer. Say so.
-    if (args.blockedProbe === "failed")
-        return "unknown";
-    return args.instanceState;
-}
-/**
- * The identity a memory belongs to: the exact triple a key is bound to.
- *
- * Any change to it — a re-teach, a hand-typed project path, a key that has not
- * been taught yet — produces a different string and therefore a fresh memory.
- */
-function agentBindingKey(kind, project, sessionId) {
-    return `${kind ?? "-"}|${project}|${sessionId}`;
-}
-/** A memory that has observed nothing yet. Cold start lives here: with
- * `sawActivity` false there is no transition to complete, so the very first
- * tick of a key sitting next to an already-idle agent cannot arm the mark. */
-function initialTurnMemory(binding) {
-    return { binding, instancePid: 0, sawActivity: false, unseen: false };
-}
-/**
- * Advance the unread-mark memory by one observed tick.
- *
- * The exact guarantee, which the documentation must not round up: the mark says
- * *the most recently completed turn finished while you were not looking at this
- * session, and you have not looked since*. It does NOT say the session has
- * unread output in any general sense, and it does not survive a new turn —
- * starting more work supersedes the previous result (an operator decision;
- * the cost is that a turn started by someone the plugin cannot see, such as a
- * second tmux client over ssh, silently discards the earlier mark).
- *
- * The other limit, which the user-facing text also has to state: this is a
- * SAMPLED signal. A turn that starts and finishes between two polls is never
- * observed working, so it leaves no mark. The mark reports turns the plugin
- * watched run, not every turn that happened.
- *
- * Order matters in one place: `hot` is applied LAST, so being at the terminal
- * dismisses the mark whatever this tick's face turned out to be — including an
- * `unknown` face, where the honest reading is that we could not check but the
- * operator is demonstrably right there.
- */
-function trackAgentTurn(prev, obs) {
-    // A commit for a different target is not this memory's business. This is
-    // also the whole concurrency story: a refresh that started before a capture
-    // changed the key arrives carrying the OLD binding and resets instead of
-    // merging, so no lock is needed between the poll and the press paths.
-    const rebound = prev.binding === obs.binding ? prev : initialTurnMemory(obs.binding);
-    // A pid of 0 means "nothing was selected this tick", which is silence, not a
-    // change — the memory must survive a tick that could not see the session.
-    // A DIFFERENT pid is a different process, and its predecessor's turn is not
-    // its own however identical the binding looks.
-    const base = obs.pid !== 0 && rebound.instancePid !== 0 && rebound.instancePid !== obs.pid
-        ? initialTurnMemory(obs.binding)
-        : rebound;
-    const pid = obs.pid !== 0 ? obs.pid : base.instancePid;
-    let next;
-    switch (obs.face) {
-        case "working":
-            // The only edge that proves a turn ran.
-            next = { binding: obs.binding, instancePid: pid, sawActivity: true, unseen: false };
-            break;
-        case "blocked":
-            // Preserves the evidence, never creates it (see `sawActivity`), and
-            // clears the mark because reaching an approval prompt means a turn is
-            // in flight again.
-            next = { binding: obs.binding, instancePid: pid, sawActivity: base.sawActivity, unseen: false };
-            break;
-        case "waiting":
-            // The turn ended. Arm only if we actually watched it run, and spend
-            // the evidence so a second idle tick cannot re-arm from the same turn.
-            next = { binding: obs.binding, instancePid: pid, sawActivity: false, unseen: base.unseen || base.sawActivity };
-            break;
-        case "none":
-            // The session is gone. A mark on a dead session could never be
-            // dismissed — pressing the key raises nothing — so it must not exist.
-            next = initialTurnMemory(obs.binding);
-            break;
-        case "unknown":
-            // Transparent for "could not look", reset for "no longer know which
-            // session this is" — the distinction F002 of the plan review turned on.
-            next = obs.ambiguous ? initialTurnMemory(obs.binding) : { ...base, binding: obs.binding, instancePid: pid };
-            break;
-    }
-    return obs.hot ? { ...next, unseen: false } : next;
-}
-/**
- * Is this tick's `unknown` face caused by not knowing WHICH session the key
- * watches, rather than by a probe that could not answer?
- *
- * Mirrors the `matchCount > 1` branch of {@link decideAgentFace} exactly: a
- * trustworthy scan, no captured session id to disambiguate with, nothing
- * selected, and more than one live session in the folder. That is reachable in
- * normal use — Claude Code exposes no session id, so two Claude sessions in one
- * project produce it — and it is the one `unknown` that must forget history.
- */
-function agentUnknownIsAmbiguity(args) {
-    return args.scanStatus === "ok" && !args.hasCapturedId && !args.instanceSelected && args.matchCount > 1;
-}
-/**
- * Should a refresh pass throw away what it computed for one key?
- *
- * A pass reads each key's settings, spends several hundred milliseconds on
- * probes, and only then commits. Two things can happen in that window and both
- * make the result worthless rather than merely late:
- *
- *   - the key disappeared (a page switch), so committing would leave state
- *     behind for a key nobody can see; or
- *   - the operator pressed it — a capture changed what the key means, or a
- *     successful raise means they are now AT the session and have answered the
- *     very question the unread mark was asking.
- *
- * The generation must be sampled before that key's settings are read, not
- * after: sampling it later lets a press that lands between the two go
- * undetected, because it is already counted in the generation while the
- * settings still describe the world before it.
- */
-function commitIsStale(args) {
-    return !args.stillVisible || args.genAtRead !== args.genNow;
-}
-/**
- * Does a key's unread mark deserve the full poll cadence this tick?
- *
- * Only when the mark is BOTH armed and dismissible: the face is `waiting`, so
- * the session is really there and going to it would clear the mark. A mark
- * carried across an `unknown` face is remembered history on a target we cannot
- * currently see, and letting that hold the poller at 2.5s would mean one broken
- * probe pins every visible key at full rate for as long as it stays broken.
- */
-function unseenIsActionable(memory, face) {
-    return memory.unseen && face === "waiting";
-}
-function projectBasename$1(path) {
-    const p = normalizeProjectPath(path);
-    return p.slice(p.lastIndexOf("/") + 1) || "?";
-}
-function truncate$2(value, max) {
-    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-const MONO$2 = "Menlo, Monaco, monospace";
-/** The unread mark's red. Not a state colour — see {@link buildAgentProjectKeyImage}. */
-const UNREAD_RED = "#FF4A4A";
-/** Twelve positions around the state glyph. The glyphs are close to
- * rotationally symmetric at key size, so spinning them collapses to a wobble
- * you cannot see; an orbiting dot gives 12 genuinely distinct frames. */
-const ORBIT$2 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
-/** The top-right state glyph, one shape per kind, so a crowded deck says at a
- * glance WHICH agent a key captured and not merely that it captured one. */
-function stateGlyph(kind, color) {
-    switch (kind) {
-        case "claude":
-            // Claude's coral spark/asterisk.
-            return `<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none"/>`;
-        case "codex":
-            // Codex's nested square.
-            return `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
-        case "cursor":
-            // Cursor's arrow pointer.
-            return `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
-    }
-}
-/** The small mark at the bar's left end — the same shape as the state glyph,
- * so the key still identifies its agent when there is nothing to report. */
-function footMark(kind, color) {
-    switch (kind) {
-        case "claude":
-            return `<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" stroke="${color}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
-        case "codex":
-            return `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${color}" stroke-width="1.2"/>`;
-        case "cursor":
-            return `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${color}" stroke-width="1.1" stroke-linejoin="round"/>`;
-    }
-}
-/**
- * The unified live key face, 72x72, on the shared ink ground.
- *
- * Hex colours ONLY — the KEY rasterizer paints `hsl()` as solid black (the
- * touchscreen pixmap pipeline renders it fine), so every hue goes through
- * {@link hslToHex}; a unit test asserts no `hsl(` literal survives for any
- * kind/state/hot/unseen combination. The project name is XML-escaped and
- * truncated to what fits the key.
- *
- * The unread mark is a stripe down the LEFT EDGE rather than a change of ground
- * or state colour, and that is a deliberate constraint, not a style preference:
- * the deck runs one colour language — blue working, amber waiting on you, white
- * idle — and amber is the loudest thing on it because a blocked agent needs you
- * now. An unread finished turn is less urgent than that, so it gets its own
- * layer instead of a fourth state colour, and the face underneath keeps saying
- * what the session is doing. Measured at 216px through inkscape: 4px clears
- * both the longest project name and the foot bar, and a corner dot does not —
- * it collides with the "TERMINAL" eyebrow.
- */
-function buildAgentProjectKeyImage(args) {
-    const base = projectBasename$1(args.project);
-    const name = truncate$2(base, 9);
-    const hue = sessionHue(base);
-    const active = args.state !== "none";
-    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
-    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
-    const bar = !active
-        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
-        : args.hot
-            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
-            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-    // Anchored at x=30, not centre: the longest host label ("TERMINAL") must
-    // clear the state glyph in the top-right corner.
-    const eyebrow = args.host
-        ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$2}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>`
-        : "";
-    let glyph = "";
-    if (active) {
-        glyph = stateGlyph(args.kind, color);
-        if (args.state === "working") {
-            const [x, y] = ORBIT$2[(args.spin ?? 0) % ORBIT$2.length];
-            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
-        }
-        // The hollow-outline glyphs get an amber core when blocked. Claude's spark
-        // is skipped: its three strokes already cross at exactly this point, so a
-        // dot there would only thicken the join. Its whole spark is amber instead.
-        if (args.state === "blocked" && args.kind !== "claude") {
-            glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
-        }
-    }
-    const mark = footMark(args.kind, active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490");
-    // Painted last so nothing can overdraw it, and stopped at y=57 so it never
-    // touches the foot bar, whose one meaning is "your keystrokes reach this
-    // session" — the exact condition under which this mark cannot be showing.
-    const unread = args.unseen ? `<rect x="0" y="0" width="4" height="57" fill="${UNREAD_RED}"/>` : "";
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$2}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}${unread}</svg>`;
-}
-
-/**
- * WHAT IT'S FOR: the pure decision layer behind the Cursor Project key — the
- * one place that answers "which running Cursor CLI session is this key's
- * project, and is it working, blocked on me, or idle?" so the action shell
- * stays a thin wire between Stream Deck events and tested logic.
+ * Test-only exports: `cursorInstancesForProject`, `selectCursorInstance`,
+ * `decideCursorFace`, `paneForTty`, `paneShowsApprovalPrompt`,
+ * `capturePaneArgs` and the re-exports below lost their last production
+ * caller with that key. They stay, covered by tests, until the cleanup listed
+ * in TODO.md.
  *
  * Cursor's CLI (`cursor-agent`) looks superficially like Codex but records
  * state very differently, and three of the Codex signals do NOT port. Each
@@ -12369,6 +11048,9 @@ function buildAgentProjectKeyImage(args) {
  * leaves this module, and none is ever logged. That is a minimisation, not an
  * isolation guarantee — the bytes do pass through this process's memory.
  */
+// Generic tmux-pane and lsof plumbing, shared with the Codex module rather than
+// duplicated: both features ask the same two questions (which pane owns this
+// tty, and which files does this pid hold open).
 /** Parse targeted `ps -o pid=,ppid=,tty=,args=` output. `comm` is deliberately
  * absent: it truncates at 16 chars for cursor-agent and is useless here. */
 function parseCursorProcesses(output) {
@@ -12490,143 +11172,11 @@ function cursorStateFromTranscriptLines(lines) {
     }
     return sawLine ? "unknown" : "waiting";
 }
-/**
- * Does this terminal pane show Cursor's command-approval prompt?
- *
- * This is the ONLY direct evidence that a session is blocked on the operator;
- * no file Cursor writes distinguishes that from ordinary work. Matching is
- * deliberately narrow and fails SAFE: unrecognised wording yields false, so
- * the key falls back to `working` and can never invent an amber "needs you"
- * light that isn't real.
- */
-function paneShowsApprovalPrompt(paneText) {
-    // "Run this command?" alone is a phrase that could plausibly appear in
-    // ordinary scrolled output, so it only counts alongside the choice line
-    // that Cursor renders directly beneath it. The inline status marker is
-    // specific enough to stand on its own.
-    if (paneText.includes("Waiting for approval"))
-        return true;
-    return paneText.includes("Run this command?") && paneText.includes("Run (once)");
-}
-/**
- * tmux args capturing one pane's VISIBLE screen — deliberately no scrollback.
- *
- * An approval prompt is on screen for exactly as long as it is waiting, so the
- * live screen is sufficient evidence. Including history is not merely
- * unnecessary but wrong: an already-answered prompt lingers in the scrollback,
- * and matching it would hold the key amber while the agent is busy working.
- */
-function capturePaneArgs(paneId) {
-    return ["capture-pane", "-p", "-t", paneId];
-}
-function cursorInstancesForProject(instances, project) {
-    const target = normalizeProjectPath(project);
-    return instances.filter((i) => normalizeProjectPath(i.cwd) === target);
-}
-/**
- * Resolve the key's target session.
- *
- * Once a key has captured a session id that id is binding: if that exact
- * session is gone, the answer is "no target", NEVER the other session that
- * happens to share the folder. Quietly re-pointing at a same-cwd neighbour
- * would send the operator's keystrokes and window focus to a conversation
- * they never captured. Without a captured id a lone session is unambiguous;
- * two or more are not, and yield null so the caller can paint `unknown`.
- */
-function selectCursorInstance(instances, project, sessionId) {
-    const mine = cursorInstancesForProject(instances, project);
-    if (sessionId !== "") {
-        const matches = mine.filter((i) => i.sessionId === sessionId);
-        return matches.length === 1 ? matches[0] : null;
-    }
-    return mine.length === 1 ? mine[0] : null;
-}
-/**
- * Compose the face a key should show from every piece of evidence at once.
- *
- * Pure and tested because it is where the honesty rules live: a key must never
- * look confident on thin evidence. Two cases in particular are easy to get
- * wrong and are handled explicitly here rather than in the action shell:
- *
- *   - A scan that could not identify every candidate process is not proof that
- *     the ONE session found is the only one in this folder. If the key has no
- *     captured session id — the thing that would make it unambiguous — the
- *     honest face is `unknown`, not that session's state.
- *   - Only an in-flight turn can be blocked; an idle prompt showing leftover
- *     approval text on screen must not turn the key amber.
- */
-function decideCursorFace(args) {
-    if (!args.hasTarget)
-        return "none";
-    if (args.instanceState === null) {
-        // A trustworthy scan that did not turn up the captured session means that
-        // session has exited — "no target". Reporting `unknown` because OTHER
-        // sessions share the folder would contradict the binding-capture rule in
-        // {@link selectCursorInstance}: those neighbours are not this key's.
-        if (args.scanStatus !== "ok")
-            return "unknown";
-        if (args.hasCapturedId)
-            return "none";
-        return args.matchCount > 1 ? "unknown" : "none";
-    }
-    if (args.scanStatus !== "ok" && !args.hasCapturedId)
-        return "unknown";
-    if (args.instanceState === "working" && args.blockedOnPane)
-        return "blocked";
-    return args.instanceState;
-}
-/** The pane hosting a session, matched by tty. */
-function paneForTty(panes, tty) {
-    return panes.find((p) => p.tty === tty);
-}
-function projectBasename(path) {
-    const p = normalizeProjectPath(path);
-    return p.slice(p.lastIndexOf("/") + 1) || "?";
-}
-function truncate$1(value, max) {
-    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-const MONO$1 = "Menlo, Monaco, monospace";
-const ORBIT$1 = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
-/**
- * Cursor sibling of the Claude and Codex live faces. Hex colours only — the
- * KEY rasterizer paints `hsl()` as black, so every colour goes through
- * {@link hslToHex} (a unit test asserts no `hsl(` literal survives).
- */
-function buildCursorProjectKeyImage(args) {
-    const name = truncate$1(projectBasename(args.project), 9);
-    const hue = sessionHue(projectBasename(args.project));
-    const active = args.state !== "none";
-    const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
-    const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
-    const bar = !active
-        ? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
-        : args.hot
-            ? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
-            : `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-    const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO$1}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
-    let glyph = "";
-    if (active) {
-        const spin = args.spin ?? 0;
-        // Cursor's mark reads as an arrow pointer, distinguishing it at a glance
-        // from Codex's square and Claude's asterisk on a crowded deck.
-        glyph = `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
-        if (args.state === "working") {
-            const [x, y] = ORBIT$1[spin % ORBIT$1.length];
-            glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
-        }
-        if (args.state === "blocked")
-            glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
-    }
-    const mark = `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.1" stroke-linejoin="round"/>`;
-    // Deprecation marker — superseded by AI Project; remove with this action.
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO$1}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
-}
 
 /**
  * WHAT IT'S FOR: the one place that asks the machine "which interactive
  * Cursor CLI sessions exist right now, in which folders, and what is each
- * doing?" — so every visible Cursor Project key repaints from a single
+ * doing?" — so every AI Project and Focus tmux poll reads Cursor from a single
  * bounded snapshot instead of each key shelling out for itself.
  *
  * Shape of a scan: `pgrep` narrows to candidate pids, one targeted `ps`
@@ -12817,15 +11367,6 @@ async function transcriptTailLines(path) {
         return null;
     }
 }
-function invalidateCursorScan() {
-    cache = null;
-    inFlight$1 = null;
-    generation$1++;
-    // Do NOT reset `seq` — an in-flight scan keeps the sequence it took at entry,
-    // so zeroing the counter would let it publish over a newer scan afterwards.
-    // Raising the watermark locks in-flight scans out; the next scan (++seq) passes.
-    publishedSeq = seq;
-}
 /** Where Cursor files its per-project transcripts. A parameter so tests can
  * point at a fixture tree instead of the operator's real, populated one. */
 const CURSOR_PROJECTS_BASE = join(homedir(), ".cursor", "projects");
@@ -12928,13 +11469,6 @@ async function doScan(exec, projectsBase, gen, mySeq) {
     });
 }
 function remember(at, gen, mySeq, snapshot) {
-    // Still return the snapshot to whoever awaited THIS scan; just don't let a
-    // superseded scan become the cached view of the world. Two independent
-    // checks: `gen` catches an EXPLICIT invalidation happening in between;
-    // `mySeq` catches two scans of the SAME generation finishing out of start
-    // order (see the module header for why both are needed).
-    if (gen !== generation$1)
-        return snapshot;
     if (mySeq < publishedSeq)
         return snapshot;
     cache = { at, snapshot };
@@ -13250,8 +11784,9 @@ function agentPaneForTty(panes, tty) {
     return panes.find((p) => p.tty === tty);
 }
 /** Raise one pane to the front of its session. Deliberately defined here rather
- * than borrowed from the per-agent modules: those carry the superseded actions
- * and are slated for deletion, and the unified key must not depend on them. */
+ * than borrowed from the per-agent modules: their pane helpers lost their last
+ * production caller when v2.0.0 retired the per-agent keys, and are slated for
+ * cleanup (TODO.md), so the unified key must not depend on them. */
 function agentTmuxFocusArgs(pane, clientTty) {
     const commands = [];
     if (clientTty !== "")
@@ -13340,6 +11875,272 @@ function bindsBySession(kind) {
 }
 
 /**
+ * Overlap-safe job coalescing for the polling actions. A poll tick and an
+ * explicit "state just changed, repaint now" request can collide; the naive
+ * `if (running) return` guard silently DROPS the explicit request, leaving a
+ * freshly captured/raised key painting its old state for a full extra poll
+ * cycle. This runner never overlaps the job and never loses a request: a
+ * request during a run queues exactly one rerun (multiple requests coalesce
+ * into that one), which starts as soon as the current run finishes — with the
+ * job then reading the post-change state.
+ */
+class CoalescedRunner {
+    job;
+    running = false;
+    pending = false;
+    constructor(job) {
+        this.job = job;
+    }
+    /**
+     * Run the job, or — if it is already running — schedule one rerun after it
+     * finishes. Resolves when the run this call participated in has finished
+     * (for a queued rerun: immediately; the rerun still executes). A throwing
+     * job never wedges the runner.
+     */
+    async request() {
+        if (this.running) {
+            this.pending = true;
+            return;
+        }
+        this.running = true;
+        try {
+            do {
+                this.pending = false;
+                try {
+                    await this.job();
+                }
+                catch {
+                    // The job owns its error reporting; a throw must not stop a
+                    // queued rerun or permanently wedge the runner.
+                }
+            } while (this.pending);
+        }
+        finally {
+            this.running = false;
+        }
+    }
+}
+/**
+ * Adaptive poll gate: poll every tick while things are INTERESTING (a
+ * terminal is frontmost, something is hot, Claude is working), every Nth
+ * tick otherwise — most of the subprocess cost of polling is spent watching
+ * nothing change. Pure.
+ */
+function shouldPollThisTick(tick, interesting, idleEvery = 4) {
+    return interesting || tick % idleEvery === 0;
+}
+
+/** Escape a string for safe embedding inside an AppleScript double-quoted literal. */
+function escapeForAppleScript(value) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/** iTerm2's bundle identifier (for frontmost-app checks). */
+const ITERM_BUNDLE_ID = "com.googlecode.iterm2";
+/**
+ * AppleScript returning the tty of iTerm's FOCUSED session — current session
+ * of the current tab of the current (front) window — or "" when there is no
+ * window. Only run this when iTerm is already frontmost: merely addressing an
+ * app via AppleScript launches it.
+ */
+const ITERM_FOCUSED_TTY_SCRIPT = `tell application "iTerm"
+	try
+		return tty of current session of current tab of current window
+	on error
+		return ""
+	end try
+end tell`;
+/** Parse the structured final line emitted by {@link buildITermRaiseScript}. */
+function parseITermFocusResult(output) {
+    const line = output.trim().split("\n").at(-1) ?? "";
+    const [status, windowId = "", tty = ""] = line.split("|");
+    if (status === "ok" || status === "notfound" || status === "timeout" || status === "error") {
+        return { status, windowId, tty };
+    }
+    return { status: "error", windowId, tty };
+}
+/**
+ * Build AppleScript that activates iTerm and selects the window+tab+session
+ * whose `tty` equals the given tty. Selection is verified by stable window id
+ * plus focused tty, with a bounded retry for cross-window/Space activation.
+ *
+ * The tty is escaped via {@link escapeForAppleScript} before interpolation so
+ * that quotes/backslashes in the value cannot break out of the AppleScript
+ * string literal.
+ *
+ * iTerm2's AppleScript application name is "iTerm". Each iTerm2 session exposes
+ * a `tty` property (e.g. "/dev/ttys000").
+ *
+ * @param tty - The tty device path to match (e.g. "/dev/ttys000").
+ * @returns The AppleScript source, or "" when `tty` is empty/whitespace-only
+ *          (the caller treats "" as nothing-to-do).
+ */
+function buildITermRaiseScript(tty) {
+    if (tty.trim() === "") {
+        return "";
+    }
+    const escapedTty = escapeForAppleScript(tty);
+    return `set targetTty to "${escapedTty}"
+set targetWindowId to ""
+
+tell application "iTerm"
+	-- Capture a stable window identity before activation changes window order.
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if (tty of s) is targetTty then
+					set targetWindowId to id of w
+					exit repeat
+				end if
+			end repeat
+			if targetWindowId is not "" then exit repeat
+		end repeat
+		if targetWindowId is not "" then exit repeat
+	end repeat
+
+	if targetWindowId is "" then return "notfound||"
+
+	activate
+	set observedWindowId to ""
+	set observedTty to ""
+	set cleanAttempts to 0
+	set lastErrorNumber to ""
+
+	-- Window activation is asynchronous across iTerm windows and Spaces.
+	-- Re-resolve by stable id on every attempt, wait for that window to become
+	-- current, then make tab/session selection the final write.
+	repeat with attempt from 1 to 30
+		try
+			set targetWindow to first window whose id is targetWindowId
+			try
+				if miniaturized of targetWindow then set miniaturized of targetWindow to false
+			end try
+			select targetWindow
+			delay 0.05
+			set observedWindowId to id of current window
+			if observedWindowId is targetWindowId then
+				set selectedTarget to false
+				set targetWindow to first window whose id is targetWindowId
+				repeat with t in tabs of targetWindow
+					repeat with s in sessions of t
+						if (tty of s) is targetTty then
+							tell t to select
+							tell s to select
+							set selectedTarget to true
+							exit repeat
+						end if
+					end repeat
+					if selectedTarget then exit repeat
+				end repeat
+				delay 0.05
+				set observedWindowId to id of current window
+				set observedTty to tty of current session of current tab of current window
+				if observedWindowId is targetWindowId and observedTty is targetTty and frontmost then
+					return "ok|" & observedWindowId & "|" & observedTty
+				end if
+			end if
+			set cleanAttempts to cleanAttempts + 1
+		on error errMsg number errNum
+			set lastErrorNumber to errNum as text
+			-- A window/session can disappear during the transition. The next
+			-- bounded attempt re-resolves it; final readback remains diagnostic.
+		end try
+	end repeat
+end tell
+if cleanAttempts is 0 and lastErrorNumber is not "" then return "error|" & lastErrorNumber & "|"
+return "timeout|" & observedWindowId & "|" & observedTty`;
+}
+
+/**
+ * Long-press detection for Keypad actions, factored out of Window Ring's
+ * proven pattern: the hold callback fires AT the threshold (immediate haptic
+ * of "something happened", no waiting for release), and a release before the
+ * threshold is reported as a short press for the caller to act on in onKeyUp.
+ * Pure timers, no SDK — unit-tested with fake timers.
+ */
+/** Press held this long (ms) registers as a long press. */
+const LONG_PRESS_MS$1 = 500;
+class PressGate {
+    holdMs;
+    timers = new Map();
+    constructor(holdMs = LONG_PRESS_MS$1) {
+        this.holdMs = holdMs;
+    }
+    /** Key went down: arm the hold callback. A second down re-arms. */
+    down(id, onHold) {
+        this.cancel(id);
+        const t = setTimeout(() => {
+            this.timers.delete(id);
+            onHold();
+        }, this.holdMs);
+        this.timers.set(id, t);
+    }
+    /**
+     * Key came up. Returns true for a short press (released before the
+     * threshold — the caller should run the normal action); false when the
+     * hold callback already fired or nothing was armed.
+     */
+    up(id) {
+        const t = this.timers.get(id);
+        if (t === undefined)
+            return false;
+        clearTimeout(t);
+        this.timers.delete(id);
+        return true;
+    }
+    /** Disarm without firing (e.g. the key disappeared mid-press). */
+    cancel(id) {
+        const t = this.timers.get(id);
+        if (t !== undefined)
+            clearTimeout(t);
+        this.timers.delete(id);
+    }
+}
+
+/**
+ * Terminal.app scripting for the AI Project key: read the focused tab's
+ * tty and raise the window+tab hosting a given tty. Verified against the
+ * Terminal sdef: tabs expose read-only `tty`, windows a settable
+ * `selected tab` / `frontmost`. Only address Terminal when it is RUNNING —
+ * `tell application "Terminal"` would launch it.
+ */
+const TERMINAL_BUNDLE_ID = "com.apple.Terminal";
+/** Process name for the running check (pgrep -x). */
+const TERMINAL_PROCESS_NAME = "Terminal";
+/** AppleScript returning the tty of Terminal's focused tab, or "". */
+const TERMINAL_FOCUSED_TTY_SCRIPT = `tell application "Terminal"
+	try
+		if (count of windows) is 0 then return ""
+		return tty of selected tab of front window
+	on error
+		return ""
+	end try
+end tell`;
+/**
+ * AppleScript that selects the Terminal window+tab whose tty matches, raises
+ * it, and activates Terminal. Returns "ok" or "notfound".
+ */
+function buildTerminalRaiseScript(tty) {
+    if (tty.trim() === "") {
+        return "";
+    }
+    const escapedTty = escapeForAppleScript(tty);
+    return `tell application "Terminal"
+	repeat with w in windows
+		repeat with t in tabs of w
+			if (tty of t) is "${escapedTty}" then
+				set selected tab of w to t
+				set frontmost of w to true
+				activate
+				return "ok"
+			end if
+		end repeat
+	end repeat
+end tell
+return "notfound"`;
+}
+
+/**
  * WHAT IT'S FOR: the one place that decides whether a key's agent is waiting
  * on you, and whether the pane must be read to find out, so "a Claude that
  * reported itself is never scraped" is a tested rule, not a comment.
@@ -13380,15 +12181,350 @@ async function probeBlocked(args) {
     return paneShowsAgentPrompt(kind, shot.text) ? "blocked" : "clear";
 }
 
-const POLL_MS$4 = 2500;
+/**
+ * WHAT IT'S FOR: writes ONE log line when Switchboard loses or regains
+ * `claude agents --json` (Claude Code's own state report), so a silent switch
+ * to the older title/transcript signals leaves evidence. It prints only what
+ * the pure `agentsSourceLogLine` returns, so the decision is tested there.
+ *
+ * Process-wide memory (`last`) makes this fire once per transition, never per
+ * poll tick, even though AI Project and Focus tmux both report every tick. The limit: scans are logged in the order they
+ * FINISH. Non-fresh callers share one in-flight scan, but a `fresh` scan (an
+ * AI Project press) runs alongside a poll, so if the CLI changes availability
+ * between two overlapping scans, the older one can finish last and add one
+ * extra lost/regained pair of lines.
+ * The reason is one of claude-scan's fixed strings and never carries CLI
+ * output, so no session data reaches the log.
+ */
+let last;
+function noteClaudeAgentsSource(src) {
+    if (src === undefined)
+        return;
+    const line = agentsSourceLogLine(last, src.source, src.reason);
+    if (line !== null)
+        streamDeck.logger[line.level](line.message);
+    // `unasked` (nothing was running) neither loses nor regains the source.
+    if (src.source !== "unasked")
+        last = src.source;
+}
+
+/**
+ * Pure logic for the "Open File" action: glob matching, picking a file from a
+ * directory listing by a strategy, and building `open` arguments. The actual
+ * filesystem read and process launch live in the action; everything here is
+ * pure and unit-testable.
+ */
+/**
+ * Expand a leading `~` to the home directory. Node's fs does not understand
+ * `~` (it's a shell convenience), so a directory like "~/Downloads" must be
+ * resolved before use. Non-tilde paths are returned unchanged.
+ */
+function expandHome(p, home) {
+    if (p === "~")
+        return home;
+    if (p.startsWith("~/"))
+        return `${home}${p.slice(1)}`;
+    return p;
+}
+/**
+ * Convert a filename glob (`*` = any run, `?` = one char) into an anchored,
+ * case-insensitive RegExp. All other regex metacharacters are matched literally.
+ */
+function globToRegExp(glob) {
+    const specials = /[.+^${}()|[\]\\]/;
+    let body = "";
+    for (const ch of glob) {
+        if (ch === "*")
+            body += ".*";
+        else if (ch === "?")
+            body += ".";
+        else
+            body += specials.test(ch) ? `\\${ch}` : ch;
+    }
+    return new RegExp(`^${body}$`, "i");
+}
+/**
+ * Pick one file from `entries` matching `pattern`, by `mode`:
+ *   - "modified": most recently modified (mtime)
+ *   - "created":  most recently created (birthtime)
+ *   - "name":     last in descending name order (handy for date-named files)
+ * Returns null when nothing matches.
+ */
+function selectFile(entries, pattern, mode) {
+    const re = globToRegExp(pattern.trim() || "*");
+    const matches = entries.filter((e) => re.test(e.name));
+    if (matches.length === 0)
+        return null;
+    const compare = mode === "created"
+        ? (a, b) => b.birthtimeMs - a.birthtimeMs
+        : mode === "name"
+            ? (a, b) => b.name.localeCompare(a.name)
+            : (a, b) => b.mtimeMs - a.mtimeMs;
+    return [...matches].sort(compare)[0] ?? null;
+}
+/**
+ * Build `open` CLI args for the chosen file. Default app: `open <file>`;
+ * BBEdit: `open -a BBEdit <file>`; a named/path app: `open -a <app> <file>`.
+ * Falls back to the default app when "app" is selected but none is provided.
+ */
+function buildOpenArgs(filePath, opener, app) {
+    if (opener === "bbedit")
+        return ["-a", "BBEdit", filePath];
+    if (opener === "app" && app && app.trim() !== "")
+        return ["-a", app.trim(), filePath];
+    return [filePath];
+}
+
+/**
+ * WHAT IT'S FOR: decides what the deck and the log should say when a focus
+ * press does something other than raise a window. It is pure so those decisions
+ * can be tested — the module that performs them talks to the Stream Deck SDK
+ * and this repo has no harness for action shells, so any logic left there is
+ * verified by reading it.
+ *
+ * The three events it describes are the three ways a press departs from the
+ * golden path, and every one of them used to be invisible: a dropped press
+ * returned `undefined` that no caller could tell from success, a taken-over key
+ * was reported only if the replacement finished, and a raise that threw was
+ * swallowed by the absent error branch.
+ */
+/**
+ * A press that never ran because another raise holds the shared key.
+ *
+ * `warn`, not `error`: two presses inside one raise is ordinary contention, not
+ * a fault. It alerts because the alternative — a key that silently ignores you —
+ * is the symptom that made the original wedge impossible to notice.
+ */
+function describeDroppedPress(label, key, heldForMs) {
+    return {
+        level: "warn",
+        message: `${label}: press ignored — another raise has held "${key}" for ${Math.round(heldForMs)}ms.`,
+        alert: true,
+    };
+}
+/**
+ * A press that took the shared key from a holder stuck past the threshold.
+ *
+ * `error`, and deliberately loud: reaching this means every focus key on the
+ * deck had been dead since that holder stalled. No alert — this press is going
+ * on to do its work, so flashing would tell the operator it failed.
+ */
+function describeTakeover(label, key, heldForMs) {
+    return {
+        level: "error",
+        message: `${label}: took "${key}" from a raise stuck for ${Math.round(heldForMs)}ms — an earlier press never completed, ` +
+            `so every focus key was dead until this one.`,
+        alert: false,
+    };
+}
+/**
+ * A press whose raise threw. Named separately because the shell rethrows after
+ * reporting: the operator gets the alert, and the error still propagates rather
+ * than being swallowed here.
+ */
+function describeFailedPress(label, error) {
+    return {
+        level: "error",
+        message: `${label}: raise failed — ${error instanceof Error ? error.message : String(error)}`,
+        alert: true,
+    };
+}
+
+/**
+ * Per-key async mutex: chains tasks for the same key so read-modify-write
+ * handlers (dial rotations that persist a cursor, run a subprocess, then
+ * render) can't interleave. Stream Deck delivers events serially, but async
+ * handlers overlap at their await points — two rotations could both read the
+ * same settings index and both write index+1. Tasks for DIFFERENT keys run
+ * concurrently; a rejected task never breaks the chain.
+ *
+ * The map is self-cleaning: when a key's chain fully settles it removes its
+ * own entry (only if it is still the tail). There is deliberately no external
+ * "release" — deleting a live chain would let a new event run concurrently
+ * with an in-flight task, recreating the exact race this exists to prevent.
+ */
+const chains = new Map();
+/**
+ * The age at which a holder's claim on an exclusive key may be TAKEN by a new
+ * request.
+ *
+ * Read what this is and is not. It is NOT a proof that a legitimate hold
+ * finishes sooner: the locked focus path awaits Stream Deck SDK round-trips
+ * (`getSettings`, `showOk`) that have no timeout at all, so no finite upper
+ * bound on a healthy hold can be derived from that code. It is a chosen
+ * recovery policy, and the tradeoff it makes is explicit in both directions:
+ * a healthy press slower than this can be taken from (see the overlap note on
+ * {@link runExclusive}), and a genuinely wedged key stays dead until this much
+ * time has passed AND another press arrives.
+ *
+ * The number is anchored to what IS bounded: the path's subprocesses cap at
+ * roughly 39s (three osascript at 8s, three tmux at 5s) if every one times
+ * out, so a value below that would take from a press whose slowness is fully
+ * explained by bounded work. 45s clears it with a small margin. A press that
+ * exceeds 45s is, by construction, one whose extra time came from something
+ * unbounded — which is the condition this exists to recover from.
+ */
+const MAX_HOLD_MS = 45_000;
+/**
+ * The live holder of each exclusive key. `token` is the identity, not `at`:
+ * two acquisitions can land in the same millisecond, and a displaced holder must
+ * never delete the entry belonging to the request that took the key from it.
+ * Same rule the `chains` map above follows — only clean up if still yours.
+ */
+const holders = new Map();
+let holderSeq = 0;
+/**
+ * Run at most one task for a key. A second request while the first is live is
+ * dropped rather than queued: focus presses describe "go there now", so a stale
+ * press must not fire seconds later after a slow cross-Space raise.
+ *
+ * REQUEST-TRIGGERED LEASE TAKEOVER, which is a weaker thing than a timeout and
+ * must not be described as one. There is no timer and no autonomous expiry: a
+ * holder that never settles stays recorded indefinitely, and the key only
+ * changes hands when a LATER REQUEST arrives finding the claim older than
+ * {@link MAX_HOLD_MS}. So the deck does not heal on its own — it heals on the
+ * next press after the threshold, and a press before it is still dropped.
+ *
+ * Why it exists: every subprocess in the focus path is bounded (osascript 8s,
+ * tmux 5s), but the SDK round-trips around them are not — `getSettings()` waits
+ * for a `didReceiveSettings` reply that a dropped websocket message never
+ * delivers. A holder stuck on one of those held the key for the life of the
+ * process, and because the key is the literal string "iterm-focus" shared by
+ * every focus action, one lost reply silently killed every one of them until the
+ * plugin was restarted.
+ *
+ * THE COST, stated at full strength because an earlier draft of this comment
+ * called it a brief overlap and that was wrong: taking the key does NOT cancel
+ * the displaced task, and nothing bounds how long it may still run. If it later
+ * resumes it will carry out its own side effects — raising ITS iTerm window,
+ * switching the tmux client to ITS target — after the newer press has already
+ * done so. The user-visible result is being pulled to the older destination
+ * some time after arriving at the newer one. Nothing here prevents that; the
+ * only real defence would be an ownership check immediately before each
+ * focus-changing side effect, which this does not implement. The tradeoff taken
+ * is that a rare wrong-window raise during recovery beats five permanently dead
+ * keys, not that the race was eliminated.
+ *
+ * The caller is told which happened. This module is pure and cannot log, and a
+ * dropped press and a taken key are both departures from the golden path that
+ * must leave a trace at the call site.
+ */
+async function runExclusive(key, task, opts = {}) {
+    const now = opts.now ?? monotonicNow;
+    const held = holders.get(key);
+    const at = now();
+    let stoleAfterMs;
+    if (held !== undefined) {
+        const heldForMs = at - held.at;
+        // A young claim is a real press in flight: honour it and drop this one.
+        if (heldForMs < MAX_HOLD_MS)
+            return { ran: false, heldForMs };
+        stoleAfterMs = heldForMs;
+        opts.onSteal?.(heldForMs);
+    }
+    const token = ++holderSeq;
+    holders.set(key, { token, at });
+    try {
+        const value = await task();
+        return stoleAfterMs === undefined ? { ran: true, value } : { ran: true, value, stoleAfterMs };
+    }
+    finally {
+        // Only clean up if the key is still ours: a request that took the key
+        // from us owns it now, and releasing it here would let two presses run.
+        if (holders.get(key)?.token === token)
+            holders.delete(key);
+    }
+}
+/** Monotonic elapsed-time source — immune to wall-clock adjustment in BOTH
+ * directions, which `Date.now()` is not. */
+const monotonicNow = () => performance.now();
+function serialize(key, task) {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    let entry;
+    entry = next.then(() => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    }, () => {
+        if (chains.get(key) === entry)
+            chains.delete(key);
+    });
+    chains.set(key, entry);
+    return next;
+}
+
+/**
+ * WHAT IT'S FOR: the single place the two focus actions (AI Project and Focus
+ * tmux Window) take the shared raise key,
+ * so a press that does not raise a window says so — on the deck and in the log —
+ * instead of vanishing.
+ *
+ * Why it exists: the key is one literal string shared by both actions, and
+ * `runExclusive` used to return `T | undefined`. Every focus handler returns
+ * void, so a dropped press was indistinguishable from a successful one; no
+ * caller alerted and no caller logged. When a holder wedged, every focus key went
+ * dead in silence and the only cure was restarting the plugin.
+ *
+ * A thin shell by design: what to say is decided by the pure, tested
+ * {@link FocusReport} builders in `mac/focus-outcome.ts`; this only performs it.
+ */
+/** The one key every raise serialises on — raising two iTerm windows at once
+ * would fight over which ends up frontmost. */
+const FOCUS_KEY = "iterm-focus";
+async function perform(report, key) {
+    if (report.level === "warn")
+        streamDeck.logger.warn(report.message);
+    else
+        streamDeck.logger.error(report.message);
+    if (!report.alert)
+        return;
+    // Deck feedback is cosmetic; failing to flash must not replace the real
+    // error with a second one, so it is reported and swallowed here.
+    try {
+        await key.showAlert();
+    }
+    catch (err) {
+        streamDeck.logger.warn(`Focus press: showAlert failed: ${String(err)}`);
+    }
+}
+/**
+ * Run one action's raise under {@link FOCUS_KEY}, reporting every way it can
+ * fail to happen. `label` names the action in the log — there are two, and
+ * knowing which one wedged is the point of logging it.
+ *
+ * A raise that THROWS is reported and then rethrown, not swallowed: the caller's
+ * error handling is unchanged by this wrapper, it merely stops being silent.
+ */
+async function runFocusPress(label, key, task) {
+    let outcome;
+    try {
+        outcome = await runExclusive(FOCUS_KEY, task, {
+            // Reported at the moment of takeover, not after: a replacement that
+            // also wedges would otherwise never report it at all.
+            onSteal: (heldForMs) => {
+                const report = describeTakeover(label, FOCUS_KEY, heldForMs);
+                streamDeck.logger.error(report.message);
+            },
+        });
+    }
+    catch (err) {
+        await perform(describeFailedPress(label, err), key);
+        throw err;
+    }
+    if (!outcome.ran)
+        await perform(describeDroppedPress(label, FOCUS_KEY, outcome.heldForMs), key);
+}
+
+const POLL_MS$3 = 2500;
 /**
  * One live key for one coding-agent session, whichever agent that is.
  *
- * Supersedes the three per-agent keys. Hold it for half a second while Claude
- * Code, Codex, or Cursor is frontmost and it works out which of the three it is
- * looking at, then behaves exactly as the dedicated key did: blue while a turn
- * runs, amber when the agent is waiting on you, white at an idle prompt, and
- * the bar lit when your keystrokes would reach that exact session.
+ * It replaced the three per-agent keys (Claude, Codex and Cursor Project),
+ * which v2.0.0 removed. Hold it for half a second while Claude Code, Codex, or
+ * Cursor is frontmost and it works out which of the three it is looking at,
+ * then shows that session's state: blue while a turn runs, amber when the
+ * agent is waiting on you, white at an idle prompt, and the bar lit when your
+ * keystrokes would reach that exact session.
  */
 let AiProject = (() => {
     let _classDecorators = [action({ UUID: "com.movingavg.switchboard.aiproject" })];
@@ -13443,7 +12579,7 @@ let AiProject = (() => {
                 this.timer = setInterval(() => {
                     if (shouldPollThisTick(this.tick++, this.interesting))
                         void this.refreshAll();
-                }, POLL_MS$4);
+                }, POLL_MS$3);
             }
             await this.refreshAll();
         }
@@ -13895,276 +13031,6 @@ let AiProject = (() => {
             // committed to settings, so cosmetic feedback failing must not leave the
             // in-flight pass free to write the old target back.
             this.acknowledge(key);
-            await key.showOk();
-            await this.refreshAll();
-        }
-    });
-    return _classThis;
-})();
-
-const POLL_MS$3 = 2500;
-/** Live key for one interactive Cursor CLI session/project. */
-let CursorProject = (() => {
-    let _classDecorators = [action({ UUID: "com.movingavg.switchboard.cursorproject" })];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    let _classSuper = SingletonAction;
-    (class extends _classSuper {
-        static { _classThis = this; }
-        static {
-            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
-            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-            _classThis = _classDescriptor.value;
-            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-            __runInitializers(_classThis, _classExtraInitializers);
-        }
-        gate = new PressGate();
-        visible = new Map();
-        lastImage = new Map();
-        /** Session identity the last refresh RESOLVED for this key (set even if the
-         * subsequent setImage was skipped). A press treats it as a hint only — focus()
-         * revalidates it against a fresh scan before acting. */
-        paintedSession = new Map();
-        refresher = new CoalescedRunner(() => this.doRefreshAll());
-        timer;
-        spin = 0;
-        tick = 0;
-        interesting = true;
-        async onWillAppear(ev) {
-            if (!ev.action.isKey())
-                return;
-            this.visible.set(ev.action.id, ev.action);
-            if (this.timer === undefined) {
-                this.timer = setInterval(() => {
-                    if (shouldPollThisTick(this.tick++, this.interesting))
-                        void this.refreshAll();
-                }, POLL_MS$3);
-            }
-            await this.refreshAll();
-        }
-        onWillDisappear(ev) {
-            this.gate.cancel(ev.action.id);
-            this.visible.delete(ev.action.id);
-            this.lastImage.delete(ev.action.id);
-            this.paintedSession.delete(ev.action.id);
-            if (this.visible.size === 0 && this.timer !== undefined) {
-                clearInterval(this.timer);
-                this.timer = undefined;
-            }
-        }
-        onKeyDown(ev) {
-            this.gate.down(ev.action.id, () => {
-                void this.capture(ev.action).catch((error) => streamDeck.logger.error(`Cursor Project capture failed: ${String(error)}`));
-            });
-        }
-        async onKeyUp(ev) {
-            if (!this.gate.up(ev.action.id))
-                return;
-            await runFocusPress("Cursor Project", ev.action, () => this.focus(ev.action));
-        }
-        async snapshot() {
-            const tmux = findTmuxPath();
-            const [cursor, panesResult, clientsResult, front] = await Promise.all([
-                scanCursorSnapshot(),
-                runTmux(LIST_CODEX_PANES_ARGS, tmux),
-                runTmux(LIST_CLIENTS_ARGS, tmux),
-                runJxa(FRONT_APP_BUNDLE_JXA),
-            ]);
-            const frontBundle = front.ok ? front.stdout.trim() : "";
-            let focusedTty = "";
-            if (frontBundle === ITERM_BUNDLE_ID)
-                focusedTty = (await runAppleScript(ITERM_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            else if (frontBundle === TERMINAL_BUNDLE_ID)
-                focusedTty = (await runAppleScript(TERMINAL_FOCUSED_TTY_SCRIPT)).stdout.trim();
-            return {
-                instances: cursor.instances,
-                panes: panesResult.ok ? parseCodexPanes(panesResult.stdout) : [],
-                clientTtys: parseClientTtys(clientsResult.stdout),
-                frontBundle,
-                focusedTty,
-                scanStatus: cursor.status,
-            };
-        }
-        /** A snapshot taken deliberately fresh, for the moment a press acts on it —
-         * the cached one may be up to a poll old, and a window raise must not be
-         * aimed at a session that has since exited or moved. */
-        freshSnapshot() {
-            invalidateCursorScan();
-            return this.snapshot();
-        }
-        refreshAll() { return this.refresher.request(); }
-        async canonicalProject(project) {
-            const normalized = normalizeProjectPath(expandHome(project, homedir()));
-            try {
-                return await realpath(normalized);
-            }
-            catch {
-                return normalized;
-            }
-        }
-        /**
-         * Is this session holding for the operator's approval? Nothing Cursor
-         * writes to disk separates that from ordinary work, so the terminal itself
-         * is the only evidence — which means the answer is available for
-         * tmux-hosted sessions only. Anything unrecognised leaves the state as
-         * `working`, so a wording change can never manufacture a false alarm.
-         */
-        async blockedOnApproval(pane, tmux) {
-            const result = await runTmux(capturePaneArgs(pane.paneId), tmux);
-            if (!result.ok) {
-                streamDeck.logger.debug(`Cursor Project: capture-pane failed for ${pane.paneId}: ${result.stderr}`);
-                return false;
-            }
-            return paneShowsApprovalPrompt(result.stdout);
-        }
-        async doRefreshAll() {
-            if (this.visible.size === 0)
-                return;
-            const snap = await this.snapshot();
-            const tmux = findTmuxPath();
-            this.spin++;
-            this.interesting = snap.focusedTty !== "" || snap.instances.some((i) => i.state === "working");
-            for (const key of this.visible.values()) {
-                const settings = await key.getSettings();
-                const project = await this.canonicalProject((settings.project ?? "").trim());
-                const mine = project ? cursorInstancesForProject(snap.instances, project) : [];
-                const instance = selectCursorInstance(mine, project, (settings.sessionId ?? "").trim());
-                if (instance === null)
-                    this.paintedSession.delete(key.id);
-                else
-                    this.paintedSession.set(key.id, instance.sessionId);
-                const pane = instance === null ? undefined : paneForTty(snap.panes, instance.tty);
-                let host = "";
-                let hot = false;
-                if (instance !== null && pane !== undefined) {
-                    host = "tmux";
-                    hot = pane.receivesKeys && snap.focusedTty !== "" && (snap.clientTtys.get(pane.session) ?? []).includes(snap.focusedTty);
-                }
-                else if (instance !== null && instance.tty === snap.focusedTty) {
-                    hot = true;
-                    host = snap.frontBundle === TERMINAL_BUNDLE_ID ? "terminal" : "iterm";
-                }
-                // Scraping the pane costs a tmux call, so only ask when the answer could
-                // change the face: an in-flight turn hosted in a pane we can read.
-                const blockedOnPane = instance !== null && instance.state === "working" && pane !== undefined
-                    && await this.blockedOnApproval(pane, tmux);
-                const state = decideCursorFace({
-                    hasTarget: project !== "",
-                    matchCount: mine.length,
-                    instanceState: instance?.state ?? null,
-                    scanStatus: snap.scanStatus,
-                    hasCapturedId: (settings.sessionId ?? "").trim() !== "",
-                    blockedOnPane,
-                });
-                const image = svgToDataUri(buildCursorProjectKeyImage({ project: project || "no target", host, hot, state, spin: this.spin }));
-                if (this.lastImage.get(key.id) === image)
-                    continue;
-                try {
-                    await key.setImage(image);
-                    this.lastImage.set(key.id, image);
-                }
-                catch (error) {
-                    streamDeck.logger.debug(`Cursor Project image skipped: ${String(error)}`);
-                }
-            }
-        }
-        async raiseTty(tty) {
-            if (await processRunning("iTerm2")) {
-                const result = await runAppleScript(buildITermRaiseScript(tty));
-                if (result.ok) {
-                    const focus = parseITermFocusResult(result.stdout);
-                    if (focus.status === "ok")
-                        return true;
-                    if (focus.status === "timeout") {
-                        streamDeck.logger.warn(`Cursor Project iTerm focus timed out: window=${focus.windowId || "?"} tty=${focus.tty || "?"}`);
-                        return false;
-                    }
-                }
-            }
-            if (await processRunning(TERMINAL_PROCESS_NAME)) {
-                const result = await runAppleScript(buildTerminalRaiseScript(tty));
-                if (result.ok && result.stdout.includes("ok"))
-                    return true;
-            }
-            return false;
-        }
-        async focus(key) {
-            const settings = await key.getSettings();
-            const project = await this.canonicalProject((settings.project ?? "").trim());
-            if (project === "") {
-                await key.showAlert();
-                return;
-            }
-            const expected = this.paintedSession.get(key.id) ?? (settings.sessionId ?? "");
-            const snap = await this.freshSnapshot();
-            if (snap.scanStatus !== "ok") {
-                streamDeck.logger.warn("Cursor Project: process scan unavailable; refusing stale focus.");
-                await key.showAlert();
-                return;
-            }
-            const instance = selectCursorInstance(snap.instances, project, expected);
-            if (instance === null || (expected !== "" && instance.sessionId !== expected)) {
-                streamDeck.logger.warn(`Cursor Project: target missing or ambiguous for ${project}.`);
-                await key.showAlert();
-                return;
-            }
-            const pane = paneForTty(snap.panes, instance.tty);
-            if (pane !== undefined) {
-                const clientTtys = snap.clientTtys.get(pane.session) ?? [];
-                const clientTty = chooseClientTty(clientTtys, snap.focusedTty);
-                if (clientTty === null) {
-                    streamDeck.logger.warn(`Cursor Project: tmux session ${pane.session} has no attached client.`);
-                    await key.showAlert();
-                    return;
-                }
-                if (clientTtys.length > 1)
-                    streamDeck.logger.debug(`Cursor Project: chose ${clientTty} from ${clientTtys.length} clients for ${pane.session}.`);
-                if (!(await this.raiseTty(clientTty))) {
-                    await key.showAlert();
-                    return;
-                }
-                const tmux = findTmuxPath();
-                for (const args of codexTmuxFocusArgs(pane, clientTty)) {
-                    const result = await runTmux(args, tmux);
-                    if (!result.ok) {
-                        streamDeck.logger.error(`Cursor Project tmux ${args[0]} failed: ${result.stderr}`);
-                        await key.showAlert();
-                        return;
-                    }
-                }
-            }
-            else if (!(await this.raiseTty(instance.tty))) {
-                await key.showAlert();
-                return;
-            }
-            await key.showOk();
-            setTimeout(() => void this.refreshAll(), 450);
-        }
-        async capture(key) {
-            const snap = await this.freshSnapshot();
-            if (snap.scanStatus !== "ok" || snap.focusedTty === "") {
-                await key.showAlert();
-                return;
-            }
-            let instance = snap.instances.find((i) => i.tty === snap.focusedTty);
-            if (instance === undefined) {
-                for (const [session, clientTtys] of snap.clientTtys) {
-                    if (!clientTtys.includes(snap.focusedTty))
-                        continue;
-                    const pane = snap.panes.find((p) => p.session === session && p.receivesKeys);
-                    if (pane !== undefined)
-                        instance = snap.instances.find((i) => i.tty === pane.tty);
-                    break;
-                }
-            }
-            if (instance === undefined) {
-                await key.showAlert();
-                return;
-            }
-            const settings = await key.getSettings();
-            await key.setSettings({ ...settings, project: instance.cwd, sessionId: instance.sessionId });
-            this.paintedSession.set(key.id, instance.sessionId);
             await key.showOk();
             await this.refreshAll();
         }
@@ -18652,9 +17518,6 @@ let WindowRing = (() => {
 
 streamDeck.logger.setLevel(LogLevel.INFO);
 streamDeck.actions.registerAction(new JumpToTab());
-streamDeck.actions.registerAction(new ClaudeProject());
-streamDeck.actions.registerAction(new CodexProject());
-streamDeck.actions.registerAction(new CursorProject());
 streamDeck.actions.registerAction(new AiProject());
 streamDeck.actions.registerAction(new ScrollWindow());
 streamDeck.actions.registerAction(new SwitchApp());

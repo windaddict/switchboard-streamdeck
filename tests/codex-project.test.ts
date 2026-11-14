@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	buildCodexProjectKeyImage,
 	codexInstancesForProject,
 	codexRolloutOriginator,
 	codexStateFromRolloutLines,
@@ -14,7 +13,6 @@ import {
 	rolloutSessionId,
 	selectCodexInstance,
 } from "../src/mac/codex-project.js";
-import { deprecationBadge } from "../src/mac/deprecation.js";
 
 const event = (type: string) => JSON.stringify({ type: "event_msg", payload: { type } });
 
@@ -105,35 +103,5 @@ describe("tmux stable targeting", () => {
 			["select-window", "-t", "@7"],
 			["select-pane", "-t", "%12"],
 		]);
-	});
-});
-
-describe("Codex key face", () => {
-	const base = { project: "/Users/j/code/a&b", host: "tmux" as const, hot: false };
-	it("renders distinct working, blocked, waiting, unknown, and absent states", () => {
-		const working = buildCodexProjectKeyImage({ ...base, state: "working", spin: 1 });
-		expect(working).toContain("#4E9CFF");
-		expect(working).toContain('cx="65"');
-		expect(buildCodexProjectKeyImage({ ...base, state: "blocked" })).toContain("#F0A63C");
-		expect(buildCodexProjectKeyImage({ ...base, state: "waiting" })).toContain("#F2FFF6");
-		expect(buildCodexProjectKeyImage({ ...base, state: "unknown" })).toContain("#8B9490");
-		expect(buildCodexProjectKeyImage({ ...base, state: "none" })).toContain("stroke-dasharray");
-	});
-	it("escapes project text and emits no hsl colors", () => {
-		const svg = buildCodexProjectKeyImage({ ...base, state: "waiting" });
-		expect(svg).toContain("a&amp;b");
-		expect(svg).not.toContain("hsl(");
-	});
-	/** Superseded by AI Project: every face carries the shared marker, and it
-	 * must not reintroduce hsl() (the key rasterizer paints that black).
-	 * Delete this test with the action. */
-	it("carries the deprecation badge on every state, still hex-only", () => {
-		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
-			for (const hot of [true, false]) {
-				const svg = buildCodexProjectKeyImage({ ...base, state, hot });
-				expect(svg).toContain(deprecationBadge());
-				expect(svg).not.toContain("hsl(");
-			}
-		}
 	});
 });

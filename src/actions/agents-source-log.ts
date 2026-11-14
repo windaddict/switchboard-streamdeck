@@ -5,8 +5,7 @@
  * the pure `agentsSourceLogLine` returns, so the decision is tested there.
  *
  * Process-wide memory (`last`) makes this fire once per transition, never per
- * poll tick, even though AI Project, Focus tmux and the legacy Claude Project
- * key all report every tick. The limit: scans are logged in the order they
+ * poll tick, even though AI Project and Focus tmux both report every tick. The limit: scans are logged in the order they
  * FINISH. Non-fresh callers share one in-flight scan, but a `fresh` scan (an
  * AI Project press) runs alongside a poll, so if the CLI changes availability
  * between two overlapping scans, the older one can finish last and add one

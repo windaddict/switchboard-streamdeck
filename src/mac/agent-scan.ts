@@ -65,8 +65,8 @@ import {
 	type AgentKind,
 	type AgentState,
 } from "./agent-project.js";
-// Shared plumbing that outlives the superseded Codex action: the scanner
-// itself depends on it, so it is not going away with the key face.
+// Shared folder normalisation; it lives in codex-project.ts for history's sake
+// (the retired Codex Project key introduced it), and every agent module uses it.
 import { normalizeProjectPath } from "./codex-project.js";
 import { type ClaudeScanSnapshot, scanClaudeSnapshot } from "./claude-scan.js";
 import { type ClaudeVerdict, claudeVerdict } from "./claude-project.js";
@@ -412,8 +412,9 @@ export function agentPaneForTty(panes: readonly AgentPane[], tty: string): Agent
 }
 
 /** Raise one pane to the front of its session. Deliberately defined here rather
- * than borrowed from the per-agent modules: those carry the superseded actions
- * and are slated for deletion, and the unified key must not depend on them. */
+ * than borrowed from the per-agent modules: their pane helpers lost their last
+ * production caller when v2.0.0 retired the per-agent keys, and are slated for
+ * cleanup (TODO.md), so the unified key must not depend on them. */
 export function agentTmuxFocusArgs(pane: AgentPane, clientTty: string): string[][] {
 	const commands: string[][] = [];
 	if (clientTty !== "") commands.push(["switch-client", "-c", clientTty, "-t", pane.session]);

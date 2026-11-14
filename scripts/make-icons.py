@@ -167,32 +167,6 @@ def glyph_openfile() -> str:
     )
 
 
-def glyph_claudeproject() -> str:
-    """Terminal window with the Claude spark as its occupant."""
-    return (
-        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
-        f'<path d="M25 31h22M30.5 21.5l11 19M41.5 21.5l-11 19" stroke="{CORAL}" stroke-width="3.5" stroke-linecap="round" fill="none"/>'
-    )
-
-
-def glyph_codexproject() -> str:
-    """Terminal window with the nested-square Codex mark."""
-    return (
-        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
-        f'<rect x="25" y="20" width="22" height="22" rx="2" stroke="{VIOLET}" stroke-width="3" fill="none"/>'
-        f'<rect x="31" y="26" width="10" height="10" rx="1" stroke="{VIOLET}" stroke-width="3" fill="none"/>'
-    )
-
-
-def glyph_cursorproject() -> str:
-    """Terminal window with Cursor's arrow-pointer mark."""
-    return (
-        f'<rect x="13" y="11" width="46" height="40" rx="3" stroke="{MUTED}" stroke-width="3" fill="none"/>'
-        f'<path d="M27 17l18 19-8.4.7 4.4 9.3-4.5 2.1-4.4-9.3-5.1 4.9z"'
-        f' stroke="{STEEL}" stroke-width="3" stroke-linejoin="round" fill="none"/>'
-    )
-
-
 def glyph_aiproject() -> str:
     """Terminal window holding all three agent marks — the agent-neutral key."""
     return (
@@ -209,9 +183,6 @@ def glyph_aiproject() -> str:
 
 ACTIONS = {
     "aiproject": (glyph_aiproject, SIGNAL_AI),
-    "claudeproject": (glyph_claudeproject, CORAL),
-    "codexproject": (glyph_codexproject, VIOLET),
-    "cursorproject": (glyph_cursorproject, STEEL),
     "tmux": (glyph_tmux, PHOSPHOR),
     "tmuxpane": (glyph_tmuxpane, PHOSPHOR),
     "tmuxwindial": (glyph_tmuxwindial, PHOSPHOR),
