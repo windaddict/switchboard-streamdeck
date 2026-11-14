@@ -130,6 +130,17 @@ plugin is shippable as-is.
       (status Accepted). Pipeline: `bundle exec fastlane mac notarize_helpers`
       (see CLAUDE.md "Signing & notarization"). Re-run only when a `helper/*.swift`
       changes, then commit the freshly signed binaries before releasing.
+- [ ] **Dev-dependency audit: 9 `npm audit` findings remain (2026-11-14)** after
+      `npm audit fix` cleared 17 of the 24 Dependabot alerts. None reaches the
+      shipped plugin: `@elgato/streamdeck` is the only runtime dependency and
+      `npm ls --omit=dev` finds none of the flagged packages. Six alerts
+      (`tinypool` x2, critical; `vitest`; `@vitest/mocker` x2; `minimatch` via
+      `@vitest/coverage-v8`) need Vitest 3.x -> 5.x, two majors; expect `vi.mock`
+      / `vi.hoisted` breakage, so do it as its own change. The tinypool RCE needs
+      prototype pollution inside the test process, which runs only this repo's
+      tests. `deepmerge` 4.3.1 (under `@rollup/plugin-node-resolve`) has no
+      patched release; `npm audit`'s offered "fix" is a downgrade to 7.1.3, not a
+      fix.
 
 ## Maintenance note
 
