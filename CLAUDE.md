@@ -497,6 +497,15 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   helper, AppleScript, terminal probe or tmux command fails. A rejected
   `setSettings` (mode/scope toggles) is NOT routed through it. Deliberate no-ops stay silent: a tmux dial with iTerm2 not frontmost,
   and every repaint-only path (BBEdit's `onWillAppear` never alerts).
+- **Vitest runs on Vite 7, pinned as a direct dev dependency.** Vitest 5
+  accepts Vite 6.4-8, and npm picks 8 by default. Vite 8 transforms TypeScript
+  with Oxc, which lowers only LEGACY (`experimentalDecorators`) decorators, so a
+  standard `@action(...)` reached Node verbatim and every test that imports an
+  action class died with "SyntaxError: Invalid or unexpected token" (measured
+  2026-11-14, Vitest 5.1.0 + Vite 8.3.8). Vite 7 uses esbuild, which lowers
+  them. The rollup build is unaffected (`@rollup/plugin-typescript` runs tsc).
+  Don't drop the `vite` pin, and don't "fix" this by switching to legacy
+  decorators: the SDK's `@action` is a standard decorator.
 - **SDK 3.x upgrade is deferred.** `@elgato/streamdeck` stays on 1.4.1. 3.x
   removes `streamDeck.ui.current`, changes `onDidReceiveSettings` semantics and
   makes the `DialAction`/`KeyAction` settings generics mandatory. See TODO.md.
