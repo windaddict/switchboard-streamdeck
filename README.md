@@ -100,8 +100,9 @@ all cases, **quit and relaunch Stream Deck afterwards**, then add Switchboard's
 actions to your keys/dials.
 
 Upgrading from v1.6.0 or earlier removes the Claude Project, Codex Project and
-Cursor Project keys. Replace each with an **AI Project** key (hold it while that
-agent's terminal is frontmost).
+Cursor Project keys. A key still set to one of them shows a question mark, and
+its settings screen reports a missing plugin. Replace each with an **AI Project**
+key (hold it while that agent's terminal is frontmost).
 
 ### 1. Double-click installer (easiest — no Terminal)
 

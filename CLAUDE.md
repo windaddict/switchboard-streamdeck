@@ -358,6 +358,11 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   module header lists its own, and TODO.md tracks the cleanup.
   `tests/action-registry.test.ts` checks that `plugin.ts` registers exactly the
   manifest's actions, so a half-done removal fails the suite.
+  Live check (`retire-live`) passed on 2026-11-14 on SD 7.6.1 after a full
+  relaunch: the action list showed 13 actions and no "(legacy)" entry, the
+  six AI Project keys painted and raised their sessions, and a leftover
+  Claude Project key drew a question mark with a settings screen reporting a
+  missing plugin (operator-observed). The tooltip was not checked on the deck.
 - **Named pasteboards CANNOT be enumerated**, which decides the clipboard
   stash's design. A per-gesture unique name is unrecoverable if the plugin dies
   mid-gesture: that stash then holds a copy of the operator's clipboard until
