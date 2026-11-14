@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	buildCursorProjectKeyImage,
 	capturePaneArgs,
 	cursorChatDir,
 	cursorInstancesForProject,
@@ -17,7 +16,6 @@ import {
 	soleChatDir,
 	withoutWorkerChildren,
 } from "../src/mac/cursor-project.js";
-import { deprecationBadge } from "../src/mac/deprecation.js";
 
 const VERSION_DIR = "/Users/j/.local/share/cursor-agent/versions/2026.08.11-e8db854";
 const CHAT = "/Users/j/.cursor/chats/b731b9d461b221a50ec0c5d38ce51d2c/3d9825b5-d39c-45c3-9261-c9f33b9246c1";
@@ -217,53 +215,6 @@ describe("Selecting the key's session", () => {
 	it("takes a lone session when nothing was captured, but never picks among several", () => {
 		expect(selectCursorInstance([a], "/Users/j/code/app", "")).toBe(a);
 		expect(selectCursorInstance([a, b], "/Users/j/code/app", "")).toBeNull();
-	});
-});
-
-describe("Cursor key face", () => {
-	const args = { project: "/Users/j/code/switchboard", host: "tmux" as const, hot: true, state: "working" as const };
-
-	it("never emits hsl() — the key rasterizer paints it black", () => {
-		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
-			for (const hot of [true, false]) {
-				expect(buildCursorProjectKeyImage({ ...args, hot, state })).not.toContain("hsl(");
-			}
-		}
-	});
-
-	/** Superseded by AI Project: every face carries the shared marker, and it
-	 * must not reintroduce hsl() (the key rasterizer paints that black).
-	 * Delete this test with the action. */
-	it("carries the deprecation badge on every state, still hex-only", () => {
-		for (const state of ["none", "working", "blocked", "waiting", "unknown"] as const) {
-			for (const hot of [true, false]) {
-				const svg = buildCursorProjectKeyImage({ ...args, hot, state });
-				expect(svg).toContain(deprecationBadge());
-				expect(svg).not.toContain("hsl(");
-			}
-		}
-	});
-
-	it("gives each state a distinct face and shows the project and host", () => {
-		const svg = buildCursorProjectKeyImage(args);
-		expect(svg).toContain("switchbo…"); // truncated to fit the key
-		expect(svg).toContain("TMUX");
-		expect(svg).toContain("#4E9CFF");
-		expect(buildCursorProjectKeyImage({ ...args, state: "blocked" })).toContain("#F0A63C");
-		expect(buildCursorProjectKeyImage({ ...args, state: "none" })).toContain("stroke-dasharray");
-	});
-
-	it("escapes a project name that would otherwise break the SVG", () => {
-		const svg = buildCursorProjectKeyImage({ ...args, project: "/tmp/a<b&c" });
-		expect(svg).toContain("a&lt;b&amp;c");
-		expect(svg).not.toContain("a<b&c");
-	});
-
-	it("animates only while working", () => {
-		const frames = new Set([0, 1, 2].map((spin) => buildCursorProjectKeyImage({ ...args, spin })));
-		expect(frames.size).toBe(3);
-		const idle = new Set([0, 1, 2].map((spin) => buildCursorProjectKeyImage({ ...args, state: "waiting", spin })));
-		expect(idle.size).toBe(1);
 	});
 });
 

@@ -37,7 +37,7 @@ describe("property inspector pages", () => {
 			expect(onDisk, `${p.name} PropertyInspectorPath must be one of the ui/*.html pages`).toContain(p.path);
 		}
 		expect([...new Set(pages.map((p) => p.path))].sort(), "manifest PI paths must cover every ui/*.html page").toEqual(onDisk);
-		expect(pages.length, "manifest must name sixteen property inspectors").toBe(16);
+		expect(pages.length, "manifest must name thirteen property inspectors").toBe(13);
 		expect(
 			existsSync(new URL("ui/lib/sdpi-components.js", PLUGIN)),
 			"the bundled library every page loads must exist",
@@ -57,6 +57,20 @@ describe("property inspector pages", () => {
 });
 
 describe("bundled third-party files", () => {
+	it("ui/lib must hold exactly the three shipped files, and no page loads the retired lib/deprecated.js", () => {
+		// The directory listing catches a stray file that no page references, which the
+		// per-page check below cannot see.
+		expect(readdirSync(new URL("ui/lib/", PLUGIN)).sort(), "ui/lib must hold exactly the three shipped files").toEqual([
+			"THIRD-PARTY-LICENSES.md",
+			"permissions.js",
+			"sdpi-components.js",
+		]);
+		for (const f of onDisk) {
+			const html = readFileSync(new URL(f, PLUGIN), "utf8");
+			expect(html, `${f} must not load lib/deprecated.js`).not.toContain("lib/deprecated.js");
+		}
+	});
+
 	it("ui/lib/sdpi-components.js must be bundled", () => {
 		const path = new URL("ui/lib/sdpi-components.js", PLUGIN);
 		expect(existsSync(path), "ui/lib/sdpi-components.js must be bundled").toBe(true);

@@ -1,7 +1,7 @@
 /**
  * WHAT IT'S FOR: the one place that asks the machine "which interactive
  * Cursor CLI sessions exist right now, in which folders, and what is each
- * doing?" — so every visible Cursor Project key repaints from a single
+ * doing?" — so every AI Project and Focus tmux poll reads Cursor from a single
  * bounded snapshot instead of each key shelling out for itself.
  *
  * Shape of a scan: `pgrep` narrows to candidate pids, one targeted `ps`
@@ -256,6 +256,8 @@ async function transcriptTailLines(path: string): Promise<string[] | null> {
 	}
 }
 
+/** Test-only since v2.0.0: the retired Cursor Project key's press path was its
+ * last production caller (the cleanup is in TODO.md). */
 export function invalidateCursorScan(): void {
 	cache = null;
 	inFlight = null;

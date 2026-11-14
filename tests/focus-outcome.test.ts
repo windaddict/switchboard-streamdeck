@@ -47,16 +47,16 @@ describe("What the deck and the log say about a focus press", () => {
 
 	describe("a raise that threw", () => {
 		it("alerts and carries the error's own message", () => {
-			const report = describeFailedPress("Codex Project", new Error("osascript died"));
+			const report = describeFailedPress("AI Project", new Error("osascript died"));
 			expect(report).toEqual({
 				level: "error",
-				message: "Codex Project: raise failed — osascript died",
+				message: "AI Project: raise failed — osascript died",
 				alert: true,
 			});
 		});
 
 		it("survives a thrown non-Error", () => {
-			expect(describeFailedPress("Cursor Project", "just a string").message).toContain("just a string");
+			expect(describeFailedPress("Focus tmux Window", "just a string").message).toContain("just a string");
 		});
 	});
 

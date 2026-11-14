@@ -99,8 +99,8 @@ describe("runExclusive", () => {
 	});
 
 	/** THE DEFECT. The SDK round-trips inside the lock are unbounded, so a lost
-	 * reply left a holder pending forever — and "iterm-focus" is shared by all
-	 * five focus actions, so that killed every one of them until a restart. */
+	 * reply left a holder pending forever — and "iterm-focus" is shared by
+	 * every focus action, so that killed every one of them until a restart. */
 	it("lets a later request take a key whose holder never settles", async () => {
 		let clock = 1000;
 		const now = () => clock;

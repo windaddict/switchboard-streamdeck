@@ -28,17 +28,11 @@ const PHOSPHOR = "#3ECF6E";
 const AZURE = "#4E9CFF";
 const AMBER = "#F0A63C";
 const TEAL = "#3EC9C4";
-const CORAL = "#D97757";
-const VIOLET = "#A78BFA";
-const STEEL = "#B9C6D4";
 const SIGNAL_AI = "#7FD4C1";
 
 /** slug -> family colour, in `scripts/make-icons.py` ACTIONS order. */
 const FAMILY: Array<[string, string]> = [
 	["aiproject", SIGNAL_AI],
-	["claudeproject", CORAL],
-	["codexproject", VIOLET],
-	["cursorproject", STEEL],
 	["tmux", PHOSPHOR],
 	["tmuxpane", PHOSPHOR],
 	["tmuxwindial", PHOSPHOR],

@@ -1,5 +1,5 @@
 /**
- * Terminal.app scripting for the Claude Project key: read the focused tab's
+ * Terminal.app scripting for the AI Project key: read the focused tab's
  * tty and raise the window+tab hosting a given tty. Verified against the
  * Terminal sdef: tabs expose read-only `tty`, windows a settable
  * `selected tab` / `frontmost`. Only address Terminal when it is RUNNING —

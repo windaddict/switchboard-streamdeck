@@ -16,7 +16,7 @@
  * At 20 px a 3-unit stroke on the 72 grid is under one pixel wide, so no pixel reaches alpha 255 (measured 2026-10-05: tmux, switchapp, appwindows and windowring icon.png have none). "White" therefore means EVERY pixel in the rectangle has alpha >= WHITE_ALPHA and RGB exactly 255; "transparent" means EVERY pixel has alpha 0. Rectangles are inclusive pixel boxes on the 20 px icon.png, inset so anti-aliased fringes stay out. checkIcon also requires a minimum count of visible white pixels, so an empty PNG fails every icon, not only the four with regions.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { type Png, readPng } from "./helpers/png.js";
@@ -27,7 +27,7 @@ type ManifestAction = { UUID: string; Name: string; Icon: string };
 type Manifest = { Actions: ManifestAction[]; CategoryIcon: string };
 const manifest = JSON.parse(readFileSync(new URL("manifest.json", PLUGIN), "utf8")) as Manifest;
 
-const EXPECTED_ACTION_COUNT = 16;
+const EXPECTED_ACTION_COUNT = 13;
 const WHITE_ALPHA = 64;
 const CLEAR_ALPHA = 0;
 // Measured 2026-10-05: the sparsest list icon (openfile/icon.png) has 58 of 400 pixels at alpha >= 64; 5% is 20.
@@ -60,7 +60,7 @@ function stats(png: Png) {
  * visible pixel is exactly white. `title` is "list icon <slug>/icon.png" or
  * "category icon category-icon.png"; it prefixes every assertion message. */
 function checkIcon(title: string, path: string, size: number): Png {
-	expect(manifest.Actions.length, "manifest must declare 16 actions").toBe(EXPECTED_ACTION_COUNT);
+	expect(manifest.Actions.length, "manifest must declare 13 actions").toBe(EXPECTED_ACTION_COUNT);
 	expect(existsSync(new URL(path, PLUGIN)), `${title} must exist (the manifest names ${path})`).toBe(true);
 	const png = readPng(new URL(path, PLUGIN));
 	expect([png.width, png.height], `${title} dimensions`).toEqual([size, size]);
@@ -85,6 +85,21 @@ describe("list icons are white on transparent", () => {
 			});
 		}
 	}
+});
+
+describe("icon directories", () => {
+	// The per-icon loop above follows the manifest, so an icon directory the
+	// manifest no longer names (a retired action's, say) ships unnoticed. This
+	// compares the two lists in both directions.
+	it("imgs/actions holds exactly one directory per manifest action", () => {
+		const dirs = readdirSync(new URL("imgs/actions/", PLUGIN), { withFileTypes: true })
+			.filter((d) => d.isDirectory())
+			.map((d) => d.name)
+			.sort();
+		expect(dirs, "imgs/actions directories must equal the manifest's icon slugs").toEqual(
+			manifest.Actions.map(slugOf).sort(),
+		);
+	});
 });
 
 describe("category icon is a white mark with no tile", () => {

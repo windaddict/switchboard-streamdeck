@@ -1,8 +1,15 @@
 /**
- * WHAT IT'S FOR: the pure decision layer behind the Cursor Project key — the
- * one place that answers "which running Cursor CLI session is this key's
- * project, and is it working, blocked on me, or idle?" so the action shell
- * stays a thin wire between Stream Deck events and tested logic.
+ * WHAT IT'S FOR: the pure Cursor CLI parsing and state layer that AI Project
+ * and Focus tmux rely on (through cursor-scan.ts and agent-scan.ts): it
+ * identifies cursor-agent processes, names their chat, and reads a turn's
+ * state from the transcript tail. It began as the decision layer of the
+ * per-agent Cursor Project key, which v2.0.0 retired.
+ *
+ * Test-only exports: `cursorInstancesForProject`, `selectCursorInstance`,
+ * `decideCursorFace`, `paneForTty`, `paneShowsApprovalPrompt`,
+ * `capturePaneArgs` and the re-exports below lost their last production
+ * caller with that key. They stay, covered by tests, until the cleanup listed
+ * in TODO.md.
  *
  * Cursor's CLI (`cursor-agent`) looks superficially like Codex but records
  * state very differently, and three of the Codex signals do NOT port. Each
@@ -28,11 +35,7 @@
  * isolation guarantee — the bytes do pass through this process's memory.
  */
 
-import { deprecationBadge } from "./deprecation.js";
-import { hslToHex } from "./svg.js";
-import { escapeXml, sessionHue } from "./tmux-window.js";
-
-// Generic tmux-pane and lsof plumbing, shared with Codex Project rather than
+// Generic tmux-pane and lsof plumbing, shared with the Codex module rather than
 // duplicated: both features ask the same two questions (which pane owns this
 // tty, and which files does this pid hold open).
 export {
@@ -54,7 +57,6 @@ import { type CodexPane, normalizeProjectPath } from "./codex-project.js";
  * refuse to guess.
  */
 export type CursorState = "none" | "working" | "blocked" | "waiting" | "unknown";
-export type CursorHost = "tmux" | "iterm" | "terminal" | "";
 
 export interface CursorInstance {
 	pid: number;
@@ -204,9 +206,10 @@ export function cursorStateFromTranscriptLines(
  *
  * This is the ONLY direct evidence that a session is blocked on the operator;
  * no file Cursor writes distinguishes that from ordinary work. Matching is
- * deliberately narrow and fails SAFE: unrecognised wording yields false, so
- * the key falls back to `working` and can never invent an amber "needs you"
- * light that isn't real.
+ * deliberately narrow and fails SAFE for unrecognised wording: that yields
+ * false, so the key falls back to `working`. It is a substring match on the
+ * captured screen, so the recognised wording sitting in ordinary scrolled
+ * output can still read as blocked.
  */
 export function paneShowsApprovalPrompt(paneText: string): boolean {
 	// "Run this command?" alone is a phrase that could plausibly appear in
@@ -304,56 +307,4 @@ export function decideCursorFace(args: {
 /** The pane hosting a session, matched by tty. */
 export function paneForTty(panes: readonly CodexPane[], tty: string): CodexPane | undefined {
 	return panes.find((p) => p.tty === tty);
-}
-
-function projectBasename(path: string): string {
-	const p = normalizeProjectPath(path);
-	return p.slice(p.lastIndexOf("/") + 1) || "?";
-}
-
-function truncate(value: string, max: number): string {
-	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-
-const MONO = "Menlo, Monaco, monospace";
-const ORBIT: ReadonlyArray<readonly [number, number]> = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
-
-/**
- * Cursor sibling of the Claude and Codex live faces. Hex colours only — the
- * KEY rasterizer paints `hsl()` as black, so every colour goes through
- * {@link hslToHex} (a unit test asserts no `hsl(` literal survives).
- */
-export function buildCursorProjectKeyImage(args: {
-	project: string;
-	host: CursorHost;
-	hot: boolean;
-	state: CursorState;
-	spin?: number;
-}): string {
-	const name = truncate(projectBasename(args.project), 9);
-	const hue = sessionHue(projectBasename(args.project));
-	const active = args.state !== "none";
-	const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
-	const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
-	const bar = !active
-		? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
-		: args.hot
-			? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
-			: `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-	const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
-	let glyph = "";
-	if (active) {
-		const spin = args.spin ?? 0;
-		// Cursor's mark reads as an arrow pointer, distinguishing it at a glance
-		// from Codex's square and Claude's asterisk on a crowded deck.
-		glyph = `<path d="M57 5l9 10.5-4.4.4 2.6 5.2-2.6 1.3-2.6-5.2-3 3.2z" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
-		if (args.state === "working") {
-			const [x, y] = ORBIT[spin % ORBIT.length];
-			glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
-		}
-		if (args.state === "blocked") glyph += `<circle cx="61" cy="12" r="1.7" fill="#F0A63C"/>`;
-	}
-	const mark = `<path d="M8 61l5 5.8-2.5.2 1.5 2.9-1.5.7-1.5-2.9-1.7 1.8z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.1" stroke-linejoin="round"/>`;
-	// Deprecation marker — superseded by AI Project; remove with this action.
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }

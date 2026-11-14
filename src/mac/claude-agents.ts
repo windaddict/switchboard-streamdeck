@@ -141,8 +141,8 @@ export function reportedState(status: string): ClaudeReportedState {
 }
 
 /** True for a state the CLI actually decided. Such an instance needs no
- * fallback signal, so no transcript is read for it (agent-scan.ts and the
- * legacy Claude Project key both gate their transcript read on this). */
+ * fallback signal, so no transcript is read for it (agent-scan.ts gates its
+ * transcript read on this). */
 export function isRecognisedReport(
 	r: ClaudeReportedState | null | undefined,
 ): r is "working" | "blocked" | "waiting" {

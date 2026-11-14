@@ -72,7 +72,7 @@ const MULTI_ACTION: Record<string, boolean> = {
 	openfile: true,
 	snippet: true,
 	// Encoders can never be steps; Window Ring is only ever configured by long-press;
-	// the project keys' value is a live face a multi-action never draws.
+	// AI Project's value is a live face a multi-action never draws.
 	scroll: false,
 	tile: false,
 	tmuxpane: false,
@@ -81,9 +81,6 @@ const MULTI_ACTION: Record<string, boolean> = {
 	bbeditdoc: false,
 	windowring: false,
 	aiproject: false,
-	claudeproject: false,
-	codexproject: false,
-	cursorproject: false,
 };
 
 describe("SupportedInMultiActions is declared on every action", () => {
@@ -98,7 +95,7 @@ describe("SupportedInMultiActions is declared on every action", () => {
 		});
 	}
 
-	it("the flag table covers exactly the manifest's sixteen actions", () => {
+	it("the flag table covers exactly the manifest's thirteen actions", () => {
 		const slugs = manifest.Actions.map((a) => a.UUID.split(".").pop()).sort();
 		expect(slugs, "manifest must have an action per flag-table entry").toEqual(Object.keys(MULTI_ACTION).sort());
 		expect(
@@ -106,4 +103,19 @@ describe("SupportedInMultiActions is declared on every action", () => {
 			"exactly five actions must be multi-action steps",
 		).toBe(5);
 	});
+});
+
+/** The three per-agent keys AI Project replaced were retired in v2.0.0. Each UUID
+ * is checked on its own, so a single re-added entry is visible; a count check
+ * alone would not name which one came back. */
+describe("retired actions", () => {
+	for (const slug of ["claudeproject", "codexproject", "cursorproject"]) {
+		const uuid = `com.movingavg.switchboard.${slug}`;
+		it(`manifest must not carry ${uuid}`, () => {
+			expect(
+				manifest.Actions.map((a) => a.UUID),
+				`manifest must not carry ${uuid}`,
+			).not.toContain(uuid);
+		});
+	}
 });

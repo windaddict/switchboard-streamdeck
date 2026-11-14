@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	buildClaudeProjectKeyImage,
 	instancesForProject,
 	normalizeProjectPath,
 	busyParentsFrom,
@@ -13,7 +12,6 @@ import {
 	projectSlug,
 	TRANSCRIPT_FRESH_MS,
 } from "../src/mac/claude-project.js";
-import { deprecationBadge } from "../src/mac/deprecation.js";
 import * as claudeProjectModule from "../src/mac/claude-project.js";
 
 describe("cheap ps scan (parsePsProcs / claudesFrom / childrenOf)", () => {
@@ -157,54 +155,6 @@ describe("projectBasename", () => {
 		expect(projectBasename("/Users/j/code/switchboard")).toBe("switchboard");
 		expect(projectBasename("/Users/j/code/switchboard/")).toBe("switchboard");
 		expect(projectBasename("")).toBe("?");
-	});
-});
-
-describe("buildClaudeProjectKeyImage", () => {
-	const base = { project: "/Users/j/code/app", host: "tmux" as const, hot: false, claude: "waiting" as const };
-	it("no claude: dashed bar, no spark", () => {
-		const svg = buildClaudeProjectKeyImage({ ...base, claude: "none", host: "" });
-		expect(svg).toContain("stroke-dasharray");
-		expect(svg).not.toContain("M56 12h10");
-	});
-	it("hot lights the bar with the cursor block", () => {
-		const svg = buildClaudeProjectKeyImage({ ...base, hot: true });
-		expect(svg).toContain('fill="url(#b)"');
-		expect(svg).toContain('fill="#F2FFF6"');
-	});
-	it("working spark is amber and rotates with the tick; waiting is white and still", () => {
-		expect(buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 2 })).toContain(
-			'stroke="#F0A63C"',
-		);
-		expect(buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 2 })).toContain(
-			'transform="rotate(60 61 12)"',
-		);
-		expect(buildClaudeProjectKeyImage({ ...base, claude: "waiting" })).toContain('stroke="#F2FFF6"');
-	});
-	it("working orbit dot moves between ticks; waiting has none", () => {
-		const a = buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 0 });
-		const b = buildClaudeProjectKeyImage({ ...base, claude: "working", spin: 1 });
-		expect(a).toContain('cx="61" cy="4"');
-		expect(b).toContain('cx="65" cy="5.1"');
-		expect(buildClaudeProjectKeyImage({ ...base, claude: "waiting" })).not.toContain('r="1.7"');
-	});
-	it("shows the project basename and host eyebrow, XML-escaped, hex only", () => {
-		const svg = buildClaudeProjectKeyImage({ ...base, project: "/x/a&b" });
-		expect(svg).toContain("a&amp;b");
-		expect(svg).toContain(">TMUX</text>");
-		expect(svg).not.toContain("hsl(");
-	});
-	/** Superseded by AI Project: every face carries the shared marker, and it
-	 * must not reintroduce hsl() (the key rasterizer paints that black).
-	 * Delete this test with the action. */
-	it("carries the deprecation badge on every state, still hex-only", () => {
-		for (const claude of ["none", "working", "waiting"] as const) {
-			for (const hot of [true, false]) {
-				const svg = buildClaudeProjectKeyImage({ ...base, claude, hot });
-				expect(svg).toContain(deprecationBadge());
-				expect(svg).not.toContain("hsl(");
-			}
-		}
 	});
 });
 

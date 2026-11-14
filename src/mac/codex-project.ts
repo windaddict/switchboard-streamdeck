@@ -1,11 +1,18 @@
-/** Pure identity, rollout-state, tmux-target, and key-face logic for Codex Project. */
-
-import { deprecationBadge } from "./deprecation.js";
-import { hslToHex } from "./svg.js";
-import { escapeXml, sessionHue } from "./tmux-window.js";
+/**
+ * WHAT IT'S FOR: the pure Codex CLI parsing layer that AI Project and Focus
+ * tmux rely on (through codex-scan.ts and agent-scan.ts): process identity,
+ * rollout-log state, lsof parsing, and `normalizeProjectPath`, which every
+ * agent module uses to compare folders. It began as the logic of the
+ * per-agent Codex Project key, which v2.0.0 retired.
+ *
+ * Test-only exports: `codexInstancesForProject`, `selectCodexInstance`,
+ * `LIST_CODEX_PANES_ARGS`, `parseCodexPanes` and `codexTmuxFocusArgs` lost
+ * their last production caller with that key (cursor-project.ts re-exports
+ * some of them under Cursor names). They stay, covered by tests, until the
+ * cleanup listed in TODO.md.
+ */
 
 export type CodexState = "none" | "working" | "blocked" | "waiting" | "unknown";
-export type CodexHost = "tmux" | "iterm" | "terminal" | "";
 
 export interface CodexInstance {
 	pid: number;
@@ -188,49 +195,4 @@ export function codexTmuxFocusArgs(pane: CodexPane, clientTty: string): string[]
 	commands.push(["select-window", "-t", pane.windowId]);
 	commands.push(["select-pane", "-t", pane.paneId]);
 	return commands;
-}
-
-function projectBasename(path: string): string {
-	const p = normalizeProjectPath(path);
-	return p.slice(p.lastIndexOf("/") + 1) || "?";
-}
-
-function truncate(value: string, max: number): string {
-	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-
-const MONO = "Menlo, Monaco, monospace";
-const ORBIT: ReadonlyArray<readonly [number, number]> = [[61, 4], [65, 5.1], [67.9, 8], [69, 12], [67.9, 16], [65, 18.9], [61, 20], [57, 18.9], [54.1, 16], [53, 12], [54.1, 8], [57, 5.1]];
-
-/** Codex sibling of the Claude live face. Hex colors only for key rasterizing. */
-export function buildCodexProjectKeyImage(args: {
-	project: string;
-	host: CodexHost;
-	hot: boolean;
-	state: CodexState;
-	spin?: number;
-}): string {
-	const name = truncate(projectBasename(args.project), 9);
-	const hue = sessionHue(projectBasename(args.project));
-	const active = args.state !== "none";
-	const color = args.state === "working" ? "#4E9CFF" : args.state === "blocked" ? "#F0A63C" : args.state === "waiting" ? "#F2FFF6" : "#8B9490";
-	const nameFill = active ? args.hot ? "#FFFFFF" : "#A6ADA9" : "#6A716E";
-	const bar = !active
-		? '<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>'
-		: args.hot
-			? `<rect x="0" y="57" width="72" height="15" fill="${hslToHex(hue, 62, 42)}"/><rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`
-			: `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-	const eyebrow = args.host ? `<text x="30" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1" fill="${hslToHex(hue, 50, 70)}">${escapeXml(args.host.toUpperCase())}</text>` : "";
-	let glyph = "";
-	if (active) {
-		const spin = args.spin ?? 0;
-		glyph = `<path d="M56 7h10v10H56zM59 10h4v4h-4z" fill="none" stroke="${color}" stroke-width="1.8"/>`;
-		if (args.state === "working") {
-			const [x, y] = ORBIT[spin % ORBIT.length];
-			glyph += `<circle cx="${x}" cy="${y}" r="1.7" fill="#4E9CFF"/>`;
-		}
-	}
-	const mark = `<path d="M7 61h7v7H7zM9 63h3v3H9z" fill="none" stroke="${active ? args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70) : "#8B9490"}" stroke-width="1.2"/>`;
-	// Deprecation marker — superseded by AI Project; remove with this action.
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0F1211"/>${deprecationBadge()}${eyebrow}${glyph}<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>${bar}${mark}</svg>`;
 }

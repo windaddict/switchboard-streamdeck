@@ -91,8 +91,8 @@ export function resetExclusive(): void {
  * tmux 5s), but the SDK round-trips around them are not — `getSettings()` waits
  * for a `didReceiveSettings` reply that a dropped websocket message never
  * delivers. A holder stuck on one of those held the key for the life of the
- * process, and because the key is the literal string "iterm-focus" shared by all
- * five focus actions, one lost reply silently killed every one of them until the
+ * process, and because the key is the literal string "iterm-focus" shared by
+ * every focus action, one lost reply silently killed every one of them until the
  * plugin was restarted.
  *
  * THE COST, stated at full strength because an earlier draft of this comment

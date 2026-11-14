@@ -1,8 +1,15 @@
 /**
- * Pure logic for the "Claude Project" key: find Claude Code CLI instances on
- * the machine (any host — tmux, plain iTerm2, Terminal.app), decide their
- * working/waiting state, and render the live key face. The impure scanning
- * lives in claude-scan.ts; this module only parses and decides.
+ * WHAT IT'S FOR: the pure Claude Code parsing and state layer that AI Project
+ * and Focus tmux rely on (through claude-scan.ts and agent-scan.ts): it parses
+ * the ps/lsof output that finds Claude Code CLI instances on any host (tmux,
+ * plain iTerm2, Terminal.app) and decides each one's state
+ * ({@link claudeVerdict}). The impure scanning lives in claude-scan.ts; this
+ * module only parses and decides. It began as the logic of the per-agent
+ * Claude Project key, which v2.0.0 retired.
+ *
+ * Test-only exports: `projectClaudeState`, `instancesForProject` and
+ * `projectBasename` lost their last production caller with that key. They
+ * stay, covered by tests, until the cleanup listed in TODO.md.
  *
  * Identity model: a button targets a PROJECT DIRECTORY. A claude process
  * belongs to it when its cwd matches. State comes FIRST from Claude Code's own
@@ -32,9 +39,6 @@
 
 import type { ClaudeReportedState } from "./claude-agents.js";
 import type { ClaudeState } from "./claude-state.js";
-import { deprecationBadge } from "./deprecation.js";
-import { hslToHex } from "./svg.js";
-import { escapeXml, sessionHue } from "./tmux-window.js";
 
 /** A running Claude Code CLI process. */
 export interface ClaudeInstance {
@@ -203,9 +207,9 @@ export function claudeVerdict(args: {
 }
 
 /**
- * The legacy key's project state: {@link claudeVerdict} with `blocked` folded
- * into `waiting` (that key's `ClaudeState` has no blocked; its white means
- * "not working").
+ * The retired Claude Project key's state: {@link claudeVerdict} with `blocked`
+ * folded into `waiting` (that key's `ClaudeState` had no blocked; its white
+ * meant "not working"). Test-only since v2.0.0.
  */
 export function projectClaudeState(args: {
 	present: boolean;
@@ -220,106 +224,9 @@ export function projectClaudeState(args: {
 	return verdict === "blocked" ? "waiting" : verdict;
 }
 
-/** Where the button's project is currently hosted (drives the eyebrow). */
-export type ClaudeHost = "tmux" | "iterm" | "terminal" | "";
-
-const MONO = "Menlo, Monaco, monospace";
-
-function truncate(value: string, max: number): string {
-	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-
 /** Last path segment as the display name ("" -> "?"). */
 export function projectBasename(projectPath: string): string {
 	const normalized = normalizeProjectPath(projectPath);
 	const base = normalized.slice(normalized.lastIndexOf("/") + 1);
 	return base || "?";
-}
-
-/** 12 o'clock-start orbit positions for the working dot (r=8 around the spark). */
-const ORBIT: ReadonlyArray<readonly [number, number]> = [[61.0, 4.0], [65.0, 5.1], [67.9, 8.0], [69.0, 12.0], [67.9, 16.0], [65.0, 18.9], [61.0, 20.0], [57.0, 18.9], [54.1, 16.0], [53.0, 12.0], [54.1, 8.0], [57.0, 5.1]];
-
-/**
- * Render the 72×72 live key face, sibling of the tmux key: ink ground, the
- * project name in mono (hue seeded per project, so each project wears a
- * stable colour), host as the eyebrow, the status bar lit when keystrokes
- * would land in that session, and the Claude spark (amber turning = working,
- * white still = waiting). No claude process → dashed bar, no spark. Hex
- * colours only — the key rasterizer paints hsl() black.
- */
-export function buildClaudeProjectKeyImage(args: {
-	project: string;
-	host: ClaudeHost;
-	hot: boolean;
-	claude: ClaudeState;
-	spin?: number;
-}): string {
-	const name = truncate(projectBasename(args.project), 9);
-	const hue = sessionHue(projectBasename(args.project));
-	const spin = args.spin ?? 0;
-
-	let bar: string;
-	let nameFill: string;
-	let eyebrowFill = "";
-
-	if (args.claude === "none") {
-		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="#4A504D" stroke-width="1.5" stroke-dasharray="3 3"/>`;
-		nameFill = "#6A716E";
-	} else if (args.hot) {
-		bar =
-			`<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">` +
-			`<stop offset="0" stop-color="${hslToHex(hue, 62, 46)}"/>` +
-			`<stop offset="1" stop-color="${hslToHex(hue, 66, 36)}"/>` +
-			`</linearGradient></defs>` +
-			`<rect x="0" y="57" width="72" height="15" fill="url(#b)"/>` +
-			`<rect x="60" y="60.5" width="5" height="8" fill="#F2FFF6"/>`;
-		nameFill = "#FFFFFF";
-		eyebrowFill = hslToHex(hue, 55, 72);
-	} else {
-		bar = `<rect x="1" y="58" width="70" height="13" fill="none" stroke="${hslToHex(hue, 35, 52)}" stroke-width="1.5"/>`;
-		nameFill = "#A6ADA9";
-		eyebrowFill = hslToHex(hue, 50, 70);
-	}
-
-	// Anchored at x=30, not center: the longest host label ("TERMINAL") must
-	// clear the Claude spark in the top-right corner.
-	const eyebrow = args.host
-		? `<text x="30" y="15" text-anchor="middle" font-family="${MONO}" font-size="7.5" letter-spacing="1" fill="${eyebrowFill || "#8B9490"}">${escapeXml(truncate(args.host.toUpperCase(), 8))}</text>`
-		: "";
-
-	let spark = "";
-	if (args.claude !== "none") {
-		const color = args.claude === "working" ? "#F0A63C" : "#F2FFF6";
-		const angle = args.claude === "working" ? (spin % 12) * 30 : 0;
-		spark =
-			`<path d="M56 12h10M58.5 7.7l5 8.6M63.5 7.7l-5 8.6" ` +
-			`stroke="${color}" stroke-width="2" stroke-linecap="round" fill="none" ` +
-			`transform="rotate(${angle} 61 12)"/>`;
-		if (args.claude === "working") {
-			// The star is 6-fold symmetric, so its rotation collapses to a
-			// two-frame wobble — motion you cannot see at key size. The orbiting
-			// dot gives 12 genuinely distinct frames per revolution.
-			const [ox, oy] = ORBIT[spin % 12];
-			spark += `<circle cx="${ox}" cy="${oy}" r="1.7" fill="#F0A63C"/>`;
-		}
-	}
-
-	// tmux identity mark's sibling: a small spark outline at the bar's left
-	// end marks this as a Claude key even when idle.
-	const mark =
-		`<path d="M6.5 64.25h7M8 61.25l4 6M12 61.25l-4 6" ` +
-		`stroke="${args.claude === "none" ? "#8B9490" : args.hot ? "#F2FFF6" : hslToHex(hue, 50, 70)}" stroke-width="1.4" stroke-linecap="round" fill="none"/>`;
-
-	return (
-		`<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">` +
-		`<rect width="72" height="72" fill="#0F1211"/>` +
-		// Deprecation marker — superseded by AI Project; remove with this action.
-		deprecationBadge() +
-		eyebrow +
-		spark +
-		`<text x="36" y="40" text-anchor="middle" font-family="${MONO}" font-size="11.5" font-weight="700" fill="${nameFill}">${escapeXml(name)}</text>` +
-		bar +
-		mark +
-		`</svg>`
-	);
 }

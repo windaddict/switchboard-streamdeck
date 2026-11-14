@@ -104,11 +104,12 @@ const POLL_MS = 2500;
 /**
  * One live key for one coding-agent session, whichever agent that is.
  *
- * Supersedes the three per-agent keys. Hold it for half a second while Claude
- * Code, Codex, or Cursor is frontmost and it works out which of the three it is
- * looking at, then behaves exactly as the dedicated key did: blue while a turn
- * runs, amber when the agent is waiting on you, white at an idle prompt, and
- * the bar lit when your keystrokes would reach that exact session.
+ * It replaced the three per-agent keys (Claude, Codex and Cursor Project),
+ * which v2.0.0 removed. Hold it for half a second while Claude Code, Codex, or
+ * Cursor is frontmost and it works out which of the three it is looking at,
+ * then shows that session's state: blue while a turn runs, amber when the
+ * agent is waiting on you, white at an idle prompt, and the bar lit when your
+ * keystrokes would reach that exact session.
  */
 @action({ UUID: "com.movingavg.switchboard.aiproject" })
 export class AiProject extends SingletonAction<AiProjectSettings> {
