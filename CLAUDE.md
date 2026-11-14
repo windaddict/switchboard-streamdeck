@@ -6,7 +6,7 @@ Built with the Elgato SDK v2 (TypeScript/Node). The plugin **UUID is
 Don't change it casually — installed buttons reference it, so a change orphans
 configured keys unless migrated. `scripts/rename.sh` performs such a migration
 (it rewrites the UUIDs in the Stream Deck profile store so settings survive); see
-that script before ever renaming again. Sixteen actions today (the manifest is the
+that script before ever renaming again. Thirteen actions today (the manifest is the
 source of truth — `scripts/make-hero.py` reads it).
 
 ## Layout
@@ -21,16 +21,14 @@ src/
   mac/                      # PURE, tested logic (no SDK, no I/O)
     targets/safari ...      # see files below
   safari/                   # Safari tab logic (targets.ts, applescript.ts, runner re-export)
-  mac/agent-*.ts            # AI Project (supersedes the three per-agent keys):
+  mac/agent-*.ts            # AI Project (replaced the three per-agent keys, removed in v2.0.0):
                             #   agent-project (one AgentKind/AgentState vocabulary,
                             #   per-kind approval-prompt matchers, decideAgentFace,
                             #   per-kind key face), agent-scan (ADAPTER over the three
                             #   existing scanners — never a fourth scanner)
-  mac/deprecation.ts        # the badge on the three superseded key faces; DELETE
-                            #   this whole file when those actions are retired
   mac/cursor-*.ts           # Cursor CLI detection: cursor-scan (pgrep -f the installed
                             #   versions path -> ps -o pid=,ppid=,tty=,args= -> lsof), cursor-project
-                            #   (identity + turn_ended state + approval-prompt scrape + key face)
+                            #   (identity + turn_ended state + approval-prompt scrape)
   mac/claude-*.ts           # Claude Code detection: claude-agents (PRIMARY state source:
                             #   `claude agents --json` parse + binary lookup in four fixed
                             #   places), claude-scan (ps→batched lsof + shell-snapshot busy
@@ -38,7 +36,7 @@ src/
                             #   merges the CLI report by pid), claude-state (title marker, now
                             #   a FALLBACK: static ✳ under tmux since 2.1.236; tmux pane-tty
                             #   map), claude-transcript (~/.claude/projects freshness, also
-                            #   fallback), claude-project (state decision + key face)
+                            #   fallback), claude-project (ps/lsof parsers + state decision)
   mac/blocked-probe.ts      # pure "is this agent waiting on you, and must the pane be read?"
                             #   (a Claude that reported itself is never scraped)
   mac/{coalesce,serialize,press-gate}.ts  # shared async plumbing (all unit-tested)
@@ -108,7 +106,7 @@ terminal.
 
 ```
 npm run typecheck     # tsc --noEmit
-npm test              # vitest (pure modules) — 1103 tests today
+npm test              # vitest (pure modules) — 1084 tests today
 npm run build         # rollup -> bin/plugin.js, then postbuild runs `streamdeck validate`
 npm run build:helper  # build all 3 Swift helpers UNIVERSAL (scripts/build-helpers.sh);
                       #   auto-signs with Developer ID if that cert is in the keychain
@@ -249,8 +247,7 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
 - **ONE colour language across the keys: blue = working, amber = waiting on YOU,
   white = idle.** The tmux key's Claude spark was amber-for-working, which meant
   the opposite of amber on the agent keys — two states demanding opposite actions
-  sharing a colour on one deck. It is blue now. The two superseded per-agent keys
-  keep the old scheme and die with it; don't "fix" them. RED is not a fourth
+  sharing a colour on one deck. It is blue now. RED is not a fourth
   state: it is AI Project's unread stripe, a LAYER over whatever state colour
   the key already shows (`UNREAD_RED` in `agent-project.ts`). The operator asked
   for a full red ground and was talked into the stripe, because red-as-ground
@@ -258,8 +255,9 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   urgent than "finished". Don't promote red to a state.
 - **README figures are code-generated.** docs/tmux-live-keys.png and claude-spark.gif now
   regenerate together via `python3 scripts/make-tmux-figure.py` (tsx -> the REAL
-  buildTmuxKeyImage -> inkscape -> magick); claude-project-keys.png and
-  dial-strips.png are still ad-hoc. Regenerate whenever a key face changes, or the
+  buildTmuxKeyImage -> inkscape -> magick), and docs/ai-project-keys.png via
+  `python3 scripts/make-ai-project-figure.py` (the REAL buildAgentProjectKeyImage).
+  dial-strips.png is still ad-hoc. Regenerate whenever a key face changes, or the
   README silently lies — the spark figures did exactly that until the recolour.
 - **Cursor CLI (`cursor-agent`) breaks three assumptions Codex taught us.** All
   measured against 2026.08.11-e8db854, all of them cost time here:
@@ -343,18 +341,23 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   (both authoritative, any terminal); Cursor and an unlisted Claude only ever show
   it on screen (tmux-only scrape). `blockedEvidenceFor(kind, host, reported)`
   encodes exactly that, and the docs must not imply one uniform guarantee.
-- **RETIREMENT COMMITMENT (do not lose this).** Claude/Codex/Cursor Project are
-  superseded by AI Project and are kept ONLY so nobody's configured key is
-  orphaned without a release of warning. A future release must delete: the three
-  actions + their manifest entries, `src/mac/deprecation.ts` and its three call
-  sites, `ui/lib/deprecated.js`, the three PIs, and the three legacy key-face
-  BUILDERS (`build{Claude,Codex,Cursor}ProjectKeyImage`) only. The MODULES
-  themselves stay: `claude-scan`/`codex-scan`/`cursor-scan` do the detection AI
-  Project relies on, `claude-agents` supplies the CLI report they all use,
-  `claude-project` still supplies `projectClaudeState` and the
-  ps/lsof parsers, and `codex-project` still supplies `normalizeProjectPath` and
+- **RETIRED in v2.0.0: Claude/Codex/Cursor Project.** AI Project replaced
+  them; v1.5.0 and v1.6.0 marked them *(legacy)*. The removal deleted the three
+  actions and manifest entries, `src/mac/deprecation.ts`, `ui/lib/deprecated.js`,
+  the three PIs, their icon dirs, and the three key-face builders
+  (`build{Claude,Codex,Cursor}ProjectKeyImage`). The MODULES stayed:
+  `claude-scan`/`codex-scan`/`cursor-scan` do the detection AI Project relies
+  on, `claude-agents` supplies the CLI report, `claude-project` supplies
+  `claudeVerdict` (agent-scan) and the ps/lsof parsers (claude-scan), and
+  `codex-project` supplies `normalizeProjectPath` (every agent module) and
   `parseLsofEntries`. Deleting a whole file because its NAME matches a retired
-  action would break the unified key — check the imports first.
+  action would break the unified key — check the imports first. Several
+  exports lost their last production caller with the keys and are now
+  test-only (`projectClaudeState`, `instancesForProject`, the Codex and Cursor
+  pane helpers, `decideCursorFace`, `invalidateCursorScan` and more); each
+  module header lists its own, and TODO.md tracks the cleanup.
+  `tests/action-registry.test.ts` checks that `plugin.ts` registers exactly the
+  manifest's actions, so a half-done removal fails the suite.
 - **Named pasteboards CANNOT be enumerated**, which decides the clipboard
   stash's design. A per-gesture unique name is unrecoverable if the plugin dies
   mid-gesture: that stash then holds a copy of the operator's clipboard until
@@ -476,8 +479,7 @@ installed copy ships stale code. The `build` step is gated by `streamdeck valida
   as one gesture, so `PressGate` never fires and hold-to-capture does not exist.
   The step's face is never drawn. `SupportedInMultiActions` is `true` for Safari
   Tab Jump, Open / Switch App, Focus tmux Window, Open File and Paste Snippet,
-  and `false` for the other eleven (six dials, Window Ring, AI Project, the three
-  legacy agent keys). Live check (`multi-action-live`) passed on 2026-10-08:
+  and `false` for the other eight (six dials, Window Ring, AI Project). Live check (`multi-action-live`) passed on 2026-10-08:
   the multi-action picker listed exactly those five.
 - **sdpi-components is bundled** in `ui/lib/sdpi-components.js` (v4.0.1, MIT, with
   Lit under BSD 3-Clause) and the notices ship in `ui/lib/THIRD-PARTY-LICENSES.md`.

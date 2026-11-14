@@ -48,8 +48,9 @@ plugin is shippable as-is.
 - [ ] **Upgrade `@elgato/streamdeck` 1.4.1 to 3.x.** Touch points: `streamDeck.ui.current`
       (`pi-permissions.ts`, `focus-tmux.ts`), `onDidReceiveSettings` overrides
       (`open-file.ts`, `paste-snippet.ts`), mandatory settings generics on
-      `DialAction`/`KeyAction`, and the tsconfig move to NodeNext. Best done with
-      the retirement of the three legacy actions.
+      `DialAction`/`KeyAction`, and the tsconfig move to NodeNext. The three
+      legacy actions it was to be paired with were retired in v2.0.0, so it now
+      stands alone.
 - [ ] Skip the poll timer for `isInMultiAction` instances of Focus tmux, Open File
       and Paste Snippet (their face is never drawn there).
 
@@ -68,11 +69,22 @@ plugin is shippable as-is.
       2026-10-08 (2 critical), all development-scope: tinypool, fast-uri,
       source-map-js, brace-expansion, vitest/@vitest/mocker. None is in the
       shipped bundle (runtime deps: @elgato/streamdeck, @elgato/schemas, ws).
-- [ ] **Claude Project switches tmux by window index** (`claude-project.ts`
-      passes `pane.windowIndex`), so under `renumber-windows` a lower window
-      closing mid-press can select the wrong window. Focus tmux and AI Project
-      switch by id. Left alone because Claude Project is due for deletion
-      (see the retirement commitment in CLAUDE.md); fix only if that slips.
+- [ ] **Delete the exports the v2.0.0 retirement left test-only.** With the
+      Claude/Codex/Cursor Project keys gone, these have no production caller:
+      `claude-project.ts` `projectClaudeState`, `instancesForProject`,
+      `projectBasename`; `codex-project.ts` `codexInstancesForProject`,
+      `selectCodexInstance`, `LIST_CODEX_PANES_ARGS`, `parseCodexPanes`,
+      `codexTmuxFocusArgs`; `cursor-project.ts` `cursorInstancesForProject`,
+      `selectCursorInstance`, `decideCursorFace`, `paneForTty`,
+      `paneShowsApprovalPrompt`, `capturePaneArgs` and its five re-exports;
+      `cursor-scan.ts` `invalidateCursorScan`. Delete them with their tests,
+      checking importers first (each module header lists its own).
+- [ ] **A migration script for retired keys, only if a user asks.** v2.0.0
+      documents the removal instead. A rewrite of the profile store would swap
+      the action UUID for `aiproject` AND insert `agent` (`claude`/`codex`/
+      `cursor`); a bare UUID swap leaves a dead gray key (`ai-project.ts`
+      reads `settings.agent`). It must run with Stream Deck quit and back up
+      `ProfilesV3` first, like `scripts/rename.sh`.
 - [ ] **Rate-limit dial failure logging.** A dial logs one line per detent:
       on 2026-10-05, one spin of Scroll with Accessibility revoked wrote 12
       identical "Scroll Window blocked" ERROR lines in 3 s (and BBEdit wrote 5
