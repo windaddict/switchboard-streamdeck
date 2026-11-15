@@ -65,10 +65,6 @@ plugin is shippable as-is.
       rectangles are in 20 px coordinates and will move), and compare against
       another plugin's icons in the action list.
 
-- [ ] **Update the dev dependencies Dependabot flags.** 12 open alerts on
-      2026-10-08 (2 critical), all development-scope: tinypool, fast-uri,
-      source-map-js, brace-expansion, vitest/@vitest/mocker. None is in the
-      shipped bundle (runtime deps: @elgato/streamdeck, @elgato/schemas, ws).
 - [ ] **Delete the exports the v2.0.0 retirement left test-only.** With the
       Claude/Codex/Cursor Project keys gone, these have no production caller:
       `claude-project.ts` `projectClaudeState`, `instancesForProject`,
@@ -130,17 +126,18 @@ plugin is shippable as-is.
       (status Accepted). Pipeline: `bundle exec fastlane mac notarize_helpers`
       (see CLAUDE.md "Signing & notarization"). Re-run only when a `helper/*.swift`
       changes, then commit the freshly signed binaries before releasing.
-- [ ] **Dev-dependency audit: 9 `npm audit` findings remain (2026-11-14)** after
-      `npm audit fix` cleared 17 of the 24 Dependabot alerts. None reaches the
-      shipped plugin: `@elgato/streamdeck` is the only runtime dependency and
-      `npm ls --omit=dev` finds none of the flagged packages. Six alerts
-      (`tinypool` x2, critical; `vitest`; `@vitest/mocker` x2; `minimatch` via
-      `@vitest/coverage-v8`) need Vitest 3.x -> 5.x, two majors; expect `vi.mock`
-      / `vi.hoisted` breakage, so do it as its own change. The tinypool RCE needs
-      prototype pollution inside the test process, which runs only this repo's
-      tests. `deepmerge` 4.3.1 (under `@rollup/plugin-node-resolve`) has no
-      patched release; `npm audit`'s offered "fix" is a downgrade to 7.1.3, not a
-      fix.
+- [x] **Dev-dependency Dependabot alerts (2026-11-14): 23 of 24 cleared.**
+      `npm audit fix` cleared 17; Vitest 3.2 -> 5.1 cleared the other six
+      (`tinypool` x2, `vitest`, `@vitest/mocker` x2, `minimatch`). None of them
+      ever reached the shipped plugin (`@elgato/streamdeck` is the only runtime
+      dependency).
+- [ ] **`deepmerge` 4.3.1 alert (low) has no patched release.** It comes in
+      under `@rollup/plugin-node-resolve` (build-time only). `npm audit`'s offered
+      "fix" is a downgrade to plugin-node-resolve 7.1.3, not a fix. Recheck when
+      a patched deepmerge or a plugin-node-resolve without it ships.
+- [ ] **Vite is pinned to 7 for the tests** (see CLAUDE.md, "Vitest runs on
+      Vite 7"). Moving to Vite 8 needs a test transform that lowers standard
+      decorators; Oxc (Vite 8's transformer) only lowers legacy ones.
 
 ## Maintenance note
 
